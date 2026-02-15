@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -14,6 +15,12 @@ public class ApplicationPartsLogger : IHostedService
 {
     private readonly ILogger<ApplicationPartsLogger> _logger;
     private readonly ApplicationPartManager _partManager;
+
+    private static readonly Action<ILogger, string, string, Exception> LogApplicationParts =
+        LoggerMessage.Define<string, string>(
+            LogLevel.Information,
+            new EventId(1, nameof(LogApplicationParts)),
+            "Found the following application parts: '{ApplicationParts}' with the following controllers: '{Controllers}'");
 
     public ApplicationPartsLogger(ILogger<ApplicationPartsLogger> logger, ApplicationPartManager partManager)
     {
@@ -34,9 +41,7 @@ public class ApplicationPartsLogger : IHostedService
         IEnumerable<string> controllers = controllerFeature.Controllers.Select(x => x.Name);
 
         // Log the application parts and controllers
-        _logger.LogInformation(
-            "Found the following application parts: '{ApplicationParts}' with the following controllers: '{Controllers}'",
-            string.Join(", ", applicationParts), string.Join(", ", controllers));
+        LogApplicationParts(_logger, string.Join(", ", applicationParts), string.Join(", ", controllers), null);
 
         return Task.CompletedTask;
     }

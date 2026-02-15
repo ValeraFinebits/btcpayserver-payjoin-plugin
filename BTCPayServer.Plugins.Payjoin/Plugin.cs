@@ -13,14 +13,14 @@ public class Plugin : BaseBTCPayServerPlugin
         new IBTCPayServerPlugin.PluginDependency { Identifier = nameof(BTCPayServer), Condition = ">=1.12.0" }
     };
 
-    public override void Execute(IServiceCollection services)
+    public override void Execute(IServiceCollection applicationBuilder)
     {
-        services.AddSingleton<IUIExtension>(new UIExtension("TemplatePluginHeaderNav", "header-nav"));
-        services.AddHostedService<ApplicationPartsLogger>();
-        services.AddHostedService<PluginMigrationRunner>();
-        services.AddSingleton<PayjoinPluginService>();
-        services.AddSingleton<PayjoinPluginDbContextFactory>();
-        services.AddDbContext<PayjoinPluginDbContext>((provider, o) =>
+        applicationBuilder.AddSingleton<IUIExtension>(new UIExtension("TemplatePluginHeaderNav", "header-nav"));
+        applicationBuilder.AddHostedService<ApplicationPartsLogger>();
+        applicationBuilder.AddHostedService<PluginMigrationRunner>();
+        applicationBuilder.AddSingleton<PayjoinPluginService>();
+        applicationBuilder.AddSingleton<PayjoinPluginDbContextFactory>();
+        applicationBuilder.AddDbContext<PayjoinPluginDbContext>((provider, o) =>
         {
             var factory = provider.GetRequiredService<PayjoinPluginDbContextFactory>();
             factory.ConfigureBuilder(o);

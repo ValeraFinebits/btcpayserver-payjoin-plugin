@@ -13,21 +13,27 @@ namespace BTCPayServer.Plugins.Payjoin;
 [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanViewProfile)]
 public class UIPluginController : Controller
 {
-    private readonly PayjoinPluginService _PluginService;
+    private readonly PayjoinPluginService _pluginService;
 
-    public UIPluginController(PayjoinPluginService PluginService)
+    public UIPluginController(PayjoinPluginService pluginService)
     {
-        _PluginService = PluginService;
+        _pluginService = pluginService;
     }
 
     // GET
     public async Task<IActionResult> Index()
     {
-        return View(new PluginPageViewModel { Data = await _PluginService.Get() });
+        var data = await _pluginService.Get().ConfigureAwait(false);
+        return View(new PluginPageViewModel(data));
     }
 }
 
 public class PluginPageViewModel
 {
-    public List<PluginData> Data { get; set; }
+    public PluginPageViewModel(IReadOnlyCollection<PluginData> data)
+    {
+        Data = data;
+    }
+
+    public IReadOnlyCollection<PluginData> Data { get; }
 }

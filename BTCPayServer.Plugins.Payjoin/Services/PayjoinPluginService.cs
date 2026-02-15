@@ -17,17 +17,29 @@ public class PayjoinPluginService
 
     public async Task AddTestDataRecord()
     {
-        await using var context = _pluginDbContextFactory.CreateContext();
-
-        await context.PluginRecords.AddAsync(new PluginData { Timestamp = DateTimeOffset.UtcNow });
-        await context.SaveChangesAsync();
+        var context = _pluginDbContextFactory.CreateContext();
+        try
+        {
+            await context.PluginRecords.AddAsync(new PluginData { Timestamp = DateTimeOffset.UtcNow }).ConfigureAwait(false);
+            await context.SaveChangesAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            await context.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     public async Task<List<PluginData>> Get()
     {
-        await using var context = _pluginDbContextFactory.CreateContext();
-
-        return await context.PluginRecords.ToListAsync();
+        var context = _pluginDbContextFactory.CreateContext();
+        try
+        {
+            return await context.PluginRecords.ToListAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            await context.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }
 
