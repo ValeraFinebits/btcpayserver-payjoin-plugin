@@ -53,10 +53,15 @@ jobs:
         run: dotnet build "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release
 
       - name: Pack .btcpay
-        run: dotnet "./btcpayserver/BTCPayServer.PluginPacker/bin/Release/net8.0/BTCPayServer.PluginPacker.dll" \
-          "./artifacts/publish/BTCPayServer.Plugins.Payjoin" \
-          "${{ env.PLUGIN_NAME }}" \
-          "./artifacts/packages"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Packing plugin: ${PLUGIN_NAME}"
+          echo "Publish dir: $(pwd)/artifacts/publish/BTCPayServer.Plugins.Payjoin"
+          dotnet "./btcpayserver/BTCPayServer.PluginPacker/bin/Release/net8.0/BTCPayServer.PluginPacker.dll" \
+            "./artifacts/publish/BTCPayServer.Plugins.Payjoin" \
+            "${PLUGIN_NAME}" \
+            "./artifacts/packages"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
