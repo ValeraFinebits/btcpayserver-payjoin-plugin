@@ -1,5 +1,5 @@
-using System;
 using BTCPayServer.Abstractions.Models;
+using System;
 
 namespace BTCPayServer.Plugins.Payjoin.Models;
 

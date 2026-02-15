@@ -1,0 +1,5 @@
+root = true
+
+[rust-payjoin/payjoin-ffi/csharp/src/payjoin/payjoin.cs]
+dotnet_diagnostic.CS0108.severity = none
+dotnet_diagnostic.CA5392.severity = none

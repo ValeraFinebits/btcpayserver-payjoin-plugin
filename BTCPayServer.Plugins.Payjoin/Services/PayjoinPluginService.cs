@@ -1,8 +1,8 @@
+using BTCPayServer.Plugins.Payjoin.Data;
+using Microsoft.EntityFrameworkCore;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using BTCPayServer.Plugins.Payjoin.Data;
-using Microsoft.EntityFrameworkCore;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 

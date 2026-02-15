@@ -1,9 +1,9 @@
-﻿using System.Threading;
-using System.Threading.Tasks;
-using BTCPayServer.Abstractions.Contracts;
+﻿using BTCPayServer.Abstractions.Contracts;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace BTCPayServer.Plugins.Payjoin;
 

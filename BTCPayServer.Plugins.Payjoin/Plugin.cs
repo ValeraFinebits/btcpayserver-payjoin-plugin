@@ -24,5 +24,6 @@ public class Plugin : BaseBTCPayServerPlugin
             var factory = provider.GetRequiredService<PayjoinPluginDbContextFactory>();
             factory.ConfigureBuilder(o);
         });
+        applicationBuilder.AddUIExtension("store-nav", "PayJoinStoreNavExtension");
     }
 }

@@ -1,4 +1,3 @@
-using System;
 using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Abstractions.Extensions;
 using BTCPayServer.Abstractions.Models;
@@ -6,6 +5,7 @@ using BTCPayServer.Client;
 using BTCPayServer.Plugins.Payjoin.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System;
 
 namespace BTCPayServer.Plugins.Payjoin.Controllers;
 
