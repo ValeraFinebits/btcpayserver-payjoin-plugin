@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace BTCPayServer.Plugins.Template.Migrations
 {
-    [DbContext(typeof(MyPluginDbContext))]
+    [DbContext(typeof(PayjoinPluginDbContext))]
     [Migration("20201117154419_Init")]
     public partial class Init : Migration
     {

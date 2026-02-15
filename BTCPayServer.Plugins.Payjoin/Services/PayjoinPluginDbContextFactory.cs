@@ -6,11 +6,11 @@ using Microsoft.Extensions.Options;
 
 namespace BTCPayServer.Plugins.Template.Services;
 
-public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<MyPluginDbContext>
+public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<PayjoinPluginDbContext>
 {
-    public MyPluginDbContext CreateDbContext(string[] args)
+    public PayjoinPluginDbContext CreateDbContext(string[] args)
     {
-        var builder = new DbContextOptionsBuilder<MyPluginDbContext>();
+        var builder = new DbContextOptionsBuilder<PayjoinPluginDbContext>();
 
         // FIXME: Somehow the DateTimeOffset column types get messed up when not using Postgres
         // https://docs.microsoft.com/en-us/ef/core/managing-schemas/migrations/providers?tabs=dotnet-core-cli
@@ -20,15 +20,15 @@ public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<MyPluginDb
     }
 }
 
-public class MyPluginDbContextFactory : BaseDbContextFactory<MyPluginDbContext>
+public class PayjoinPluginDbContextFactory : BaseDbContextFactory<PayjoinPluginDbContext>
 {
-    public MyPluginDbContextFactory(IOptions<DatabaseOptions> options) : base(options, "BTCPayServer.Plugins.Template")
+    public PayjoinPluginDbContextFactory(IOptions<DatabaseOptions> options) : base(options, "BTCPayServer.Plugins.Template")
     {
     }
 
-    public override MyPluginDbContext CreateContext()
+    public override PayjoinPluginDbContext CreateContext()
     {
-        var builder = new DbContextOptionsBuilder<MyPluginDbContext>();
+        var builder = new DbContextOptionsBuilder<PayjoinPluginDbContext>();
         ConfigureBuilder(builder);
         return new MyPluginDbContext(builder.Options);
     }

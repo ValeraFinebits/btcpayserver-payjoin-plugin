@@ -1,6 +1,6 @@
 [submodule "btcpayserver"]
 	path = btcpayserver
-	url = https://github.com/btcpayserver/btcpayserver
+	url = https://github.com/ValeraFinebits/btcpayserver
 [submodule "rust-payjoin"]
 	path = rust-payjoin
 	url = https://github.com/ValeraFinebits/rust-payjoin.git

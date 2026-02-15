@@ -18,11 +18,11 @@ public class Plugin : BaseBTCPayServerPlugin
         services.AddSingleton<IUIExtension>(new UIExtension("TemplatePluginHeaderNav", "header-nav"));
         services.AddHostedService<ApplicationPartsLogger>();
         services.AddHostedService<PluginMigrationRunner>();
-        services.AddSingleton<MyPluginService>();
-        services.AddSingleton<MyPluginDbContextFactory>();
-        services.AddDbContext<MyPluginDbContext>((provider, o) =>
+        services.AddSingleton<PayjoinPluginService>();
+        services.AddSingleton<PayjoinPluginDbContextFactory>();
+        services.AddDbContext<PayjoinPluginDbContext>((provider, o) =>
         {
-            var factory = provider.GetRequiredService<MyPluginDbContextFactory>();
+            var factory = provider.GetRequiredService<PayjoinPluginDbContextFactory>();
             factory.ConfigureBuilder(o);
         });
     }

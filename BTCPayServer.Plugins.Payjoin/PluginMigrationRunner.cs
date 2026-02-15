@@ -9,14 +9,14 @@ namespace BTCPayServer.Plugins.Template;
 
 public class PluginMigrationRunner : IHostedService
 {
-    private readonly MyPluginDbContextFactory _pluginDbContextFactory;
-    private readonly MyPluginService _pluginService;
+    private readonly PayjoinPluginDbContextFactory _pluginDbContextFactory;
+    private readonly PayjoinPluginService _pluginService;
     private readonly ISettingsRepository _settingsRepository;
 
     public PluginMigrationRunner(
         ISettingsRepository settingsRepository,
-        MyPluginDbContextFactory pluginDbContextFactory,
-        MyPluginService pluginService)
+        PayjoinPluginDbContextFactory pluginDbContextFactory,
+        PayjoinPluginService pluginService)
     {
         _settingsRepository = settingsRepository;
         _pluginDbContextFactory = pluginDbContextFactory;

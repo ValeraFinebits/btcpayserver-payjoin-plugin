@@ -10,8 +10,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 namespace BTCPayServer.Plugins.Template.Migrations
 {
-    [DbContext(typeof(MyPluginDbContext))]
-    partial class MyPluginDbContextModelSnapshot : ModelSnapshot
+    [DbContext(typeof(PayjoinPluginDbContext))]
+    partial class PayjoinPluginDbContextModelSnapshot : ModelSnapshot
     {
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
