@@ -29,26 +29,6 @@ jobs:
       - name: Publish plugin
         run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-restore -o "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
 
-      - name: Verify published DLL
-        shell: bash
-        run: |
-          echo "Listing publish directory:"
-          ls -la "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
-          echo "Published DLLs:"
-          ls -1 "./artifacts/publish/BTCPayServer.Plugins.Payjoin"/*.dll 2>/dev/null || true
-          if [ -f "./artifacts/publish/BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.dll" ]; then
-            echo "PLUGIN_NAME=BTCPayServer.Plugins.Payjoin" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          dll=$(ls -1 "./artifacts/publish/BTCPayServer.Plugins.Payjoin"/*.dll 2>/dev/null | head -n 1)
-          if [ -z "$dll" ]; then
-            echo "::error::No DLLs were published to ./artifacts/publish/BTCPayServer.Plugins.Payjoin"
-            exit 1
-          fi
-          name=$(basename "$dll" .dll)
-          echo "::warning::Expected BTCPayServer.Plugins.Payjoin.dll not found; using '$name.dll' for packing."
-          echo "PLUGIN_NAME=$name" >> "$GITHUB_ENV"
-
       - name: Build packer
         run: dotnet build "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release
 
@@ -56,11 +36,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Packing plugin: ${PLUGIN_NAME}"
-          echo "Publish dir: $(pwd)/artifacts/publish/BTCPayServer.Plugins.Payjoin"
           dotnet "./btcpayserver/BTCPayServer.PluginPacker/bin/Release/net8.0/BTCPayServer.PluginPacker.dll" \
             "./artifacts/publish/BTCPayServer.Plugins.Payjoin" \
-            "${PLUGIN_NAME}" \
+            "BTCPayServer.Plugins.Payjoin" \
             "./artifacts/packages"
 
       - name: Upload package artifact
