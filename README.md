@@ -1,5 +1,3 @@
-# BTCPay Server Plugin Template
+# BTCPay Server PayJoin Plugin
 
-A template for your own [BTCPay Server](https://github.com/btcpayserver) plugin.
-
-Learn more in our [plugin documentation](https://docs.btcpayserver.org/Development/Plugins/).
+A demo PayJoin [BTCPay Server](https://github.com/btcpayserver) plugin.
