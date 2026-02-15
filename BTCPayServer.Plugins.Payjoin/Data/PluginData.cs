@@ -1,7 +1,7 @@
 using System;
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace BTCPayServer.Plugins.Template.Data;
+namespace BTCPayServer.Plugins.Payjoin.Data;
 
 public class PluginData
 {

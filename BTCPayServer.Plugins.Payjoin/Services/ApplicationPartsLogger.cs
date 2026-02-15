@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace BTCPayServer.Plugins.Template.Services;
+namespace BTCPayServer.Plugins.Payjoin.Services;
 
 // This is a demo class to show you how to integrate Hosted Service in the BTCPayServer plugin. Remove it from your project.
 public class ApplicationPartsLogger : IHostedService

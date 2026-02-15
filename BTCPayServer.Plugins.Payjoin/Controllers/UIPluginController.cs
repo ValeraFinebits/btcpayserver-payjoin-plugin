@@ -2,12 +2,12 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Client;
-using BTCPayServer.Plugins.Template.Data;
-using BTCPayServer.Plugins.Template.Services;
+using BTCPayServer.Plugins.Payjoin.Data;
+using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace BTCPayServer.Plugins.Template;
+namespace BTCPayServer.Plugins.Payjoin;
 
 [Route("~/plugins/template")]
 [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanViewProfile)]

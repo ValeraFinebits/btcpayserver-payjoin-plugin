@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.Extensions.Options;
 
-namespace BTCPayServer.Plugins.Template.Services;
+namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<PayjoinPluginDbContext>
 {
@@ -16,13 +16,13 @@ public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<PayjoinPlu
         // https://docs.microsoft.com/en-us/ef/core/managing-schemas/migrations/providers?tabs=dotnet-core-cli
         builder.UseNpgsql("User ID=postgres;Host=127.0.0.1;Port=39372;Database=designtimebtcpay");
 
-        return new MyPluginDbContext(builder.Options, true);
+        return new PayjoinPluginDbContext(builder.Options, true);
     }
 }
 
 public class PayjoinPluginDbContextFactory : BaseDbContextFactory<PayjoinPluginDbContext>
 {
-    public PayjoinPluginDbContextFactory(IOptions<DatabaseOptions> options) : base(options, "BTCPayServer.Plugins.Template")
+    public PayjoinPluginDbContextFactory(IOptions<DatabaseOptions> options) : base(options, "BTCPayServer.Plugins.Payjoin")
     {
     }
 
@@ -30,6 +30,6 @@ public class PayjoinPluginDbContextFactory : BaseDbContextFactory<PayjoinPluginD
     {
         var builder = new DbContextOptionsBuilder<PayjoinPluginDbContext>();
         ConfigureBuilder(builder);
-        return new MyPluginDbContext(builder.Options);
+        return new PayjoinPluginDbContext(builder.Options);
     }
 }

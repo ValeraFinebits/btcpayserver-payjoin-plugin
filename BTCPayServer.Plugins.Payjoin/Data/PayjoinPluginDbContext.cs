@@ -2,12 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using BTCPayServer.Plugins.Template.Data;
+using BTCPayServer.Plugins.Payjoin.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
-namespace BTCPayServer.Plugins.Template;
+namespace BTCPayServer.Plugins.Payjoin;
 
 public class PayjoinPluginDbContext : DbContext
 {
@@ -24,6 +24,6 @@ public class PayjoinPluginDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-        modelBuilder.HasDefaultSchema("BTCPayServer.Plugins.Template");
+        modelBuilder.HasDefaultSchema("BTCPayServer.Plugins.Payjoin");
     }
 }
