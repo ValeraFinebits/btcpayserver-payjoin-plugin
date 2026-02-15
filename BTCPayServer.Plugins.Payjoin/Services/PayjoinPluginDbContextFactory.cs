@@ -28,7 +28,7 @@ public class PayjoinPluginDbContextFactory : BaseDbContextFactory<PayjoinPluginD
     {
     }
 
-    public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder> npgsqlOptionsAction = null)
+    public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
     {
         var builder = new DbContextOptionsBuilder<PayjoinPluginDbContext>();
         ConfigureBuilder(builder, npgsqlOptionsAction);

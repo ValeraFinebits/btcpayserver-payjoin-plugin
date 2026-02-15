@@ -1,14 +1,15 @@
-<Project Sdk="Microsoft.NET.Sdk.Razor">
+﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+	<Nullable>enable</Nullable>
   </PropertyGroup>
 
   <!-- Plugin specific properties -->
   <PropertyGroup>
-    <Product>Payjoin BTCPay Server Plugin</Product>
+    <Product>Payjoin</Product>
     <Description>A demo payjoin plugin for BTCPay Server.</Description>
-    <Version>1.0.0</Version>
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <!-- Plugin development properties -->
@@ -64,4 +65,19 @@
     <ProjectReference Include="..\btcpayserver\BTCPayServer\BTCPayServer.csproj" />
     <EmbeddedResource Include="Resources\**" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Resources\img\" />
+  </ItemGroup>
+
+    <ItemGroup>
+      <Compile Include="..\rust-payjoin\payjoin-ffi\csharp\src\payjoin\payjoin.cs" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\src\payjoin\payjoin.cs')" />
+      <None Include="..\rust-payjoin\payjoin-ffi\csharp\src\payjoin\libpayjoin_ffi.so" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\src\payjoin\libpayjoin_ffi.so')">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+      <None Include="..\rust-payjoin\payjoin-ffi\csharp\src\payjoin\libpayjoin_ffi.dylib" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\src\payjoin\libpayjoin_ffi.dylib')">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
 </Project>

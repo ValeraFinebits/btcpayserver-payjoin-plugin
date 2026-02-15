@@ -16,7 +16,7 @@ public class ApplicationPartsLogger : IHostedService
     private readonly ILogger<ApplicationPartsLogger> _logger;
     private readonly ApplicationPartManager _partManager;
 
-    private static readonly Action<ILogger, string, string, Exception> LogApplicationParts =
+    private static readonly Action<ILogger, string, string, Exception?> LogApplicationParts =
         LoggerMessage.Define<string, string>(
             LogLevel.Information,
             new EventId(1, nameof(LogApplicationParts)),
