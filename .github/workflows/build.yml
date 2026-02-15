@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore "BTCPayServer.Plugins.Payjoin.sln"
+
+      - name: Build
+        run: dotnet build "BTCPayServer.Plugins.Payjoin.sln" -c Release --no-restore
+
+      - name: Test
+        run: dotnet test "BTCPayServer.Plugins.Payjoin.sln" -c Release --no-build
