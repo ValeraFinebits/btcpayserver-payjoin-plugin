@@ -1,3 +1,7 @@
 [submodule "btcpayserver"]
 	path = btcpayserver
 	url = https://github.com/btcpayserver/btcpayserver
+[submodule "rust-payjoin"]
+	path = rust-payjoin
+	url = https://github.com/ValeraFinebits/rust-payjoin.git
+	branch = feat/csharp-ffi-bindings
