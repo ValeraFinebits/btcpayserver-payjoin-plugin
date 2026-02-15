@@ -3,6 +3,8 @@ using BTCPayServer.Abstractions.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.Extensions.Options;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
+using System;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -26,10 +28,10 @@ public class PayjoinPluginDbContextFactory : BaseDbContextFactory<PayjoinPluginD
     {
     }
 
-    public override PayjoinPluginDbContext CreateContext()
+    public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder> npgsqlOptionsAction = null)
     {
         var builder = new DbContextOptionsBuilder<PayjoinPluginDbContext>();
-        ConfigureBuilder(builder);
+        ConfigureBuilder(builder, npgsqlOptionsAction);
         return new PayjoinPluginDbContext(builder.Options);
     }
 }

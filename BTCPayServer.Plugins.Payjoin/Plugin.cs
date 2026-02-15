@@ -1,6 +1,5 @@
 using BTCPayServer.Abstractions.Contracts;
 using BTCPayServer.Abstractions.Models;
-using BTCPayServer.Abstractions.Services;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -15,7 +14,7 @@ public class Plugin : BaseBTCPayServerPlugin
 
     public override void Execute(IServiceCollection applicationBuilder)
     {
-        applicationBuilder.AddSingleton<IUIExtension>(new UIExtension("TemplatePluginHeaderNav", "header-nav"));
+        applicationBuilder.AddUIExtension("header-nav", "TemplatePluginHeaderNav");
         applicationBuilder.AddHostedService<ApplicationPartsLogger>();
         applicationBuilder.AddHostedService<PluginMigrationRunner>();
         applicationBuilder.AddSingleton<PayjoinPluginService>();
