@@ -1,0 +1,45 @@
+name: package-btcpay-plugin
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj"
+
+      - name: Publish plugin
+        run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-restore -o "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
+
+      - name: Build packer
+        run: dotnet build "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release
+
+      - name: Pack .btcpay
+        run: dotnet "./btcpayserver/BTCPayServer.PluginPacker/bin/Release/net8.0/BTCPayServer.PluginPacker.dll" \
+          "./artifacts/publish/BTCPayServer.Plugins.Payjoin" \
+          "BTCPayServer.Plugins.Payjoin" \
+          "./artifacts/packages"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: btcpay-plugin
+          path: artifacts/packages/**/*.btcpay
