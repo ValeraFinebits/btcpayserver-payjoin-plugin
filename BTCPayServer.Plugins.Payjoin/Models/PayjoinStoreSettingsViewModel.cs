@@ -1,4 +1,6 @@
 using BTCPayServer.Abstractions.Models;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
 using System;
 
 namespace BTCPayServer.Plugins.Payjoin.Models;
@@ -15,5 +17,7 @@ public class PayjoinStoreSettingsViewModel
 
     public bool DemoMode { get; set; }
 
-    public required LayoutModel LayoutModel { get; set; }
+    [BindNever]
+    [ValidateNever]
+    public LayoutModel LayoutModel { get; set; } = default!;
 }
