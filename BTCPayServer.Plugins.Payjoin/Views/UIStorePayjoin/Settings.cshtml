@@ -42,3 +42,39 @@
         </div>
     </div>
 </form>
+
+<script>
+    document.addEventListener("DOMContentLoaded", () => {
+        const demoMode = document.getElementById("PayjoinDemoMode");
+        const directoryUrl = document.getElementById("PayjoinDirectoryUrl");
+        const ohttpRelayUrl = document.getElementById("PayjoinOhttpRelayUrl");
+        const token = document.querySelector('input[name="__RequestVerificationToken"]');
+        if (!demoMode || !directoryUrl || !ohttpRelayUrl) {
+            return;
+        }
+
+        demoMode.addEventListener("change", async () => {
+            const formData = new FormData();
+            formData.append("demoMode", demoMode.checked ? "true" : "false");
+            if (token && token.value) {
+                formData.append("__RequestVerificationToken", token.value);
+            }
+
+            const response = await fetch("@Url.Action("ToggleDemoMode", "UIStorePayjoin", new { storeId = Model.StoreId })", {
+                method: "POST",
+                body: formData,
+                headers: {
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+            });
+
+            if (!response.ok) {
+                return;
+            }
+
+            const data = await response.json();
+            directoryUrl.value = data.directoryUrl ?? "";
+            ohttpRelayUrl.value = data.ohttpRelayUrl ?? "";
+        });
+    });
+</script>

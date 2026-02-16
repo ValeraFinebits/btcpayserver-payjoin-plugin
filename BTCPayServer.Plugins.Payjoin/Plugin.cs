@@ -16,6 +16,8 @@ public class Plugin : BaseBTCPayServerPlugin
     {
         applicationBuilder.AddUIExtension("header-nav", "TemplatePluginHeaderNav");
         applicationBuilder.AddHostedService<ApplicationPartsLogger>();
+        applicationBuilder.AddSingleton<PayjoinDemoContext>();
+        applicationBuilder.AddHostedService<PayjoinDemoInitializer>();
         applicationBuilder.AddHostedService<PluginMigrationRunner>();
         applicationBuilder.AddSingleton<PayjoinPluginService>();
         applicationBuilder.AddSingleton<PayjoinPluginDbContextFactory>();
