@@ -8,12 +8,15 @@ on:
 permissions:
   contents: read
 
+env:
+  RUSTUP_TOOLCHAIN: 1.85
+
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
 
     runs-on: ${{ matrix.os }}
 
@@ -27,6 +30,16 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+
+      - name: Install Rust 1.85.0
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Use cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate C# bindings and native binaries
+        working-directory: rust-payjoin/payjoin-ffi/csharp
+        run: bash ./scripts/generate_bindings.sh
 
       - name: Restore
         run: dotnet restore "BTCPayServer.Plugins.Payjoin.sln"
