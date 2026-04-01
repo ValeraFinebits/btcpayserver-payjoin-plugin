@@ -36,6 +36,11 @@ jobs:
 
       - name: Use cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "rust-payjoin -> rust-payjoin/target"
+
+      - name: Set up Cargo lockfile for rust-payjoin
+        run: cp rust-payjoin/Cargo-recent.lock rust-payjoin/Cargo.lock
 
       - name: Generate C# bindings and native binaries
         working-directory: rust-payjoin/payjoin-ffi/csharp
