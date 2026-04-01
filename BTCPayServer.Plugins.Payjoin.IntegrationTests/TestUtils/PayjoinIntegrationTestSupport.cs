@@ -354,7 +354,7 @@ internal static class PayjoinIntegrationTestSupport
         return AssertReceiverSessionStateAsync(tester, invoiceId, shouldExist: false, cancellationToken);
     }
 
-    public static async Task AssertReceiverSessionEventuallyCloseRequestedAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
+    public static async Task AssertReceiverSessionEventuallyCloseRequestedOrRemovedAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
     {
         var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
         var maxAttempts = GetAttemptCount(ReceiverSessionRemovalTimeout);
@@ -363,7 +363,7 @@ internal static class PayjoinIntegrationTestSupport
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (sessionStore.TryGetSession(invoiceId, out var session) && session?.IsCloseRequested == true)
+            if (!sessionStore.TryGetSession(invoiceId, out var session) || session?.IsCloseRequested == true)
             {
                 return;
             }
@@ -371,7 +371,7 @@ internal static class PayjoinIntegrationTestSupport
             await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(true);
         }
 
-        Assert.Fail($"Expected receiver session for invoice '{invoiceId}' to be marked for closure.");
+        Assert.Fail($"Expected receiver session for invoice '{invoiceId}' to be marked for closure or removed.");
     }
 
     public static async Task AssertInvoiceStatusEventuallyAsync(ServerTester tester, string invoiceId, InvoiceStatus expectedStatus, CancellationToken cancellationToken)

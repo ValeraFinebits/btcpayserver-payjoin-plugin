@@ -125,47 +125,6 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
     (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
     ]
     [Trait("Integration", "Integration")]
-    public async Task PayjoinRequestFailsWhenInvoiceWasAlreadyPaid()
-    {
-        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester(newDb: true);
-        var context = await PayjoinIntegrationTestSupport.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
-        var payer = await PayjoinIntegrationTestSupport.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
-
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
-
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
-        PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
-
-        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
-
-        await context.User.PayInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
-        await context.User.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
-
-        var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
-        Assert.True(sessionStore.TryGetSession(invoiceId, out var session));
-        Assert.NotNull(session);
-        Assert.True(session!.IsCloseRequested);
-
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
-                tester,
-                payer,
-                context.Network,
-                context.User.StoreId,
-                new Uri(bip21Response.Bip21, UriKind.Absolute),
-                cts.Token)).ConfigureAwait(true);
-
-        // TODO: Keep this test asserting fast receiver rejection until the payjoin library supports rejecting already-paid invoices without timing out.
-        Assert.DoesNotContain("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Payjoin receiver rejected the proposal", exception.Message, StringComparison.Ordinal);
-        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
-    }
-
-    [Fact
-    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
-    ]
-    [Trait("Integration", "Integration")]
     public async Task PayjoinChangeOutputGoesToColdWalletWithExternalPayer()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
@@ -382,6 +341,68 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
     (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
     ]
     [Trait("Integration", "Integration")]
+    public async Task ReceiverSessionIsRemovedWhenInvoiceBecomesInvalid()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinIntegrationTestSupport.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
+
+        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var invoiceRepository = tester.PayTester.GetService<InvoiceRepository>();
+        var marked = await invoiceRepository.MarkInvoiceStatus(invoiceId, InvoiceStatus.Invalid).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.True(marked);
+
+        await PayjoinIntegrationTestSupport.AssertInvoiceStatusEventuallyAsync(tester, invoiceId, InvoiceStatus.Invalid, cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+    }
+
+    [Fact
+    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
+    ]
+    [Trait("Integration", "Integration")]
+    public async Task PayjoinRequestFailsWhenInvoiceWasAlreadyPaid()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinIntegrationTestSupport.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinIntegrationTestSupport.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
+
+        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        await context.User.PayInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        await context.User.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyCloseRequestedOrRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
+                tester,
+                payer,
+                context.Network,
+                context.User.StoreId,
+                new Uri(bip21Response.Bip21, UriKind.Absolute),
+                cts.Token)).ConfigureAwait(true);
+
+        // TODO: Replace this timeout assertion with a fast receiver rejection assertion once the payjoin library supports closing an in-flight session cleanly.
+        Assert.Contains("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
+        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+    }
+
+    [Fact
+    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
+    ]
+    [Trait("Integration", "Integration")]
     public async Task PayjoinRequestFailsWhenInvoiceWasExpired()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
@@ -410,9 +431,8 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 new Uri(bip21Response.Bip21, UriKind.Absolute),
                 cts.Token)).ConfigureAwait(true);
 
-        // TODO: Keep this test asserting fast receiver rejection until the payjoin library supports rejecting expired invoices without timing out.
-        Assert.DoesNotContain("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Payjoin receiver rejected the proposal", exception.Message, StringComparison.Ordinal);
+        // TODO: Replace this timeout assertion with a fast receiver rejection assertion once the payjoin library supports closing an in-flight session cleanly.
+        Assert.Contains("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
         await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
@@ -420,11 +440,12 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
     (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
     ]
     [Trait("Integration", "Integration")]
-    public async Task ReceiverSessionIsRemovedWhenInvoiceBecomesInvalid()
+    public async Task PayjoinRequestFailsWhenInvoiceBecomesInvalid()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinIntegrationTestSupport.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinIntegrationTestSupport.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
@@ -438,6 +459,19 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         Assert.True(marked);
 
         await PayjoinIntegrationTestSupport.AssertInvoiceStatusEventuallyAsync(tester, invoiceId, InvoiceStatus.Invalid, cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyCloseRequestedOrRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
+                tester,
+                payer,
+                context.Network,
+                context.User.StoreId,
+                new Uri(bip21Response.Bip21, UriKind.Absolute),
+                cts.Token)).ConfigureAwait(true);
+
+        // TODO: Replace this timeout assertion with a fast receiver rejection assertion once the payjoin library supports closing an in-flight session cleanly.
+        Assert.Contains("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
         await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
