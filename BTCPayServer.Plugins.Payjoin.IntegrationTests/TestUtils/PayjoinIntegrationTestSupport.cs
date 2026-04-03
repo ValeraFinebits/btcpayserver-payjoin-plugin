@@ -183,9 +183,20 @@ internal static class PayjoinIntegrationTestSupport
         BTCPayNetwork network,
         CancellationToken cancellationToken)
     {
+        return await CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, merchant, payer, network, preProposalPollDelay: null, cancellationToken).ConfigureAwait(true);
+    }
+
+    public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaExternalPayjoinPayerAsync(
+        ServerTester tester,
+        TestAccount merchant,
+        TestAccount payer,
+        BTCPayNetwork network,
+        TimeSpan? preProposalPollDelay,
+        CancellationToken cancellationToken)
+    {
         var payjoinContext = await PreparePayjoinInvoiceAsync(tester, merchant, network, cancellationToken).ConfigureAwait(true);
         var payjoinPayer = new PayjoinTestPayer(tester, payer, network);
-        var paymentResult = await payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, cancellationToken).ConfigureAwait(true);
+        var paymentResult = await payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, preProposalPollDelay, cancellationToken).ConfigureAwait(true);
 
         return await FinalizePayjoinPaymentAsync(tester, merchant, payjoinContext, paymentResult.TransactionId, cancellationToken).ConfigureAwait(true);
     }
@@ -196,13 +207,14 @@ internal static class PayjoinIntegrationTestSupport
         BTCPayNetwork network,
         string storeId,
         Uri paymentUrl,
+        TimeSpan? preProposalPollDelay,
         CancellationToken cancellationToken)
     {
         var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
         Assert.NotNull(storeSettings.OhttpRelayUrl);
 
         var payjoinPayer = new PayjoinTestPayer(tester, payer, network);
-        var paymentResult = await payjoinPayer.PayAsync(paymentUrl, storeSettings.OhttpRelayUrl, cancellationToken).ConfigureAwait(true);
+        var paymentResult = await payjoinPayer.PayAsync(paymentUrl, storeSettings.OhttpRelayUrl, preProposalPollDelay, cancellationToken).ConfigureAwait(true);
         Assert.False(string.IsNullOrWhiteSpace(paymentResult.TransactionId), "TransactionId must be returned on success");
 
         return paymentResult.TransactionId;

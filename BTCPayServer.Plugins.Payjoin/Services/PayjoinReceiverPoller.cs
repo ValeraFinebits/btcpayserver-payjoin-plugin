@@ -1,6 +1,6 @@
+using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
 using BTCPayServer.Payments;
-using BTCPayServer.Client.Models;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
@@ -11,6 +11,7 @@ using NBXplorer;
 using NBXplorer.DerivationStrategy;
 using Payjoin;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -22,6 +23,7 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinReceiverPoller : BackgroundService
 {
+    private static readonly TimeSpan RelayRequestTimeout = TimeSpan.FromSeconds(10);
     private static readonly Action<ILogger, Exception?> LogPayjoinReceiverPollingFailed =
         LoggerMessage.Define(LogLevel.Warning, new EventId(1, nameof(LogPayjoinReceiverPollingFailed)),
             "Payjoin receiver polling failed.");
@@ -49,6 +51,9 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinReceiverSessionRemoved =
         LoggerMessage.Define<string, string>(LogLevel.Information, new EventId(9, nameof(LogPayjoinReceiverSessionRemoved)),
             "Payjoin receiver session removed for {InvoiceId}: {Reason}");
+    private static readonly Action<ILogger, string, string, Exception?> LogPayjoinReceiverInputContributionFailed =
+        LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(10, nameof(LogPayjoinReceiverInputContributionFailed)),
+            "Payjoin receiver could not contribute inputs for {InvoiceId}: {Message}");
 
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -196,18 +201,16 @@ public sealed class PayjoinReceiverPoller : BackgroundService
                 await ProcessOutputsUnknownAsync(outputsUnknown.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsOutputs wantsOutputs:
-                await ProcessWantsOutputsAsync(wantsOutputs.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, stoppingToken).ConfigureAwait(false);
+                await ProcessWantsOutputsAsync(session, wantsOutputs.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsInputs wantsInputs:
-                await ProcessWantsInputsAsync(wantsInputs.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, stoppingToken).ConfigureAwait(false);
+                await ProcessWantsInputsAsync(session, wantsInputs.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, stoppingToken).ConfigureAwait(false);
                 break;
-            // TODO: Persist the contributed receiver input metadata in session state and restore it here.
             case ReceiveSession.WantsFeeRange wantsFeeRange:
-                await ProcessWantsFeeRangeAsync(wantsFeeRange.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, null, stoppingToken).ConfigureAwait(false);
+                await ProcessWantsFeeRangeAsync(wantsFeeRange.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, GetRequiredContributedInputs(session, nameof(WantsFeeRange)), stoppingToken).ConfigureAwait(false);
                 break;
-            // TODO: Persist the contributed receiver input metadata in session state and restore it here.
             case ReceiveSession.ProvisionalProposal provisionalProposal:
-                await ProcessProvisionalProposalAsync(provisionalProposal.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, null, stoppingToken).ConfigureAwait(false);
+                await ProcessProvisionalProposalAsync(provisionalProposal.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, GetRequiredContributedInputs(session, nameof(ProvisionalProposal)), stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.PayjoinProposal payjoinProposal:
                 await PostPayjoinProposalAsync(payjoinProposal.inner, persister, session.OhttpRelayUrl, stoppingToken).ConfigureAwait(false);
@@ -284,8 +287,10 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         message.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(request.contentType);
 
         var client = _httpClientFactory.CreateClient(nameof(PayjoinReceiverPoller));
-        using var response = await client.SendAsync(message, stoppingToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsByteArrayAsync(stoppingToken).ConfigureAwait(false);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        timeoutCts.CancelAfter(RelayRequestTimeout);
+        using var response = await client.SendAsync(message, timeoutCts.Token).ConfigureAwait(false);
+        var responseBody = await response.Content.ReadAsByteArrayAsync(timeoutCts.Token).ConfigureAwait(false);
 
         using var transition = initialized.ProcessResponse(responseBody, requestResponse.clientResponse);
         using var outcome = transition.Save(persister);
@@ -361,10 +366,11 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     {
         using var transition = proposal.IdentifyReceiverOutputs(new ReceiverScriptOwnedCallback(receiverScript));
         using var wantsOutputs = transition.Save(persister);
-        await ProcessWantsOutputsAsync(wantsOutputs, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, stoppingToken).ConfigureAwait(false);
+        await ProcessWantsOutputsAsync(GetRequiredSessionState(invoiceId), wantsOutputs, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, stoppingToken).ConfigureAwait(false);
     }
 
     private async Task ProcessWantsOutputsAsync(
+        PayjoinReceiverSessionState session,
         WantsOutputs proposal,
         JsonReceiverSessionPersister persister,
         byte[] receiverScript,
@@ -387,7 +393,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
             using var transition = modified.CommitOutputs();
             using var wantsInputs = transition.Save(persister);
             LogPayjoinReceiverPreparedExactPaymentOutputs(_logger, invoiceId, null);
-            await ProcessWantsInputsAsync(wantsInputs, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, stoppingToken).ConfigureAwait(false);
+            await ProcessWantsInputsAsync(session, wantsInputs, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, stoppingToken).ConfigureAwait(false);
         }
         catch (OutputSubstitutionException ex)
         {
@@ -476,21 +482,12 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         var coldWalletDerivation = await TryParseColdWalletDerivationAsync(storeId, network).ConfigureAwait(false);
         if (coldWalletDerivation is not null)
         {
-            var coldChangeAddress = await client.GetUnusedAsync(coldWalletDerivation, DerivationFeature.Deposit, 0, false, cancellationToken).ConfigureAwait(false);
+            var coldChangeAddress = await client.GetUnusedAsync(coldWalletDerivation, DerivationFeature.Change, 0, true, cancellationToken).ConfigureAwait(false);
             var coldChangeScript = coldChangeAddress?.ScriptPubKey?.ToBytes();
             if (coldChangeScript is not null && coldChangeScript.Length > 0 && !coldChangeScript.SequenceEqual(receiverScript))
             {
                 return coldChangeScript;
             }
-        }
-
-        var (_, coins) = await GetReceiverInputsAsync(storeId, invoiceId, cancellationToken).ConfigureAwait(false);
-        var receiverChangeScript = coins
-            .Select(c => c.ScriptPubKey.ToBytes())
-            .FirstOrDefault(script => script.Length > 0 && !script.SequenceEqual(receiverScript));
-        if (receiverChangeScript is not null)
-        {
-            return receiverChangeScript;
         }
 
         var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false);
@@ -506,7 +503,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
             return null;
         }
 
-        var changeAddress = await client.GetUnusedAsync(derivationScheme.AccountDerivation, DerivationFeature.Change, 0, false, cancellationToken).ConfigureAwait(false);
+        var changeAddress = await client.GetUnusedAsync(derivationScheme.AccountDerivation, DerivationFeature.Change, 0, true, cancellationToken).ConfigureAwait(false);
         var generatedReceiverChangeScriptPubKey = changeAddress?.ScriptPubKey;
         if (generatedReceiverChangeScriptPubKey is null)
         {
@@ -541,6 +538,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     }
 
     private async Task ProcessWantsInputsAsync(
+        PayjoinReceiverSessionState session,
         WantsInputs proposal,
         JsonReceiverSessionPersister persister,
         byte[] receiverScript,
@@ -552,11 +550,12 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         var (receiverInputs, receiverCoins) = await GetReceiverInputsAsync(storeId, invoiceId, stoppingToken).ConfigureAwait(false);
 
         WantsInputs? withInputs = null;
-        ReceivedCoin[]? contributedCoins = null;
+        PayjoinReceiverContributedInput[]? contributedInputs = null;
+        var contributionFailures = new List<string>();
         try
         {
             // TODO: Restore `proposal.TryPreservingPrivacy(receiverInputs)` only after rust-payjoin/payjoin-ffi lets us identify which `ReceivedCoin` was actually selected.
-            // TODO: We must pass only the truly contributed coin(s) into `contributedCoins`; otherwise the signing step can treat unrelated wallet inputs as receiver-owned and produce an invalid proposal.
+            // TODO: We must persist only the truly contributed coin(s) into `contributedInputs`; otherwise the signing step can treat unrelated wallet inputs as receiver-owned and produce an invalid proposal.
             var orderedCandidates = receiverCoins
                 .Select((coin, index) => new { coin, index })
                 .OrderBy(x => x.coin.Coin.Amount.Satoshi)
@@ -567,23 +566,32 @@ public sealed class PayjoinReceiverPoller : BackgroundService
                 try
                 {
                     withInputs = proposal.ContributeInputs(new[] { receiverInputs[index] });
-                    contributedCoins = new[] { receiverCoins[index] };
+                    contributedInputs = new[] { CreateContributedInput(receiverCoins[index]) };
                     break;
                 }
-                catch (InputContributionException)
+                catch (InputContributionException ex)
                 {
+                    contributionFailures.Add($"candidate '{receiverCoins[index].OutPoint}' rejected: {ex.Message}");
                 }
             }
 
-            if (withInputs is null || contributedCoins is null)
+            if (withInputs is null || contributedInputs is null)
             {
+                var failureMessage = contributionFailures.Count switch
+                {
+                    > 3 => string.Join(" | ", contributionFailures.Take(3)) + " | ...",
+                    > 0 => string.Join(" | ", contributionFailures),
+                    _ => "no confirmed receiver coins available"
+                };
+                LogPayjoinReceiverInputContributionFailed(_logger, invoiceId, failureMessage, null);
                 RemoveSession(invoiceId, "no receiver input available for payjoin contribution");
                 return;
             }
 
+            session.SetContributedInputs(contributedInputs);
             using var transition = withInputs.CommitInputs();
             using var wantsFeeRange = transition.Save(persister);
-            await ProcessWantsFeeRangeAsync(wantsFeeRange, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, contributedCoins, stoppingToken).ConfigureAwait(false);
+            await ProcessWantsFeeRangeAsync(wantsFeeRange, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, contributedInputs, stoppingToken).ConfigureAwait(false);
         }
         finally
         {
@@ -629,13 +637,13 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         SystemUri ohttpRelayUrl,
         string storeId,
         string invoiceId,
-        ReceivedCoin[]? receiverCoins,
+        PayjoinReceiverContributedInput[] receiverInputs,
         CancellationToken stoppingToken)
     {
         // TODO: Replace hardcoded fee range with values from NBXplorer fee estimation.
         using var transition = proposal.ApplyFeeRange(1, 10);
         using var provisional = transition.Save(persister);
-        await ProcessProvisionalProposalAsync(provisional, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, receiverCoins, stoppingToken).ConfigureAwait(false);
+        await ProcessProvisionalProposalAsync(provisional, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, receiverInputs, stoppingToken).ConfigureAwait(false);
     }
 
     private async Task ProcessProvisionalProposalAsync(
@@ -645,9 +653,10 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         SystemUri ohttpRelayUrl,
         string storeId,
         string invoiceId,
-        ReceivedCoin[]? receiverCoins,
+        PayjoinReceiverContributedInput[] receiverInputs,
         CancellationToken stoppingToken)
     {
+        // TODO: Extract receiver proposal signing and PSBT normalization into a dedicated service so this poller stays focused on session orchestration.
         var network = _networkProvider.GetNetwork<BTCPayNetwork>("BTC") ?? throw new InvalidOperationException("BTC network not available");
         var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false) ?? throw new InvalidOperationException($"Store {storeId} not found");
         var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
@@ -686,17 +695,13 @@ public sealed class PayjoinReceiverPoller : BackgroundService
             proposalPsbt = updated.PSBT;
         }
 
-        foreach (var input in proposalPsbt.Inputs)
-        {
-            if (receiverCoins is null || !TryGetReceiverKeyPath(receiverCoins, input.PrevOut, out var coinKeyPath))
-            {
-                continue;
-            }
-
-            var childKey = accountKey.Derive(coinKeyPath);
-            input.Sign(childKey.PrivateKey);
-            input.TryFinalizeInput(out _);
-        }
+        EnsureContributedInputsPresent(proposalPsbt, receiverInputs);
+        derivationScheme.RebaseKeyPaths(proposalPsbt);
+        proposalPsbt.RebaseKeyPaths(signingKeySettings.AccountKey, rootedKeyPath);
+        proposalPsbt.SignAll(derivationScheme.AccountDerivation, accountKey, rootedKeyPath);
+        FinalizeContributedInputs(proposalPsbt, receiverInputs);
+        ClearSenderInputFinalization(proposalPsbt, receiverInputs);
+        ClearPartialSignatures(proposalPsbt);
 
         foreach (var input in proposalPsbt.Inputs)
         {
@@ -708,32 +713,89 @@ public sealed class PayjoinReceiverPoller : BackgroundService
             output.HDKeyPaths.Clear();
         }
 
-        using var transition = proposal.FinalizeProposal(new SigningProcessPsbt(psbtToSign, proposalPsbt.ToBase64()));
+        using var transition = proposal.FinalizeProposal(new SigningProcessPsbt(proposalPsbt.ToBase64()));
         using var payjoinProposal = transition.Save(persister);
         await PostPayjoinProposalAsync(payjoinProposal, persister, ohttpRelayUrl, stoppingToken).ConfigureAwait(false);
     }
 
-    private static bool TryGetReceiverKeyPath(ReceivedCoin[]? receiverCoins, OutPoint prevOut, out KeyPath coinKeyPath)
+    private static PayjoinReceiverContributedInput[] GetRequiredContributedInputs(PayjoinReceiverSessionState session, string stateName)
     {
-        coinKeyPath = default!;
-
-        if (receiverCoins is null)
+        var contributedInputs = session.GetContributedInputs();
+        if (contributedInputs.Length == 0)
         {
-            return false;
+            throw new InvalidOperationException($"Persisted contributed receiver inputs are missing for replayed {stateName} state.");
         }
 
-        foreach (var coin in receiverCoins)
+        return contributedInputs;
+    }
+
+    private PayjoinReceiverSessionState GetRequiredSessionState(string invoiceId)
+    {
+        if (_sessionStore.TryGetSession(invoiceId, out var session) && session is not null)
         {
-            if (coin.OutPoint != prevOut)
+            return session;
+        }
+
+        throw new InvalidOperationException($"Receiver session '{invoiceId}' is no longer available.");
+    }
+
+    private static PayjoinReceiverContributedInput CreateContributedInput(ReceivedCoin coin)
+    {
+        return new PayjoinReceiverContributedInput(coin.OutPoint, coin.KeyPath);
+    }
+
+    private static void EnsureContributedInputsPresent(PSBT proposalPsbt, PayjoinReceiverContributedInput[] receiverInputs)
+    {
+        var missingInputs = receiverInputs
+            .Where(receiverInput => proposalPsbt.Inputs.All(input => input.PrevOut != receiverInput.OutPoint))
+            .Select(receiverInput => receiverInput.OutPoint.ToString())
+            .ToArray();
+
+        if (missingInputs.Length == 0)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException($"Provisional proposal is missing contributed receiver inputs: {string.Join(", ", missingInputs)}");
+    }
+
+    private static void FinalizeContributedInputs(PSBT proposalPsbt, PayjoinReceiverContributedInput[] receiverInputs)
+    {
+        // TODO: Collapse the receiver-input finalization and sender-input cleanup steps into a single proposal-normalization pipeline if this PSBT policy grows further.
+        foreach (var input in proposalPsbt.Inputs)
+        {
+            if (!receiverInputs.Any(receiverInput => receiverInput.OutPoint == input.PrevOut))
             {
                 continue;
             }
 
-            coinKeyPath = coin.KeyPath;
-            return true;
+            if (!input.TryFinalizeInput(out _))
+            {
+                throw new InvalidOperationException($"Receiver input '{input.PrevOut}' could not be finalized.");
+            }
         }
+    }
 
-        return false;
+    private static void ClearSenderInputFinalization(PSBT proposalPsbt, PayjoinReceiverContributedInput[] receiverInputs)
+    {
+        foreach (var input in proposalPsbt.Inputs)
+        {
+            if (receiverInputs.Any(receiverInput => receiverInput.OutPoint == input.PrevOut))
+            {
+                continue;
+            }
+
+            input.FinalScriptSig = null;
+            input.FinalScriptWitness = null;
+        }
+    }
+
+    private static void ClearPartialSignatures(PSBT proposalPsbt)
+    {
+        foreach (var input in proposalPsbt.Inputs)
+        {
+            input.PartialSigs.Clear();
+        }
     }
 
     private async Task PostPayjoinProposalAsync(
@@ -758,8 +820,10 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         message.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(request.contentType);
 
         var client = _httpClientFactory.CreateClient(nameof(PayjoinReceiverPoller));
-        using var response = await client.SendAsync(message, stoppingToken).ConfigureAwait(false);
-        return await response.Content.ReadAsByteArrayAsync(stoppingToken).ConfigureAwait(false);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        timeoutCts.CancelAfter(RelayRequestTimeout);
+        using var response = await client.SendAsync(message, timeoutCts.Token).ConfigureAwait(false);
+        return await response.Content.ReadAsByteArrayAsync(timeoutCts.Token).ConfigureAwait(false);
     }
 
     private bool TryGetReceiverScript(PayjoinReceiverSessionState session, out byte[] script)
@@ -808,23 +872,13 @@ public sealed class PayjoinReceiverPoller : BackgroundService
 
     private sealed class SigningProcessPsbt : ProcessPsbt
     {
-        private readonly string _expectedPsbt;
         private readonly string _signedPsbt;
 
-        public SigningProcessPsbt(string expectedPsbt, string signedPsbt)
+        public SigningProcessPsbt(string signedPsbt)
         {
-            _expectedPsbt = expectedPsbt;
             _signedPsbt = signedPsbt;
         }
 
-        public string Callback(string psbt)
-        {
-            if (!string.Equals(psbt, _expectedPsbt, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Provisional proposal PSBT changed before signing.");
-            }
-
-            return _signedPsbt;
-        }
+        public string Callback(string _psbt) => _signedPsbt;
     }
 }

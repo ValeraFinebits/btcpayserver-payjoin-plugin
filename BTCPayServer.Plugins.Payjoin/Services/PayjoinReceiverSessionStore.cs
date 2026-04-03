@@ -1,11 +1,12 @@
 using BTCPayServer.Client.Models;
+using BTCPayServer.Data;
+using NBitcoin;
+using Payjoin;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using SystemUri = System.Uri;
-using BTCPayServer.Data;
-using Payjoin;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -93,6 +94,9 @@ public sealed class PayjoinReceiverSessionStore
 public sealed class PayjoinReceiverSessionState
 {
     private readonly ConcurrentQueue<string> _events = new();
+    // TODO: Move this receiver signing context into a dedicated component if payjoin proposal signing is extracted from the poller.
+    // TODO: Replace this BTCPay-specific persisted metadata with selected-input data from rust-payjoin/payjoin-ffi if that becomes available.
+    private PayjoinReceiverContributedInput[] _contributedInputs = Array.Empty<PayjoinReceiverContributedInput>();
 
     public PayjoinReceiverSessionState(
         string invoiceId,
@@ -133,6 +137,28 @@ public sealed class PayjoinReceiverSessionState
         return _events.ToArray();
     }
 
+    internal void SetContributedInputs(params PayjoinReceiverContributedInput[] contributedInputs)
+    {
+        _contributedInputs = contributedInputs.ToArray();
+        Touch();
+    }
+
+    internal PayjoinReceiverContributedInput[] GetContributedInputs()
+    {
+        return _contributedInputs.ToArray();
+    }
+
+    internal void ClearContributedInputs()
+    {
+        if (_contributedInputs.Length == 0)
+        {
+            return;
+        }
+
+        _contributedInputs = Array.Empty<PayjoinReceiverContributedInput>();
+        Touch();
+    }
+
     internal bool RequestClose(InvoiceStatus invoiceStatus)
     {
         var changed = !IsCloseRequested || CloseInvoiceStatus != invoiceStatus;
@@ -151,3 +177,6 @@ public sealed class PayjoinReceiverSessionState
         UpdatedAt = DateTimeOffset.UtcNow;
     }
 }
+
+// TODO: Rename or replace this type with a more explicit receiver signing context model if it grows beyond persisted input identity metadata.
+internal sealed record PayjoinReceiverContributedInput(OutPoint OutPoint, KeyPath KeyPath);

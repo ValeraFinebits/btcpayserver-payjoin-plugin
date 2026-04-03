@@ -42,11 +42,16 @@ internal sealed class PayjoinTestPayer
 
     public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, CancellationToken cancellationToken)
     {
+        return await PayAsync(paymentUrl, ohttpRelayUrl, preProposalPollDelay: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(paymentUrl);
         ArgumentNullException.ThrowIfNull(ohttpRelayUrl);
 
         var senderPsbt = await CreateSenderPsbtAsync(paymentUrl, cancellationToken).ConfigureAwait(false);
-        var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrl, senderPsbt, cancellationToken).ConfigureAwait(false);
+        var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrl, senderPsbt, preProposalPollDelay, cancellationToken).ConfigureAwait(false);
 
         return await FinalizeAndBroadcastAsync(proposalPsbt, cancellationToken).ConfigureAwait(false);
     }
@@ -160,7 +165,7 @@ internal sealed class PayjoinTestPayer
         return createResult.PSBT;
     }
 
-    private async Task<PSBT> RequestProposalAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, PSBT senderPsbt, CancellationToken cancellationToken)
+    private async Task<PSBT> RequestProposalAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, PSBT senderPsbt, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
     {
         string? proposalPsbtBase64 = null;
         var senderPersister = new InMemorySenderPersister();
@@ -177,6 +182,10 @@ internal sealed class PayjoinTestPayer
         try
         {
             var current = withReplyTransition.Save(senderPersister);
+            if (preProposalPollDelay is { } delay && delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
             proposalPsbtBase64 = await PollForProposalAsync(current, senderPersister, ohttpRelayUrl, cancellationToken).ConfigureAwait(false);
         }
         catch (SenderPersistedException.ResponseException ex)
