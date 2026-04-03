@@ -207,6 +207,17 @@ internal static class PayjoinIntegrationTestSupport
         BTCPayNetwork network,
         string storeId,
         Uri paymentUrl,
+        CancellationToken cancellationToken)
+    {
+        return await PayInvoiceViaExternalPayjoinPayerAsync(tester, payer, network, storeId, paymentUrl, preProposalPollDelay: null, cancellationToken).ConfigureAwait(true);
+    }
+
+    public static async Task<string> PayInvoiceViaExternalPayjoinPayerAsync(
+        ServerTester tester,
+        TestAccount payer,
+        BTCPayNetwork network,
+        string storeId,
+        Uri paymentUrl,
         TimeSpan? preProposalPollDelay,
         CancellationToken cancellationToken)
     {
