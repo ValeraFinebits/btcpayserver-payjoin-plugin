@@ -29,6 +29,7 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<PayjoinPluginService>();
         applicationBuilder.AddSingleton<IPayjoinStoreSettingsRepository, PayjoinStoreSettingsRepository>();
         applicationBuilder.AddSingleton<PayjoinPluginDbContextFactory>();
+        applicationBuilder.AddSingleton<IRunTestPaymentService, RunTestPaymentService>();
         applicationBuilder.AddDbContext<PayjoinPluginDbContext>((provider, o) =>
         {
             var factory = provider.GetRequiredService<PayjoinPluginDbContextFactory>();
