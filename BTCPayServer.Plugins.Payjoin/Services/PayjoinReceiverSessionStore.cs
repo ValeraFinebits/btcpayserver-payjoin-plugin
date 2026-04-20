@@ -97,6 +97,7 @@ public sealed class PayjoinReceiverSessionState
     // TODO: Move this receiver signing context into a dedicated component if payjoin proposal signing is extracted from the poller.
     // TODO: Replace this BTCPay-specific persisted metadata with selected-input data from rust-payjoin/payjoin-ffi if that becomes available.
     private PayjoinReceiverContributedInput[] _contributedInputs = Array.Empty<PayjoinReceiverContributedInput>();
+    private bool _finalInitializedPollAfterCloseRequestAvailable;
 
     public PayjoinReceiverSessionState(
         string invoiceId,
@@ -166,10 +167,28 @@ public sealed class PayjoinReceiverSessionState
         CloseInvoiceStatus = invoiceStatus;
         if (changed)
         {
+            _finalInitializedPollAfterCloseRequestAvailable = true;
             Touch();
         }
 
         return changed;
+    }
+
+    internal bool CanPollInitializedAfterCloseRequest()
+    {
+        return IsCloseRequested && _finalInitializedPollAfterCloseRequestAvailable;
+    }
+
+    internal bool TryConsumeInitializedPollAfterCloseRequest()
+    {
+        if (!CanPollInitializedAfterCloseRequest())
+        {
+            return false;
+        }
+
+        _finalInitializedPollAfterCloseRequestAvailable = false;
+        Touch();
+        return true;
     }
 
     internal void Touch()
