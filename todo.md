@@ -59,6 +59,8 @@ These items are complete enough that they should not be reopened without a concr
 
 The remaining blocker is not architecture anymore. It is live validation of the combined path on `chavic/checkout-model-seam`.
 
+Receiver-session orchestration in `PayjoinReceiverPoller` is still too fragile beyond single test purchases because session handling remains sequential. This should be treated as a blocker in the active work.
+
 ### 1. Prepare The Local Test Environment
 
 - make sure BTCPay is loading this plugin build
@@ -101,6 +103,10 @@ This next phase is about making the current base easier to validate, maintain, a
 ### 1. Fork Alignment
 
 - inventory the plugin's required `rust-payjoin` FFI surface
+  - direct close-request support
+  - receiver outputs or original proposal PSBT access
+  - selected receiver input identification for `proposal.TryPreservingPrivacy(receiverInputs)`
+  - selected-input metadata support needed to replace BTCPay-specific persisted metadata
 - compare that surface against the current local `rust-payjoin` line
 - decide whether alignment should happen immediately or in stages
 - execute the chosen alignment plan
@@ -125,6 +131,11 @@ Tighten the remaining rough edges in the receiver path:
 - better fee-range sourcing
 - better receiver-owned script handling
 - removal of temporary input-contribution shortcuts
+- tighter tracking of truly contributed receiver inputs
+- remove the receiver-output fallback to `invoice.Due` and source those values from the incoming proposal
+- validate that the invoice amount matches the receiver amount in the incoming proposal before replacement outputs are built
+- simplify receiver proposal signing, PSBT normalization, and signing-context ownership if the poller flow keeps growing
+- clarify the proposal-normalization pipeline if receiver-input finalization and sender-input cleanup continue to diverge
 
 ### 4. Diagnostics
 
@@ -134,10 +145,17 @@ Improve observability so failures are easier to understand:
 - cleanup reasons
 - initialization fallback reasons
 - integration-test failure visibility
+- merchant-facing failure reasons for payjoin setup, fallback, and cleanup paths
+- payer-facing failure reasons when payjoin negotiation is rejected, abandoned, or falls back to plain BIP21
+- clearer explanation of when payjoin was unavailable versus when plain BIP21 was intentionally used
 
 ### 5. Shipping Cutoff
 
 Decide which remaining issues are must-fix before broader shipping claims and which can remain temporary debt.
+
+- decide whether falling back to unconfirmed merchant coins is acceptable when advertising payjoin availability
+- decide whether the OHTTP key cache lifetime should remain fixed or become configurable
+- remove the test endpoint from `UIPayJoinController` before making broader shipping claims
 
 ## Later Treasury-Oriented Work
 
