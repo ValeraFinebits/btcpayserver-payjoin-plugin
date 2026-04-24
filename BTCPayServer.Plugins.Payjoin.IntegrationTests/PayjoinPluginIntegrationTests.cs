@@ -38,6 +38,23 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
     (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
     ]
     [Trait("Integration", "Integration")]
+    public async Task CreateInvoiceAndPayItThroughThePayjoinPluginWithSameWalletPayer()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaSameWalletPayjoinPayerAsync(tester, context.User, context.Network, cts.Token).ConfigureAwait(true);
+
+        PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
+    }
+
+    [Fact
+    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
+    ]
+    [Trait("Integration", "Integration")]
     public async Task ExternalPayerSucceedsWhenReceiverProposalIsReplayedAcrossPollerTicks()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);

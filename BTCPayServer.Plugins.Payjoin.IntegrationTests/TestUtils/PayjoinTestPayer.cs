@@ -25,8 +25,9 @@ internal sealed class PayjoinTestPayer
     private readonly ExplorerClient _explorerClient;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly BTCPayWalletProvider _walletProvider;
+    private readonly bool _useReservedSenderChangeAddress;
 
-    public PayjoinTestPayer(ServerTester tester, TestAccount payer, BTCPayNetwork network)
+    public PayjoinTestPayer(ServerTester tester, TestAccount payer, BTCPayNetwork network, bool useReservedSenderChangeAddress = false)
     {
         ArgumentNullException.ThrowIfNull(tester);
         ArgumentNullException.ThrowIfNull(payer);
@@ -38,6 +39,7 @@ internal sealed class PayjoinTestPayer
         _explorerClient = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(network);
         _httpClientFactory = tester.PayTester.GetService<IHttpClientFactory>();
         _walletProvider = tester.PayTester.GetService<BTCPayWalletProvider>();
+        _useReservedSenderChangeAddress = useReservedSenderChangeAddress;
     }
 
     public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, CancellationToken cancellationToken)
@@ -117,6 +119,7 @@ internal sealed class PayjoinTestPayer
         var psbtRequest = new CreatePSBTRequest
         {
             RBF = _network.SupportRBF ? true : null,
+            ReserveChangeAddress = _useReservedSenderChangeAddress,
             FeePreference = new FeePreference
             {
                 ExplicitFeeRate = new FeeRate(ExplicitFeeRateSatoshiPerByte)

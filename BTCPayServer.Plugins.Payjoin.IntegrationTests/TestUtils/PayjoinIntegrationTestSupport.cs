@@ -155,6 +155,19 @@ internal static class PayjoinIntegrationTestSupport
         return await CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, merchant, payer, network, preProposalPollDelay: null, cancellationToken).ConfigureAwait(true);
     }
 
+    public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaSameWalletPayjoinPayerAsync(
+        ServerTester tester,
+        TestAccount user,
+        BTCPayNetwork network,
+        CancellationToken cancellationToken)
+    {
+        var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, user, network, cancellationToken).ConfigureAwait(true);
+        var payjoinPayer = new PayjoinTestPayer(tester, user, network, useReservedSenderChangeAddress: true);
+        var paymentResult = await payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, cancellationToken).ConfigureAwait(true);
+
+        return await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, user, payjoinContext, paymentResult.TransactionId, cancellationToken).ConfigureAwait(true);
+    }
+
     public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaExternalPayjoinPayerAsync(
         ServerTester tester,
         TestAccount merchant,
