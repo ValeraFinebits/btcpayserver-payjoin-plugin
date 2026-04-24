@@ -4,6 +4,14 @@ This file is the ordered execution plan for this repository.
 
 It is meant for contributors working from the plugin repo alone. Everything needed to understand the current direction is summarized here directly.
 
+## Alpha Release Checklist (High-Level)
+
+- [ ] session persistence
+- [ ] history integration
+- [ ] payjoin-cli sender/receiver e2e test integrated
+- [ ] a demo video
+- [ ] mainnet successes
+
 ## Project Goal
 
 Build a BTCPay Payjoin plugin that:
