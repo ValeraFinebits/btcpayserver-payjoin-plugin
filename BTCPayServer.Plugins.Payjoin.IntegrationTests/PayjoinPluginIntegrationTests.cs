@@ -436,7 +436,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         Assert.Contains("rejected", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
-        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
     [Fact
@@ -473,7 +473,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         Assert.Contains("rejected", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
-        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
     [Fact
@@ -512,7 +512,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         Assert.Contains("rejected", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
-        await PayjoinIntegrationTestSupport.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
 }
