@@ -1,3 +1,4 @@
+using BTCPayServer.Filters;
 using BTCPayServer.Plugins.Payjoin.Controllers;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
@@ -35,16 +36,13 @@ public class UIPayJoinControllerTests
     }
 
     [Fact]
-    public async Task RunTestPaymentReturnsNotFoundWhenCheatModeDisabled()
+    public void RunTestPaymentUsesCheatModeRoute()
     {
-        using var controller = CreateController(false);
+        var method = typeof(UIPayJoinController).GetMethod(nameof(UIPayJoinController.RunTestPayment));
 
-        var result = await controller.RunTestPayment(new RunTestPaymentRequest
-        {
-            InvoiceId = "invoice-1"
-        }, TestContext.Current.CancellationToken);
-
-        Assert.IsType<NotFoundResult>(result.Result);
+        Assert.NotNull(method);
+        var attribute = Assert.Single(method.GetCustomAttributes(typeof(CheatModeRouteAttribute), inherit: true));
+        Assert.IsType<CheatModeRouteAttribute>(attribute);
     }
 
     [Fact]

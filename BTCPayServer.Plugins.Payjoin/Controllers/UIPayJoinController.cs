@@ -1,6 +1,7 @@
 using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Client;
 using BTCPayServer.Data;
+using BTCPayServer.Filters;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
@@ -67,16 +68,12 @@ public class UIPayJoinController : Controller
     // This cheat-mode-only self-pay flow intentionally exercises the unusual case where
     // the sender and receiver paths operate against the same store wallet, so we can
     // catch same-wallet payjoin edge cases that do not show up with external payers.
+    [CheatModeRoute]
     [AllowAnonymous]
     [IgnoreAntiforgeryToken]
     [HttpPost("run-test-payment")]
     public async Task<ActionResult<RunTestPaymentResponse>> RunTestPayment([FromBody] RunTestPaymentRequest request, CancellationToken cancellationToken)
     {
-        if (!_env.CheatMode)
-        {
-            return NotFound();
-        }
-
         if (request is null)
         {
             throw new ArgumentNullException(nameof(request));
