@@ -58,6 +58,9 @@ jobs:
       - name: Start BTCPay test infrastructure
         run: docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml up -d dev
 
+      - name: Install plugin for integration tests
+        run: dotnet publish "BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-restore -o "$HOME/.btcpayserver/Plugins/BTCPayServer.Plugins.Payjoin"
+
       - name: Wait for BTCPay test infrastructure
         shell: bash
         run: |
