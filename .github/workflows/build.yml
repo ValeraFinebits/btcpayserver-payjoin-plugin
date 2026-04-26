@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  RUSTUP_TOOLCHAIN: 1.85
+  RUSTUP_TOOLCHAIN: 1.85.0
   TESTS_BTCRPCCONNECTION: "server=http://127.0.0.1:43782;ceiwHEbqWI83:DwubwWsoo3"
   TESTS_BTCNBXPLORERURL: "http://127.0.0.1:32838/"
   TESTS_POSTGRES: "User ID=postgres;Include Error Detail=true;Host=127.0.0.1;Port=39372;Database=btcpayserver"
