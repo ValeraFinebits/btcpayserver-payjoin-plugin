@@ -1,0 +1,50 @@
+name: Prepare CI Build
+description: Prepare the repository, toolchains, generated bindings, and Release build for CI jobs
+inputs:
+  dotnet-version:
+    description: .NET SDK version to install
+    required: false
+    default: 8.0.x
+  rust-toolchain:
+    description: Rust toolchain version to install
+    required: false
+    default: 1.85.0
+runs:
+  using: composite
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Set up .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.rust-toolchain }}
+
+    - name: Restore Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: rust-payjoin -> rust-payjoin/target
+
+    - name: Set up Cargo lockfile for rust-payjoin
+      shell: bash
+      run: cp rust-payjoin/Cargo-recent.lock rust-payjoin/Cargo.lock
+
+    - name: Generate C# bindings and native binaries
+      shell: bash
+      working-directory: rust-payjoin/payjoin-ffi/csharp
+      run: bash ./scripts/generate_bindings.sh
+
+    - name: Restore .NET dependencies
+      shell: bash
+      run: dotnet restore "BTCPayServer.Plugins.Payjoin.sln"
+
+    - name: Build solution
+      shell: bash
+      run: dotnet build "BTCPayServer.Plugins.Payjoin.sln" -c Release --no-restore

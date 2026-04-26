@@ -1,0 +1,43 @@
+name: Prepare Integration Test Environment
+description: Start BTCPay test infrastructure and install the Payjoin plugin for integration jobs
+inputs:
+  plugin-project-path:
+    description: Path to the plugin project file to publish for test loading
+    required: false
+    default: BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj
+  plugin-output-path:
+    description: Plugin directory where BTCPayServer test host loads plugins
+    required: false
+    default: $HOME/.btcpayserver/Plugins/BTCPayServer.Plugins.Payjoin
+runs:
+  using: composite
+  steps:
+    - name: Start BTCPay integration test infrastructure
+      shell: bash
+      run: docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml up -d dev
+
+    - name: Install Payjoin plugin for integration tests
+      shell: bash
+      run: dotnet publish "${{ inputs.plugin-project-path }}" -c Release --no-restore -o "${{ inputs.plugin-output-path }}"
+
+    - name: Wait for BTCPay integration test infrastructure
+      shell: bash
+      run: |
+        set -euo pipefail
+        for endpoint in 127.0.0.1:43782 127.0.0.1:32838 127.0.0.1:39372 127.0.0.1:34218 127.0.0.1:34219; do
+          host="${endpoint%:*}"
+          port="${endpoint#*:}"
+          for attempt in {1..60}; do
+            if timeout 1 bash -c "</dev/tcp/$host/$port" 2>/dev/null
+            then
+              echo "Endpoint $endpoint is ready"
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "Endpoint $endpoint did not become ready in time"
+              docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml ps
+              exit 1
+            fi
+            sleep 2
+          done
+        done
