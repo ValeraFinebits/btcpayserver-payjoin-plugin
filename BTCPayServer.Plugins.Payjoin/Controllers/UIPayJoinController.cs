@@ -1,8 +1,6 @@
 using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Client;
-using BTCPayServer.Data;
 using BTCPayServer.Filters;
-using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services;
@@ -28,12 +26,6 @@ public class UIPayJoinController : Controller
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinSenderBroadcasted =
         LoggerMessage.Define<string, string>(LogLevel.Information, new EventId(1, nameof(LogPayjoinSenderBroadcasted)),
             "Payjoin sender broadcasted payjoin transaction {TransactionId} for {InvoiceId}");
-    private static readonly Action<ILogger, string, string, Exception?> LogRunTestPaymentInvariantFailed =
-        LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(2, nameof(LogRunTestPaymentInvariantFailed)),
-            "RunTestPayment self-pay invariant failed for {InvoiceId}: {Message}");
-    private static readonly Action<ILogger, string, string, Exception?> LogRunTestPaymentInvariantDiagnostics =
-        LoggerMessage.Define<string, string>(LogLevel.Debug, new EventId(3, nameof(LogRunTestPaymentInvariantDiagnostics)),
-            "RunTestPayment self-pay diagnostics for {InvoiceId}: {Diagnostics}");
 
     private readonly BTCPayServerEnvironment _env;
     private readonly InvoiceRepository _invoiceRepository;
@@ -86,10 +78,8 @@ public class UIPayJoinController : Controller
     }
 
     // TODO: Remove this test endpoint.
-    // This cheat-mode-only self-pay flow intentionally exercises the unusual case where
-    // the sender and receiver paths operate against the same store wallet, so we can
-    // catch same-wallet payjoin edge cases that do not show up with external payers.
     [CheatModeRoute]
+    // This cheat-mode-only flow exercises payjoin using a dedicated payer wallet.
     [AllowAnonymous]
     [IgnoreAntiforgeryToken]
     [HttpPost("run-test-payment")]
@@ -126,13 +116,6 @@ public class UIPayJoinController : Controller
         if (storeSettings is null || storeSettings.OhttpRelayUrl is null)
         {
             return RunTestPaymentFailure("OhttpRelayUrl not found");
-        }
-
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(BitcoinCode);
-        var derivationScheme = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, _handlers, true);
-        if (derivationScheme is null)
-        {
-            return RunTestPaymentFailure("wallet not configured");
         }
 
         var network = _networkProvider.GetNetwork<BTCPayNetwork>(BitcoinCode);
@@ -185,8 +168,7 @@ public class UIPayJoinController : Controller
             storeSettings.OhttpRelayUrl,
             paymentAddressValue,
             paymentAmount,
-            network,
-            derivationScheme);
+            network);
 
         try
         {
@@ -198,44 +180,15 @@ public class UIPayJoinController : Controller
 
             return RunTestPaymentSuccess($"Payjoin transaction broadcasted: {txid}", txid);
         }
-        catch (SelfPayInvariantChecker.SelfPayInvariantException ex)
-        {
-            return MapRunTestPaymentException(request.InvoiceId, ex);
-        }
         catch (RunTestPaymentService.RunTestPaymentExecutionException ex)
         {
-            return MapRunTestPaymentException(request.InvoiceId, ex);
+            return RunTestPaymentFailure(ex.Message);
         }
-    }
-
-    internal ActionResult<RunTestPaymentResponse> MapRunTestPaymentException(string invoiceId, Exception exception)
-    {
-        return exception switch
-        {
-            SelfPayInvariantChecker.SelfPayInvariantException invariantException => RunTestPaymentInvariantFailure(invoiceId, invariantException.Message),
-            RunTestPaymentService.RunTestPaymentExecutionException executionException => RunTestPaymentFailure(executionException.Message),
-            _ => throw exception
-        };
     }
 
     private OkObjectResult RunTestPaymentFailure(string message)
     {
         return Ok(RunTestPaymentResponse.Failure(message));
-    }
-
-    private OkObjectResult RunTestPaymentInvariantFailure(string invoiceId, string diagnosticMessage)
-    {
-        if (_logger is not null)
-        {
-            var (summary, diagnostics) = SelfPayInvariantChecker.SplitDiagnosticMessage(diagnosticMessage);
-            LogRunTestPaymentInvariantFailed(_logger, invoiceId, summary, null);
-            if (!string.IsNullOrWhiteSpace(diagnostics))
-            {
-                LogRunTestPaymentInvariantDiagnostics(_logger, invoiceId, diagnostics, null);
-            }
-        }
-
-        return RunTestPaymentFailure($"Self-pay invariant failed: {diagnosticMessage}");
     }
 
     private OkObjectResult RunTestPaymentSuccess(string message, string transactionId)

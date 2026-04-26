@@ -52,13 +52,13 @@ internal sealed class PayjoinTestPayer
         ArgumentNullException.ThrowIfNull(paymentUrl);
         ArgumentNullException.ThrowIfNull(ohttpRelayUrl);
 
-        var senderPsbt = await CreateSenderPsbtAsync(paymentUrl, cancellationToken).ConfigureAwait(false);
-        var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrl, senderPsbt, preProposalPollDelay, cancellationToken).ConfigureAwait(false);
+        var senderPsbtResult = await CreateSenderPsbtAsync(paymentUrl, cancellationToken).ConfigureAwait(false);
+        var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrl, senderPsbtResult.Psbt, preProposalPollDelay, cancellationToken).ConfigureAwait(false);
 
-        return await FinalizeAndBroadcastAsync(proposalPsbt, cancellationToken).ConfigureAwait(false);
+        return await FinalizeAndBroadcastAsync(senderPsbtResult, proposalPsbt, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<PayjoinTestPaymentResult> FinalizeAndBroadcastAsync(PSBT proposalPsbt, CancellationToken cancellationToken)
+    private async Task<PayjoinTestPaymentResult> FinalizeAndBroadcastAsync(CreateSenderPsbtResult senderPsbtResult, PSBT proposalPsbt, CancellationToken cancellationToken)
     {
         var signedProposal = await _payer.Sign(proposalPsbt).ConfigureAwait(false);
 
@@ -71,7 +71,11 @@ internal sealed class PayjoinTestPayer
         await BroadcastTransactionAsync(transaction, cancellationToken).ConfigureAwait(false);
         await MineBlockAsync(cancellationToken).ConfigureAwait(false);
 
-        return new PayjoinTestPaymentResult(transaction.GetHash().ToString());
+        return new PayjoinTestPaymentResult(
+            transaction.GetHash().ToString(),
+            senderPsbtResult.Psbt.GetGlobalTransaction(),
+            proposalPsbt.GetGlobalTransaction(),
+            senderPsbtResult.AmountToSend);
     }
 
     private async Task BroadcastTransactionAsync(Transaction transaction, CancellationToken cancellationToken)
@@ -83,7 +87,7 @@ internal sealed class PayjoinTestPayer
         }
     }
 
-    private async Task<PSBT> CreateSenderPsbtAsync(SystemUri paymentUrl, CancellationToken cancellationToken)
+    private async Task<CreateSenderPsbtResult> CreateSenderPsbtAsync(SystemUri paymentUrl, CancellationToken cancellationToken)
     {
         string paymentAddress;
         decimal paymentAmount;
@@ -165,7 +169,7 @@ internal sealed class PayjoinTestPayer
             throw new InvalidOperationException($"Sender PSBT creation returned no PSBT for payer store '{_payer.StoreId}'.");
         }
 
-        return createResult.PSBT;
+        return new CreateSenderPsbtResult(createResult.PSBT, Money.Coins(paymentAmount));
     }
 
     private async Task<PSBT> RequestProposalAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, PSBT senderPsbt, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
@@ -378,4 +382,6 @@ internal sealed class PayjoinTestPayer
     }
 }
 
-internal sealed record PayjoinTestPaymentResult(string TransactionId);
+internal sealed record PayjoinTestPaymentResult(string TransactionId, Transaction SenderTransaction, Transaction ProposalTransaction, Money AmountToSend);
+
+internal sealed record CreateSenderPsbtResult(PSBT Psbt, Money AmountToSend);

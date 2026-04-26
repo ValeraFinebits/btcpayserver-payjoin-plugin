@@ -15,7 +15,7 @@ public class PayjoinCliIntegrationTests : UnitTestBase
     }
 
     [Fact
-    (Skip = "Manual payjoin-cli integration test. Remove Skip to run it explicitly.")
+    //(Skip = "Manual payjoin-cli integration test. Remove Skip to run it explicitly.")
     ]
     [Trait("Integration", "Integration")]
     public async Task CreateInvoiceAndPayItThroughThePayjoinPluginWithPayjoinCli()
@@ -25,9 +25,9 @@ public class PayjoinCliIntegrationTests : UnitTestBase
         var payjoinCliOptions = new BitcoindNodeOptions();
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var paymentResult = await PayjoinCliIntegrationTestSupport.CreateAndPayInvoiceWithInvoiceIdAsync(tester, context.User, context.Network, payjoinCliOptions, cts.Token).ConfigureAwait(true);
+        var paymentResult = await PayjoinCliIntegrationTestSupport.CreateAndPayInvoiceWithInvoiceIdAsync(tester, context.Merchant, context.Network, payjoinCliOptions, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction((paymentResult.PayjoinTransaction, paymentResult.InvoiceScript, paymentResult.TransactionId));
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, paymentResult.InvoiceId, cts.Token).ConfigureAwait(true);

@@ -14,9 +14,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
     {
     }
 
-    [Fact
-    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
-    ]
+    [Fact]
     [Trait("Integration", "Integration")]
     public async Task ConcurrentGetBip21RequestsAreIdempotentForSameInvoice()
     {
@@ -24,9 +22,9 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var invoice = await context.User.BitPay.CreateInvoiceAsync(new Invoice
+        var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new Invoice
         {
             Price = 0.1m,
             Currency = "BTC",

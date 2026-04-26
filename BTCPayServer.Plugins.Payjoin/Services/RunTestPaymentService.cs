@@ -1,6 +1,6 @@
 using BTCPayServer.Services.Wallets;
 using NBitcoin;
-using NBXplorer;
+using NBXplorer.DerivationStrategy;
 using NBXplorer.Models;
 using Payjoin;
 using System;
@@ -26,8 +26,12 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
     private const int RecommendedFeeContributionRate = 250;
     private const int MaxProposalPollAttempts = 5;
     private const decimal ExplicitFeeRateSatoshiPerByte = 1.0m;
+    private const decimal FundingBufferBtc = 0.01m;
     private static readonly TimeSpan ProposalPollDelay = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan FundingPollDelay = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan FundingConfirmationTimeout = TimeSpan.FromSeconds(30);
     private static readonly Money FeeBuffer = Money.Satoshis(1000);
+    private static readonly KeyPath CheatModePayerAccountKeyPath = new("m/84'/1'/0'");
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ExplorerClientProvider _explorerClientProvider;
@@ -47,12 +51,84 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
     {
         ArgumentNullException.ThrowIfNull(runTestPaymentContext);
 
-        var senderPsbtResult = await CreateSenderPsbtAsync(runTestPaymentContext, cancellationToken).ConfigureAwait(false);
-        var baseline = SelfPayInvariantChecker.CreateBaseline(senderPsbtResult.Psbt.GetGlobalTransaction(), runTestPaymentContext.PaymentAddress.ScriptPubKey, senderPsbtResult.AmountToSend);
-        var proposalPsbt = await RequestProposalAsync(runTestPaymentContext.PaymentUrl, runTestPaymentContext.OhttpRelayUrl, senderPsbtResult.Psbt, runTestPaymentContext.Network, cancellationToken).ConfigureAwait(false);
-        SelfPayInvariantChecker.ValidateProposal(proposalPsbt.GetGlobalTransaction(), baseline);
+        var payer = await EnsureCheatModePayerAsync(runTestPaymentContext.Network, runTestPaymentContext.PaymentAmount, cancellationToken).ConfigureAwait(false);
+        runTestPaymentContext = runTestPaymentContext with
+        {
+            PayerAccountDerivation = payer.AccountDerivation,
+            PayerAccountKey = payer.AccountKey
+        };
 
-        return await SignAndBroadcastAsync(runTestPaymentContext, proposalPsbt, baseline, cancellationToken).ConfigureAwait(false);
+        var senderPsbtResult = await CreateSenderPsbtAsync(runTestPaymentContext, cancellationToken).ConfigureAwait(false);
+        var proposalPsbt = await RequestProposalAsync(runTestPaymentContext.PaymentUrl, runTestPaymentContext.OhttpRelayUrl, senderPsbtResult.Psbt, runTestPaymentContext.Network, cancellationToken).ConfigureAwait(false);
+
+        return await SignAndBroadcastAsync(runTestPaymentContext, proposalPsbt, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CheatModePayer> EnsureCheatModePayerAsync(BTCPayNetwork network, decimal paymentAmount, CancellationToken cancellationToken)
+    {
+        var payer = await CreateCheatModePayerAsync(network, cancellationToken).ConfigureAwait(false);
+        await EnsureCheatModePayerFundsAsync(network, payer, paymentAmount, cancellationToken).ConfigureAwait(false);
+        return payer;
+    }
+
+    private async Task<CheatModePayer> CreateCheatModePayerAsync(BTCPayNetwork network, CancellationToken cancellationToken)
+    {
+        var explorerClient = _explorerClientProvider.GetExplorerClient(network);
+        var accountKey = new ExtKey().Derive(CheatModePayerAccountKeyPath);
+        var derivationFactory = explorerClient.Network.DerivationStrategyFactory;
+        var accountDerivation = derivationFactory.CreateDirectDerivationStrategy(
+            accountKey.Neuter(),
+            new DerivationStrategyOptions { ScriptPubKeyType = ScriptPubKeyType.Segwit });
+
+        await explorerClient.TrackAsync(accountDerivation, cancellationToken).ConfigureAwait(false);
+
+        return new CheatModePayer(accountDerivation, accountKey);
+    }
+
+    private async Task EnsureCheatModePayerFundsAsync(BTCPayNetwork network, CheatModePayer payer, decimal paymentAmount, CancellationToken cancellationToken)
+    {
+        var wallet = _walletProvider.GetWallet(network)
+            ?? throw new RunTestPaymentExecutionException("wallet not available");
+        var confirmedCoins = await wallet.GetUnspentCoins(payer.AccountDerivation, true, cancellationToken).ConfigureAwait(false);
+        var confirmedTotal = confirmedCoins.Sum(coin => coin.Value.GetValue(network));
+        var requiredAmount = paymentAmount + FundingBufferBtc;
+        if (confirmedTotal >= requiredAmount)
+        {
+            return;
+        }
+
+        var explorerClient = _explorerClientProvider.GetExplorerClient(network);
+        var rpc = explorerClient.RPCClient ?? throw new RunTestPaymentExecutionException("node RPC is not available");
+        var fundingAddress = await explorerClient.GetUnusedAsync(payer.AccountDerivation, DerivationFeature.Deposit, 0, false, cancellationToken).ConfigureAwait(false);
+        var amountToFund = Money.Coins(requiredAmount - confirmedTotal);
+        var txId = await rpc.SendToAddressAsync(fundingAddress.Address, amountToFund, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (txId == uint256.Zero)
+        {
+            throw new RunTestPaymentExecutionException("failed to fund cheat-mode payer wallet");
+        }
+
+        var rewardAddress = await rpc.GetNewAddressAsync(cancellationToken).ConfigureAwait(false);
+        await rpc.GenerateToAddressAsync(1, rewardAddress, cancellationToken).ConfigureAwait(false);
+
+        for (var attempt = 0; attempt < GetAttemptCount(FundingConfirmationTimeout); attempt++)
+        {
+            var refreshedConfirmedCoins = await wallet.GetUnspentCoins(payer.AccountDerivation, true, cancellationToken).ConfigureAwait(false);
+            var refreshedConfirmedTotal = refreshedConfirmedCoins.Sum(coin => coin.Value.GetValue(network));
+            if (refreshedConfirmedTotal >= requiredAmount)
+            {
+                return;
+            }
+
+            await Task.Delay(FundingPollDelay, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new RunTestPaymentExecutionException("cheat-mode payer wallet funding was not confirmed in time");
+    }
+
+    private static int GetAttemptCount(TimeSpan timeout)
+    {
+        var attempts = (int)Math.Ceiling(timeout.TotalMilliseconds / FundingPollDelay.TotalMilliseconds);
+        return Math.Max(attempts, 1);
     }
 
     private async Task<CreateSenderPsbtResult> CreateSenderPsbtAsync(RunTestPaymentContext runTestPaymentContext, CancellationToken cancellationToken)
@@ -63,8 +139,8 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
             throw new RunTestPaymentExecutionException("wallet not available");
         }
 
-        var confirmedCoins = await wallet.GetUnspentCoins(runTestPaymentContext.DerivationScheme.AccountDerivation, true, cancellationToken).ConfigureAwait(false);
-        var allCoins = await wallet.GetUnspentCoins(runTestPaymentContext.DerivationScheme.AccountDerivation, false, cancellationToken).ConfigureAwait(false);
+        var confirmedCoins = await wallet.GetUnspentCoins(runTestPaymentContext.PayerAccountDerivation, true, cancellationToken).ConfigureAwait(false);
+        var allCoins = await wallet.GetUnspentCoins(runTestPaymentContext.PayerAccountDerivation, false, cancellationToken).ConfigureAwait(false);
         var confirmedTotal = confirmedCoins.Sum(coin => coin.Value.GetValue(runTestPaymentContext.Network));
         var allTotal = allCoins.Sum(coin => coin.Value.GetValue(runTestPaymentContext.Network));
 
@@ -101,7 +177,7 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         var client = _explorerClientProvider.GetExplorerClient(runTestPaymentContext.Network);
         try
         {
-            var createResult = await client.CreatePSBTAsync(runTestPaymentContext.DerivationScheme.AccountDerivation, psbtRequest, cancellationToken).ConfigureAwait(false);
+            var createResult = await client.CreatePSBTAsync(runTestPaymentContext.PayerAccountDerivation, psbtRequest, cancellationToken).ConfigureAwait(false);
             if (createResult?.PSBT is null)
             {
                 throw new RunTestPaymentExecutionException("psbt creation failed");
@@ -218,33 +294,16 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         }
     }
 
-    private async Task<string> SignAndBroadcastAsync(RunTestPaymentContext runTestPaymentContext, PSBT proposalPsbt, SelfPayInvariantChecker.SelfPayBaseline baseline, CancellationToken cancellationToken)
+    private async Task<string> SignAndBroadcastAsync(RunTestPaymentContext runTestPaymentContext, PSBT proposalPsbt, CancellationToken cancellationToken)
     {
         var client = _explorerClientProvider.GetExplorerClient(runTestPaymentContext.Network);
-        runTestPaymentContext.DerivationScheme.RebaseKeyPaths(proposalPsbt);
-        var signingKeyStr = await client.GetMetadataAsync<string>(
-            runTestPaymentContext.DerivationScheme.AccountDerivation,
-            WellknownMetadataKeys.MasterHDKey,
-            cancellationToken).ConfigureAwait(false);
-        if (!runTestPaymentContext.DerivationScheme.IsHotWallet || signingKeyStr is null)
-        {
-            var error = !runTestPaymentContext.DerivationScheme.IsHotWallet
-                ? "cannot sign from a cold wallet"
-                : "wallet seed not available";
-            throw new RunTestPaymentExecutionException(error);
-        }
-
-        var signingKey = ExtKey.Parse(signingKeyStr, runTestPaymentContext.Network.NBitcoinNetwork);
-        var signingKeySettings = runTestPaymentContext.DerivationScheme.GetAccountKeySettingsFromRoot(signingKey);
-        var rootedKeyPath = signingKeySettings?.GetRootedKeyPath();
-        if (rootedKeyPath is null || signingKeySettings is null)
-        {
-            throw new RunTestPaymentExecutionException("wallet key path mismatch");
-        }
-
-        proposalPsbt.RebaseKeyPaths(signingKeySettings.AccountKey, rootedKeyPath);
-        var accountKey = signingKey.Derive(rootedKeyPath.KeyPath);
-        proposalPsbt.SignAll(runTestPaymentContext.DerivationScheme.AccountDerivation, accountKey, rootedKeyPath);
+        var payerAccountDerivation = runTestPaymentContext.PayerAccountDerivation
+            ?? throw new RunTestPaymentExecutionException("payer derivation is not available");
+        var accountKey = runTestPaymentContext.PayerAccountKey
+            ?? throw new RunTestPaymentExecutionException("payer key is not available");
+        var rootedKeyPath = new RootedKeyPath(accountKey.Neuter().PubKey.GetHDFingerPrint(), new KeyPath());
+        proposalPsbt.RebaseKeyPaths(accountKey.Neuter(), rootedKeyPath);
+        proposalPsbt.SignAll(payerAccountDerivation, accountKey, rootedKeyPath);
 
         if (!proposalPsbt.TryFinalize(out _))
         {
@@ -252,7 +311,6 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         }
 
         var transaction = proposalPsbt.ExtractTransaction();
-        SelfPayInvariantChecker.ValidateFinalTransaction(transaction, baseline);
 
         var broadcast = await client.BroadcastAsync(transaction, cancellationToken).ConfigureAwait(false);
         if (!broadcast.Success)
@@ -325,6 +383,7 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
     }
 
     private sealed record CreateSenderPsbtResult(PSBT Psbt, Money AmountToSend);
+    private sealed record CheatModePayer(DerivationStrategyBase AccountDerivation, ExtKey AccountKey);
 }
 
 public sealed record RunTestPaymentContext(
@@ -334,4 +393,5 @@ public sealed record RunTestPaymentContext(
     BitcoinAddress PaymentAddress,
     decimal PaymentAmount,
     BTCPayNetwork Network,
-    DerivationSchemeSettings DerivationScheme);
+    DerivationStrategyBase? PayerAccountDerivation = null,
+    ExtKey? PayerAccountKey = null);

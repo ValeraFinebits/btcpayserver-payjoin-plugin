@@ -134,13 +134,13 @@ internal static class PayjoinIntegrationTestSupport
         Assert.Equal((Money)coldUtxo.Value, coldTxOutput.Value);
     }
 
-    public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaRunTestPaymentAsync(
+    public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaRunTestPaymentWithExternalPayerAsync(
         ServerTester tester,
-        TestAccount user,
+        TestAccount merchant,
         BTCPayNetwork network,
         CancellationToken cancellationToken)
     {
-        var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, user, network, cancellationToken).ConfigureAwait(true);
+        var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, merchant, network, cancellationToken).ConfigureAwait(true);
 
         var controller = tester.PayTester.GetController<UIPayJoinController>();
         var paymentActionResult = await controller.RunTestPayment(new RunTestPaymentRequest
@@ -153,7 +153,7 @@ internal static class PayjoinIntegrationTestSupport
         Assert.True(paymentResponse.Succeeded, paymentResponse.Message);
         Assert.False(string.IsNullOrWhiteSpace(paymentResponse.TransactionId), "TransactionId must be returned on success");
 
-        return await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, user, payjoinContext, paymentResponse.TransactionId!, cancellationToken).ConfigureAwait(true);
+        return await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, merchant, payjoinContext, paymentResponse.TransactionId!, cancellationToken).ConfigureAwait(true);
     }
 
     public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaExternalPayjoinPayerAsync(
@@ -168,15 +168,20 @@ internal static class PayjoinIntegrationTestSupport
 
     public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaSameWalletPayjoinPayerAsync(
         ServerTester tester,
-        TestAccount user,
+        TestAccount merchant,
         BTCPayNetwork network,
         CancellationToken cancellationToken)
     {
-        var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, user, network, cancellationToken).ConfigureAwait(true);
-        var payjoinPayer = new PayjoinTestPayer(tester, user, network, useReservedSenderChangeAddress: true);
+        var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, merchant, network, cancellationToken).ConfigureAwait(true);
+        var payjoinPayer = new PayjoinTestPayer(tester, merchant, network, useReservedSenderChangeAddress: true);
         var paymentResult = await payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, cancellationToken).ConfigureAwait(true);
+        var baseline = SelfPayInvariantChecker.CreateBaseline(paymentResult.SenderTransaction, payjoinContext.InvoiceScript, paymentResult.AmountToSend);
+        SelfPayInvariantChecker.ValidateProposal(paymentResult.ProposalTransaction, baseline);
 
-        return await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, user, payjoinContext, paymentResult.TransactionId, cancellationToken).ConfigureAwait(true);
+        var finalizedPayment = await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, merchant, payjoinContext, paymentResult.TransactionId, cancellationToken).ConfigureAwait(true);
+        SelfPayInvariantChecker.ValidateFinalTransaction(finalizedPayment.PayjoinTransaction, baseline);
+
+        return finalizedPayment;
     }
 
     public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaExternalPayjoinPayerAsync(

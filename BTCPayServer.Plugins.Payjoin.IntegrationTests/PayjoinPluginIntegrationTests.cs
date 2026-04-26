@@ -26,9 +26,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
         var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.User, payer, context.Network, cts.Token).ConfigureAwait(true);
+        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
     }
@@ -41,16 +41,14 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaSameWalletPayjoinPayerAsync(tester, context.User, context.Network, cts.Token).ConfigureAwait(true);
+        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaSameWalletPayjoinPayerAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
     }
 
-    [Fact
-    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
-    ]
+    [Fact]
     [Trait("Integration", "Integration")]
     public async Task ExternalPayerSucceedsWhenReceiverProposalIsReplayedAcrossPollerTicks()
     {
@@ -59,9 +57,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
         var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
@@ -71,7 +69,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
             tester,
             payer,
             context.Network,
-            context.User.StoreId,
+            context.Merchant.StoreId,
             new Uri(bip21Response.Bip21, UriKind.Absolute),
             delay,
             cts.Token);
@@ -84,7 +82,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var transactionId = await paymentTask.ConfigureAwait(true);
         Assert.False(string.IsNullOrWhiteSpace(transactionId));
 
-        await context.User.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        await context.Merchant.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
@@ -97,9 +95,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
         var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
@@ -108,11 +106,11 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
             tester,
             payer,
             context.Network,
-            context.User.StoreId,
+            context.Merchant.StoreId,
             new Uri(bip21Response.Bip21, UriKind.Absolute),
             cts.Token).ConfigureAwait(true);
 
-        await context.User.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        await context.Merchant.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
@@ -128,16 +126,16 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var expectedDirectoryUrl = new Uri("https://directory.example.test/");
         var expectedRelayUrl = new Uri("https://relay.example.test/");
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, settings =>
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
             settings.ColdWalletDerivationScheme = coldDerivation.ToString();
             settings.DirectoryUrl = expectedDirectoryUrl;
             settings.OhttpRelayUrl = expectedRelayUrl;
         }, cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(context.User.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
+        var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(context.Merchant.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
         Assert.False(storeSettings.EnabledByDefault);
         Assert.Equal(coldDerivation.ToString(), storeSettings.ColdWalletDerivationScheme);
         Assert.Equal(expectedDirectoryUrl, storeSettings.DirectoryUrl);
@@ -179,12 +177,12 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
         var coldDerivation = await PayjoinIntegrationTestSupport.CreateTrackedColdWalletAsync(tester, cts.Token).ConfigureAwait(true);
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, settings =>
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
             settings.ColdWalletDerivationScheme = coldDerivation.ToString();
         }, cts.Token).ConfigureAwait(true);
 
-        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.User, payer, context.Network, cts.Token).ConfigureAwait(true);
+        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
 
         await PayjoinIntegrationTestSupport.AssertColdWalletReceivedPayjoinChangeAsync(tester, coldDerivation, paymentResult, cts.Token).ConfigureAwait(true);
     }
@@ -197,15 +195,15 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, confirmFunding: false, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var confirmedOutpoints = await PayjoinIntegrationTestSupport.GetReceiverOutpointsAsync(tester, context.User.StoreId, confirmedOnly: true, cts.Token).ConfigureAwait(true);
+        var confirmedOutpoints = await PayjoinIntegrationTestSupport.GetReceiverOutpointsAsync(tester, context.Merchant.StoreId, confirmedOnly: true, cts.Token).ConfigureAwait(true);
         Assert.Empty(confirmedOutpoints);
 
-        var allOutpoints = await PayjoinIntegrationTestSupport.GetReceiverOutpointsAsync(tester, context.User.StoreId, confirmedOnly: false, cts.Token).ConfigureAwait(true);
+        var allOutpoints = await PayjoinIntegrationTestSupport.GetReceiverOutpointsAsync(tester, context.Merchant.StoreId, confirmedOnly: false, cts.Token).ConfigureAwait(true);
         Assert.NotEmpty(allOutpoints);
 
-        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
     }
@@ -218,9 +216,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
 
@@ -237,9 +235,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var invoice = await context.User.BitPay.CreateInvoiceAsync(new Invoice
+        var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new Invoice
         {
             Price = 0.1m,
             Currency = "BTC",
@@ -258,9 +256,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
     }
 
-    [Fact
-    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
-    ]
+    [Fact]
     [Trait("Integration", "Integration")]
     public async Task CheckoutModelFallsBackToPlainBip21WhenDisabled()
     {
@@ -268,9 +264,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var invoice = await context.User.BitPay.CreateInvoiceAsync(new Invoice
+        var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new Invoice
         {
             Price = 0.1m,
             Currency = "BTC",
@@ -290,9 +286,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         Assert.False(sessionStore.TryGetSession(invoice.Id, out _));
     }
 
-    [Fact
-    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
-    ]
+    [Fact]
     [Trait("Integration", "Integration")]
     public async Task GetBip21IsIdempotentForSameInvoice()
     {
@@ -300,9 +294,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, firstResponse) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, firstResponse) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(firstResponse);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
@@ -325,9 +319,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
     }
@@ -340,12 +334,12 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, settings =>
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
             settings.OhttpRelayUrl = null;
         }, cts.Token).ConfigureAwait(true);
 
-        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
     }
@@ -358,12 +352,12 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, settings =>
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
             settings.DirectoryUrl = null;
         }, cts.Token).ConfigureAwait(true);
 
-        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
     }
@@ -376,12 +370,12 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, settings =>
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
             settings.OhttpRelayUrl = new Uri("http://127.0.0.1:1/");
         }, cts.Token).ConfigureAwait(true);
 
-        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
     }
@@ -394,14 +388,14 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
-        await context.User.PayInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        await context.Merchant.PayInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
@@ -414,9 +408,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
@@ -436,9 +430,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
@@ -460,15 +454,15 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
         var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
-        await context.User.PayInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
-        await context.User.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        await context.Merchant.PayInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        await context.Merchant.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedOrRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
@@ -477,7 +471,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 tester,
                 payer,
                 context.Network,
-                context.User.StoreId,
+                context.Merchant.StoreId,
                 new Uri(bip21Response.Bip21, UriKind.Absolute),
                 cts.Token)).ConfigureAwait(true);
 
@@ -495,9 +489,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
         var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
@@ -512,7 +506,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 tester,
                 payer,
                 context.Network,
-                context.User.StoreId,
+                context.Merchant.StoreId,
                 new Uri(bip21Response.Bip21, UriKind.Absolute),
                 cts.Token)).ConfigureAwait(true);
 
@@ -530,9 +524,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
         var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.User, cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
@@ -549,7 +543,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 tester,
                 payer,
                 context.Network,
-                context.User.StoreId,
+                context.Merchant.StoreId,
                 new Uri(bip21Response.Bip21, UriKind.Absolute),
                 cts.Token)).ConfigureAwait(true);
 

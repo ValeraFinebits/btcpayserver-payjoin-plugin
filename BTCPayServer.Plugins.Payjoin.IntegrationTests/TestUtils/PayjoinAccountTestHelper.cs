@@ -20,9 +20,9 @@ internal static class PayjoinAccountTestHelper
         await tester.StartAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
 
         var network = GetBitcoinNetwork(tester);
-        var user = await CreateInitializedAccountAsync(tester, network, confirmFunding, cancellationToken).ConfigureAwait(true);
+        var merchant = await CreateInitializedAccountAsync(tester, network, confirmFunding, cancellationToken).ConfigureAwait(true);
 
-        return new TestContext(network, user);
+        return new TestContext(network, merchant);
     }
 
     public static async Task<TestAccount> CreateInitializedAccountAsync(ServerTester tester, BTCPayNetwork network, bool confirmFunding = true, CancellationToken cancellationToken = default)
@@ -83,5 +83,5 @@ internal static class PayjoinAccountTestHelper
         return Math.Max(attempts, 1);
     }
 
-    internal sealed record TestContext(BTCPayNetwork Network, TestAccount User);
+    internal sealed record TestContext(BTCPayNetwork Network, TestAccount Merchant);
 }

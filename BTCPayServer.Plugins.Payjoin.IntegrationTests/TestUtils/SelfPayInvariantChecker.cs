@@ -1,13 +1,7 @@
 using NBitcoin;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 
-namespace BTCPayServer.Plugins.Payjoin.Services;
+namespace BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 
-// These checks are specific to the diagnostic self-pay flow used by `RunTestPayment`.
-// They intentionally guard against same-wallet anomalies and should not be treated as
-// general payjoin invariants for external payer scenarios.
 internal static class SelfPayInvariantChecker
 {
     private const string DiagnosticsDelimiter = ". Diagnostics=";
@@ -117,21 +111,6 @@ internal static class SelfPayInvariantChecker
         IReadOnlyDictionary<string, int>? senderChangeScriptCounts)
     {
         return new SelfPayInvariantException($"{message}{DiagnosticsDelimiter}{FormatDiagnostics(transaction, invoiceScript, invoiceAmount, senderInputCount, senderChangeScriptCounts)}");
-    }
-
-    public static (string Summary, string? Diagnostics) SplitDiagnosticMessage(string diagnosticMessage)
-    {
-        ArgumentNullException.ThrowIfNull(diagnosticMessage);
-
-        var delimiterIndex = diagnosticMessage.IndexOf(DiagnosticsDelimiter, StringComparison.Ordinal);
-        if (delimiterIndex < 0)
-        {
-            return (diagnosticMessage, null);
-        }
-
-        var summary = diagnosticMessage[..delimiterIndex];
-        var diagnostics = diagnosticMessage[(delimiterIndex + DiagnosticsDelimiter.Length)..];
-        return (summary, diagnostics.Length == 0 ? null : diagnostics);
     }
 
     private static string FormatDiagnostics(
