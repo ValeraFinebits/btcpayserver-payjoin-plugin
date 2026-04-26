@@ -47,4 +47,4 @@ jobs:
 
       - name: Stop BTCPay integration test infrastructure
         if: always()
-        run: docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml down -v
+        run: docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml down -v >/dev/null 2>&1
