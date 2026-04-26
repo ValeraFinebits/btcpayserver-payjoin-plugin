@@ -12,9 +12,7 @@ public class RunTestPaymentIntegrationTests : UnitTestBase
     {
     }
 
-    [Fact
-    //(Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
-    ]
+    [Fact]
     [Trait("Integration", "Integration")]
     public async Task CreateInvoiceAndPayItThroughThePayjoinPlugin()
     {
