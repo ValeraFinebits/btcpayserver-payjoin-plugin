@@ -55,5 +55,46 @@ jobs:
       - name: Test unit tests
         run: dotnet test "BTCPayServer.Plugins.Payjoin.Tests/BTCPayServer.Plugins.Payjoin.Tests.csproj" -c Release --no-build
 
+      - name: Start BTCPay test infrastructure
+        run: docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml up -d dev
+
+      - name: Wait for BTCPay test infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          for endpoint in 127.0.0.1:43782 127.0.0.1:32838 127.0.0.1:39372 127.0.0.1:34218 127.0.0.1:34219; do
+            host="${endpoint%:*}"
+            port="${endpoint#*:}"
+            for attempt in {1..60}; do
+              if timeout 1 bash -c "</dev/tcp/$host/$port" 2>/dev/null
+              then
+                echo "Endpoint $endpoint is ready"
+                break
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                echo "Endpoint $endpoint did not become ready in time"
+                docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml ps
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+
       - name: Test basic integration tests
+        env:
+          TESTS_BTCRPCCONNECTION: "server=http://127.0.0.1:43782;ceiwHEbqWI83:DwubwWsoo3"
+          TESTS_BTCNBXPLORERURL: "http://127.0.0.1:32838/"
+          TESTS_POSTGRES: "User ID=postgres;Include Error Detail=true;Host=127.0.0.1;Port=39372;Database=btcpayserver"
+          TESTS_EXPLORER_POSTGRES: "User ID=postgres;Include Error Detail=true;Host=127.0.0.1;Port=39372;Database=nbxplorer"
+          TESTS_MAILPIT_HOST: "127.0.0.1"
+          TESTS_MAILPIT_SMTP: "34219"
+          TESTS_MAILPIT_HTTP: "34218"
         run: dotnet test "BTCPayServer.Plugins.Payjoin.IntegrationTests/BTCPayServer.Plugins.Payjoin.IntegrationTests.csproj" -c Release --no-build --filter "FullyQualifiedName!~BTCPayServer.Plugins.Payjoin.IntegrationTests.PayjoinCliIntegrationTests"
+
+      - name: Dump BTCPay test infrastructure logs on failure
+        if: failure()
+        run: docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml logs --no-color
+
+      - name: Stop BTCPay test infrastructure
+        if: always()
+        run: docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml down -v
