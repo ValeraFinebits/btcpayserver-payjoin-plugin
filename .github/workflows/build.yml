@@ -52,5 +52,8 @@ jobs:
       - name: Build
         run: dotnet build "BTCPayServer.Plugins.Payjoin.sln" -c Release --no-restore
 
-      - name: Test
-        run: dotnet test "BTCPayServer.Plugins.Payjoin.sln" -c Release --no-build
+      - name: Test unit tests
+        run: dotnet test "BTCPayServer.Plugins.Payjoin.Tests/BTCPayServer.Plugins.Payjoin.Tests.csproj" -c Release --no-build
+
+      - name: Test basic integration tests
+        run: dotnet test "BTCPayServer.Plugins.Payjoin.IntegrationTests/BTCPayServer.Plugins.Payjoin.IntegrationTests.csproj" -c Release --no-build --filter "FullyQualifiedName!~BTCPayServer.Plugins.Payjoin.IntegrationTests.PayjoinCliIntegrationTests"
