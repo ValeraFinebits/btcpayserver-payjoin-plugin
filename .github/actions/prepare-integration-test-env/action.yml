@@ -18,7 +18,9 @@ runs:
 
     - name: Install Payjoin plugin for integration tests
       shell: bash
-      run: dotnet publish "${{ inputs.plugin-project-path }}" -c Release --no-restore -o "${{ inputs.plugin-output-path }}"
+      run: |
+        rm -rf "${{ inputs.plugin-output-path }}"
+        dotnet publish "${{ inputs.plugin-project-path }}" -c Release --no-restore -o "${{ inputs.plugin-output-path }}"
 
     - name: Wait for BTCPay integration test infrastructure
       shell: bash

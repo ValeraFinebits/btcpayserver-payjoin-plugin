@@ -15,7 +15,7 @@ public class PayjoinCliIntegrationTests : UnitTestBase
     }
 
     [Fact
-    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
+    (Skip = "Manual payjoin-cli integration test. Remove Skip to run it explicitly.")
     ]
     [Trait("Integration", "Integration")]
     public async Task CreateInvoiceAndPayItThroughThePayjoinPluginWithPayjoinCli()
