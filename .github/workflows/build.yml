@@ -28,6 +28,11 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Set up Payjoin CI
         uses: ./.github/actions/prepare-ci-build
 
@@ -44,6 +49,11 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Set up Payjoin CI
         uses: ./.github/actions/prepare-ci-build
 
@@ -71,6 +81,11 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Set up Payjoin CI
         uses: ./.github/actions/prepare-ci-build
 
