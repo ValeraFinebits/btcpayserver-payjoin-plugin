@@ -1,7 +1,9 @@
-﻿using BTCPayServer.Abstractions.Contracts;
-using BTCPayServer.Plugins.Payjoin.Services;
+﻿using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,53 +11,62 @@ namespace BTCPayServer.Plugins.Payjoin;
 
 public class PluginMigrationRunner : IHostedService
 {
+    private static readonly Action<ILogger, Exception?> LogPluginMigrationCancelled =
+        LoggerMessage.Define(
+            LogLevel.Information,
+            new EventId(1, nameof(LogPluginMigrationCancelled)),
+            "Payjoin plugin startup migration was cancelled.");
+    private static readonly Action<ILogger, Exception?> LogPluginMigrationFailed =
+        LoggerMessage.Define(
+            LogLevel.Error,
+            new EventId(2, nameof(LogPluginMigrationFailed)),
+            "Payjoin plugin startup migration failed. The server will continue running, but plugin startup work may be incomplete.");
+
     private readonly PayjoinPluginDbContextFactory _pluginDbContextFactory;
-    private readonly PayjoinPluginService _pluginService;
-    private readonly ISettingsRepository _settingsRepository;
+    private readonly ILogger<PluginMigrationRunner> _logger;
 
     public PluginMigrationRunner(
-        ISettingsRepository settingsRepository,
         PayjoinPluginDbContextFactory pluginDbContextFactory,
-        PayjoinPluginService pluginService)
+        ILogger<PluginMigrationRunner> logger)
     {
-        _settingsRepository = settingsRepository;
         _pluginDbContextFactory = pluginDbContextFactory;
-        _pluginService = pluginService;
+        _logger = logger;
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Plugin startup is an isolation boundary and must not crash the host process.")]
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        var settings = await _settingsRepository.GetSettingAsync<PluginDataMigrationHistory>().ConfigureAwait(false) ??
-                       new PluginDataMigrationHistory();
-        var ctx = _pluginDbContextFactory.CreateContext();
         try
         {
-            await ctx.Database.MigrateAsync(cancellationToken).ConfigureAwait(false);
+            var ctx = _pluginDbContextFactory.CreateContext();
+            try
+            {
+                await MigrateAsync(ctx, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                await ctx.DisposeAsync().ConfigureAwait(false);
+            }
         }
-        finally
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await ctx.DisposeAsync().ConfigureAwait(false);
+            LogPluginMigrationCancelled(_logger, null);
         }
-
-        // settings migrations
-        if (!settings.UpdatedSomething)
+        catch (Exception ex)
         {
-            settings.UpdatedSomething = true;
-            await _settingsRepository.UpdateSetting(settings).ConfigureAwait(false);
+            LogPluginMigrationFailed(_logger, ex);
         }
+    }
 
-        // test record
-        // await _pluginService.AddTestDataRecord().ConfigureAwait(false);
+    protected internal virtual Task MigrateAsync(PayjoinPluginDbContext context, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return context.Database.MigrateAsync(cancellationToken);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
-    }
-
-    private class PluginDataMigrationHistory
-    {
-        public bool UpdatedSomething { get; set; }
     }
 }
 

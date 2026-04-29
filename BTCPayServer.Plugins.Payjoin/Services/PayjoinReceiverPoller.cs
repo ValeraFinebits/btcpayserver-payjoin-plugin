@@ -12,6 +12,7 @@ using NBXplorer.DerivationStrategy;
 using Payjoin;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -95,6 +96,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     }
 
     // TODO: Process sessions concurrently instead of sequentially.
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Plugin background execution is an isolation boundary and must not crash the host process.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
@@ -130,8 +132,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    LogPayjoinReceiverPollingFailed(_logger, ex);
-                    throw;
+                    LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
                 }
             }
         }

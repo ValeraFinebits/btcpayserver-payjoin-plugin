@@ -2,8 +2,10 @@ using BTCPayServer.Client.Models;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Services.Invoices;
+using Microsoft.Extensions.Logging;
 using Payjoin;
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 using PayjoinUri = Payjoin.Uri;
@@ -13,24 +15,33 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlService
 {
     private const string CryptoCode = "BTC";
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinPaymentUrlFallback =
+        LoggerMessage.Define<string>(
+            LogLevel.Error,
+            new EventId(1, nameof(LogPayjoinPaymentUrlFallback)),
+            "Payjoin payment URL generation failed for {InvoiceId}. Falling back to plain BIP21.");
 
     private readonly InvoiceRepository _invoiceRepository;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly IPayjoinStoreSettingsRepository _storeSettingsRepository;
     private readonly PayjoinUriSessionService _payjoinUriSessionService;
+    private readonly ILogger<PayjoinInvoicePaymentUrlService>? _logger;
 
     public PayjoinInvoicePaymentUrlService(
         InvoiceRepository invoiceRepository,
         BTCPayNetworkProvider networkProvider,
         IPayjoinStoreSettingsRepository storeSettingsRepository,
-        PayjoinUriSessionService payjoinUriSessionService)
+        PayjoinUriSessionService payjoinUriSessionService,
+        ILogger<PayjoinInvoicePaymentUrlService>? logger = null)
     {
         _invoiceRepository = invoiceRepository;
         _networkProvider = networkProvider;
         _storeSettingsRepository = storeSettingsRepository;
         _payjoinUriSessionService = payjoinUriSessionService;
+        _logger = logger;
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Integration fallback belongs at the public service boundary and must return plain BIP21 instead of escaping unexpected payjoin errors.")]
     public async Task<GetBip21Response?> GetInvoicePaymentUrlAsync(string invoiceId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(invoiceId))
@@ -62,16 +73,39 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
             return null;
         }
 
-        var storeSettings = await _storeSettingsRepository.GetAsync(invoice.StoreId).ConfigureAwait(false);
         var calculation = prompt.Calculate();
-        return await BuildPaymentUrlAsync(
-            invoice.Id,
-            invoice.StoreId,
-            invoice.MonitoringExpiration,
-            prompt.Destination,
-            calculation.Due,
-            storeSettings,
-            cancellationToken).ConfigureAwait(false);
+        var fallbackPaymentUrl = network.GenerateBIP21(prompt.Destination, calculation.Due).ToString();
+
+        try
+        {
+            var storeSettings = await _storeSettingsRepository.GetAsync(invoice.StoreId).ConfigureAwait(false);
+            if (storeSettings is null)
+            {
+                return CreatePlainBip21Response(fallbackPaymentUrl);
+            }
+
+            return await BuildPaymentUrlAsync(
+                invoice.Id,
+                invoice.StoreId,
+                invoice.MonitoringExpiration,
+                prompt.Destination,
+                calculation.Due,
+                storeSettings,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_logger is not null)
+            {
+                LogPayjoinPaymentUrlFallback(_logger, invoice.Id, ex);
+            }
+
+            return CreatePlainBip21Response(fallbackPaymentUrl);
+        }
     }
 
     private async Task<GetBip21Response?> BuildPaymentUrlAsync(
@@ -98,6 +132,15 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
         {
             Bip21 = paymentUrl,
             PayjoinEnabled = IsPayjoinEnabled(paymentUrl)
+        };
+    }
+
+    private static GetBip21Response CreatePlainBip21Response(string fallbackPaymentUrl)
+    {
+        return new GetBip21Response
+        {
+            Bip21 = fallbackPaymentUrl,
+            PayjoinEnabled = false
         };
     }
 
