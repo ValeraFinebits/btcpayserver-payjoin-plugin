@@ -117,6 +117,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Each receiver session must be isolated so a single session failure does not stop polling other sessions.")]
     internal async Task ProcessTickAsync(CancellationToken stoppingToken)
     {
         foreach (var session in _sessionStore.GetSessions())
@@ -124,6 +125,10 @@ public sealed class PayjoinReceiverPoller : BackgroundService
             try
             {
                 await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
             }
             catch (HttpRequestException ex)
             {
@@ -142,6 +147,10 @@ public sealed class PayjoinReceiverPoller : BackgroundService
             {
                 LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
                 RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
+            }
+            catch (Exception ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
             }
         }
     }
