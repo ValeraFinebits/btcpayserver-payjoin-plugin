@@ -264,7 +264,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         return session;
     }
 
-    private bool TryExpireSession(PayjoinReceiverSessionState session)
+    internal bool TryExpireSession(PayjoinReceiverSessionState session)
     {
         var now = DateTimeOffset.UtcNow;
         var deadline = GetCleanupDeadline(session);
@@ -292,7 +292,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         return true;
     }
 
-    private bool TryRemoveCloseRequestedSession(PayjoinReceiverSessionState session, ReceiveSession state)
+    internal bool TryRemoveCloseRequestedSession(PayjoinReceiverSessionState session, ReceiveSession state)
     {
         if (!session.IsCloseRequested)
         {
@@ -579,7 +579,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         return checked((ulong)dueSats);
     }
 
-    private static (PlainTxOut[] ExactPaymentOutputs, byte[] ReceiverChangeScript) CreateExactPaymentReceiverOutputs(
+    internal static (PlainTxOut[] ExactPaymentOutputs, byte[] ReceiverChangeScript) CreateExactPaymentReceiverOutputs(
         ulong exactPaymentAmountSats,
         byte[] receiverScript,
         byte[] receiverChangeScript)
@@ -793,7 +793,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         return null;
     }
 
-    private async Task<ReceivedCoin[]?> TryGetPersistedContributedCoinsAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
+    internal async Task<ReceivedCoin[]?> TryGetPersistedContributedCoinsAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
     {
         if (!session.TryGetContributedInput(out var contributedOutPoint))
         {
@@ -879,7 +879,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         await PostPayjoinProposalAsync(payjoinProposal, persister, ohttpRelayUrl, stoppingToken).ConfigureAwait(false);
     }
 
-    private static void EnsureContributedInputsPresent(PSBT proposalPsbt, ReceivedCoin[] receiverCoins)
+    internal static void EnsureContributedInputsPresent(PSBT proposalPsbt, ReceivedCoin[] receiverCoins)
     {
         var missingInputs = receiverCoins
             .Where(receiverCoin => proposalPsbt.Inputs.All(input => input.PrevOut != receiverCoin.OutPoint))
@@ -911,7 +911,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         }
     }
 
-    private static void ClearSenderInputFinalization(PSBT proposalPsbt, ReceivedCoin[] receiverCoins)
+    internal static void ClearSenderInputFinalization(PSBT proposalPsbt, ReceivedCoin[] receiverCoins)
     {
         foreach (var input in proposalPsbt.Inputs)
         {
@@ -930,7 +930,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         return receiverCoins.Any(receiverCoin => receiverCoin.OutPoint == prevOut);
     }
 
-    private static void ClearPartialSignatures(PSBT proposalPsbt)
+    internal static void ClearPartialSignatures(PSBT proposalPsbt)
     {
         foreach (var input in proposalPsbt.Inputs)
         {
@@ -992,7 +992,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     }
 
     // TODO: Load all wallet-owned scripts from the store's derivation scheme and check the incoming script against that full set. 
-    private sealed class ReceiverScriptOwnedCallback : IsScriptOwned
+    internal sealed class ReceiverScriptOwnedCallback : IsScriptOwned
     {
         private readonly byte[] _script;
 
@@ -1005,12 +1005,12 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     }
 
     // TODO: Implement a persistent store of seen outpoints and check against it here.
-    private sealed class NoInputsSeenCallback : IsOutputKnown
+    internal sealed class NoInputsSeenCallback : IsOutputKnown
     {
         public bool Callback(PlainOutPoint _outpoint) => false;
     }
 
-    private sealed class CloseRequestedBroadcastGuard : CanBroadcast
+    internal sealed class CloseRequestedBroadcastGuard : CanBroadcast
     {
         private readonly PayjoinReceiverSessionState _session;
 
@@ -1022,7 +1022,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         public bool Callback(byte[] _tx) => !_session.IsCloseRequested;
     }
 
-    private sealed class SigningProcessPsbt : ProcessPsbt
+    internal sealed class SigningProcessPsbt : ProcessPsbt
     {
         private readonly string _signedPsbt;
 
