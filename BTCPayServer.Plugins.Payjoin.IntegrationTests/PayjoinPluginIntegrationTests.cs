@@ -4,6 +4,7 @@ using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Tests;
 using NBitcoin;
+using NBitpayClient;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -65,7 +66,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await Task.Delay(delay, cts.Token).ConfigureAwait(true);
 
         var session = PayjoinReceiverTestHelper.GetRequiredReceiverSession(tester, invoiceId);
-        Assert.NotEmpty(session.GetContributedInputs());
+        Assert.True(session.TryGetContributedInput(out _));
 
         var transactionId = await paymentTask.ConfigureAwait(true);
         Assert.False(string.IsNullOrWhiteSpace(transactionId));
@@ -225,6 +226,69 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
         Assert.False(sessionStore.TryGetSession(invoiceId, out _));
         Assert.DoesNotContain(sessionStore.GetSessions(), session => session.InvoiceId == invoiceId);
+    }
+
+    [Fact
+    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
+    ]
+    [Trait("Integration", "Integration")]
+    public async Task CheckoutModelUsesPayjoinUrlAndCreatesReceiverSessionWhenEnabled()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var invoice = await context.User.BitPay.CreateInvoiceAsync(new Invoice
+        {
+            Price = 0.1m,
+            Currency = "BTC",
+            FullNotifications = true
+        }).WaitAsync(cts.Token).ConfigureAwait(true);
+
+        var checkoutModel = await PayjoinIntegrationTestSupport.GetCheckoutModelAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
+
+        Assert.Contains("pj=", checkoutModel.InvoiceBitcoinUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pjos=0", checkoutModel.InvoiceBitcoinUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pj=", checkoutModel.InvoiceBitcoinUrlQR, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pjos=0", checkoutModel.InvoiceBitcoinUrlQR, StringComparison.OrdinalIgnoreCase);
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey));
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey));
+
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
+    }
+
+    [Fact
+    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
+    ]
+    [Trait("Integration", "Integration")]
+    public async Task CheckoutModelFallsBackToPlainBip21WhenDisabled()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.User.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var invoice = await context.User.BitPay.CreateInvoiceAsync(new Invoice
+        {
+            Price = 0.1m,
+            Currency = "BTC",
+            FullNotifications = true
+        }).WaitAsync(cts.Token).ConfigureAwait(true);
+
+        var checkoutModel = await PayjoinIntegrationTestSupport.GetCheckoutModelAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
+
+        Assert.DoesNotContain("pj=", checkoutModel.InvoiceBitcoinUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("pjos=", checkoutModel.InvoiceBitcoinUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("pj=", checkoutModel.InvoiceBitcoinUrlQR, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("pjos=", checkoutModel.InvoiceBitcoinUrlQR, StringComparison.OrdinalIgnoreCase);
+        Assert.False(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey));
+        Assert.False(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey));
+
+        var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
+        Assert.False(sessionStore.TryGetSession(invoice.Id, out _));
     }
 
     [Fact
@@ -434,8 +498,8 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 new Uri(bip21Response.Bip21, UriKind.Absolute),
                 cts.Token)).ConfigureAwait(true);
 
-        // TODO: Replace this timeout assertion with a fast receiver rejection assertion once the payjoin library supports closing an in-flight session cleanly.
-        Assert.Contains("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("rejected", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
@@ -471,8 +535,8 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 new Uri(bip21Response.Bip21, UriKind.Absolute),
                 cts.Token)).ConfigureAwait(true);
 
-        // TODO: Replace this timeout assertion with a fast receiver rejection assertion once the payjoin library supports closing an in-flight session cleanly.
-        Assert.Contains("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("rejected", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
@@ -510,8 +574,8 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 new Uri(bip21Response.Bip21, UriKind.Absolute),
                 cts.Token)).ConfigureAwait(true);
 
-        // TODO: Replace this timeout assertion with a fast receiver rejection assertion once the payjoin library supports closing an in-flight session cleanly.
-        Assert.Contains("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("rejected", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 

@@ -1,4 +1,7 @@
+using BTCPayServer.Client.Models;
+using BTCPayServer.Controllers;
 using BTCPayServer.Data;
+using BTCPayServer.Models.InvoicingModels;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Controllers;
 using BTCPayServer.Plugins.Payjoin.Models;
@@ -52,6 +55,14 @@ internal static class PayjoinIntegrationTestSupport
         var bip21Response = await paymentUrlService.GetInvoicePaymentUrlAsync(invoiceId, cancellationToken).ConfigureAwait(true);
         Assert.NotNull(bip21Response);
         return bip21Response!;
+    }
+
+    public static async Task<CheckoutModel> GetCheckoutModelAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
+    {
+        var controller = tester.PayTester.GetController<UIInvoiceController>();
+        var actionResult = await controller.Checkout(invoiceId).ConfigureAwait(true);
+        var viewResult = Assert.IsType<ViewResult>(actionResult);
+        return Assert.IsType<CheckoutModel>(viewResult.Model);
     }
 
     public static void AssertPlainBip21(GetBip21Response bip21Response)

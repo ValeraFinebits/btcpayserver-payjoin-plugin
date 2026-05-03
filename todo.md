@@ -30,25 +30,12 @@ The current plan is intentionally phased:
 
 ## Current Baseline
 
-- `master` on this fork is `846f177`
-- `valera/master` is ahead of this fork's `master`
-- `chavic/persist-receiver-sessions` contains the durable receiver-session persistence work
-- `chavic/checkout-model-seam` stacks the checkout ownership work on top of persistence and is the current combined validation branch
-- `chavic/payjoin-artifact-freshness` is local-dev tooling only and is not part of the current shipping path
+The active foundation work is split into two review branches:
 
-Current review branches and PRs:
+- `chavic/persist-receiver-sessions`: durable receiver-session persistence and replay behavior
+- `chavic/checkout-model-seam`: checkout URL ownership work stacked after persistence
 
-- fork draft PR `#1`: `chavic/persist-receiver-sessions` -> `master`
-- fork draft PR `#3`: `chavic/checkout-model-seam` -> `chavic/persist-receiver-sessions`
-- upstream draft PR `ValeraFinebits/btcpayserver-payjoin-plugin#6`: `chavic/persist-receiver-sessions` -> `master`
-
-Current local validation on `chavic/checkout-model-seam`:
-
-- command:
-  - `dotnet test BTCPayServer.Plugins.Payjoin.sln -c Debug`
-- result:
-  - `BTCPayServer.Plugins.Payjoin.Tests`: 18 passed
-  - `BTCPayServer.Plugins.Payjoin.IntegrationTests`: 22 skipped
+The persistence branch should be reviewed first. The checkout branch depends on it and should be validated after persistence behavior is stable.
 
 ## What Is Already Done
 
@@ -65,44 +52,38 @@ These items are complete enough that they should not be reopened without a concr
 
 ## Ordered Remaining Work
 
-The remaining blocker is not architecture anymore. It is live validation of the combined path on `chavic/checkout-model-seam`.
+### 1. Finish Receiver Session Persistence Review
 
-Receiver-session orchestration in `PayjoinReceiverPoller` is still too fragile beyond single test purchases because session handling remains sequential. This should be treated as a blocker in the active work.
+Receiver-session persistence should remain database-authoritative. The store should avoid memory-first mutation patterns because a failed write can leave detached in-process state inconsistent with durable state.
 
-### 1. Prepare The Local Test Environment
+- keep `PayjoinReceiverSessionState` scoped as an immutable snapshot/DTO
+- keep event sequencing protected by durable database constraints
+- avoid process-local locking as the primary consistency mechanism
+- keep terminal session cleanup explicit and persisted
+- keep focused unit coverage for replay, event append sequencing, and cleanup behavior
 
-- make sure BTCPay is loading this plugin build
-- make sure the local regtest or Docker-backed harness is working
-- make sure only the Payjoin plugin is staged in the local plugin load path if other local plugins could interfere
-- if bindings are missing, generate them:
-  - `bash rust-payjoin/payjoin-ffi/csharp/scripts/generate_bindings.sh`
+OHTTP long-poll timeout diagnostics are tracked separately in <https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/17>. That issue should be handled as poller diagnostics and timeout behavior, not as part of the core persistence branch unless it blocks replay correctness.
 
-### 2. Run The Combined Live Validation
+### 2. Validate Restart And Replay
 
-Run the live test on `chavic/checkout-model-seam` and verify the full path:
+Validate the persistence branch against a live BTCPay instance before treating it as ready to merge:
 
-- a Payjoin-enabled BTC checkout emits a Payjoin-capable payment URL
-- the plugin creates or reuses the receiver session correctly
+- a Payjoin-enabled BTC checkout creates or reuses a receiver session correctly
 - an active negotiation can be started
 - BTCPay can be restarted during the active negotiation
 - the receiver session reloads and replays deterministically enough after restart
 - a successful Payjoin removes the active session
 - a non-Payjoin terminal invoice path also cleans up a waiting session
 
-### 3. If The Live Validation Fails
+### 3. Keep Checkout Work Separate
 
-- fix the bug on `chavic/checkout-model-seam`
-- rerun:
-  - `dotnet test BTCPayServer.Plugins.Payjoin.sln -c Debug`
-- rerun the live validation
-- keep the fixes on the stacked branch until the combined path is clean
+The checkout model seam should stay on its stacked branch until the persistence branch is accepted or otherwise stable enough to build on. It should not be used to hide persistence defects.
 
-### 4. If The Live Validation Passes
-
-- record the result in a durable place that other reviewers can see
-- update upstream PR `ValeraFinebits/btcpayserver-payjoin-plugin#6` with the validation result
-- decide whether the checkout seam should be proposed upstream as its own follow-up stacked PR
-- only after that treat the current foundation work as closed
+- verify that Payjoin-capable BTC checkout URLs are emitted from the checkout model seam
+- preserve safe fallback to plain BIP21
+- cover both `pj` and `pjos` URL fields where relevant
+- cover API-issued invoice/payment URLs as well as the browser checkout path
+- keep merchant-facing checkout toggles explicit, with Payjoin enabled by default when the store supports it
 
 ## Follow-Up Work After The Current Foundation Pass
 

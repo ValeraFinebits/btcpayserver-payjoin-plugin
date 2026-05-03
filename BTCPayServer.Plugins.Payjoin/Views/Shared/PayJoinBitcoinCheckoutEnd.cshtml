@@ -1,0 +1,541 @@
+@inject BTCPayServer.Services.BTCPayServerEnvironment Env
+
+<style>
+    .payjoin-checkout-controls [data-payjoin-mode] {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+</style>
+
+<script>
+(function () {
+    const controlsId = 'PayJoinCheckoutControls';
+    const controlsMountId = 'PayJoinCheckoutControlsMount';
+    const testPaymentId = 'PayJoinCheckoutTestPayment';
+    const runTestEnabled = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Env.CheatMode));
+    const runTestEndpoint = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Url.Action("RunTestPayment", "UIPayJoin")));
+    let selectedPaymentMode = null;
+    let paymentUrlFetchInvoiceId = null;
+    let tickScheduled = false;
+    let observerStarted = false;
+
+    function getCheckoutVm() {
+        const checkout = document.getElementById('Checkout');
+        return checkout && checkout.__vue__;
+    }
+
+    function getModel() {
+        const vm = getCheckoutVm();
+        return vm && vm.srvModel;
+    }
+
+    function shouldShowControls(model) {
+        return model &&
+            model.status === 'New' &&
+            model.paymentMethodId === 'BTC-CHAIN' &&
+            model.payjoinPaymentUrl &&
+            model.payjoinPlainBitcoinUrl &&
+            model.payjoinPaymentUrl !== model.payjoinPlainBitcoinUrl;
+    }
+
+    function extractQueryParameter(url, key) {
+        const querySeparatorIndex = url.indexOf('?');
+        if (querySeparatorIndex < 0 || querySeparatorIndex === url.length - 1) {
+            return null;
+        }
+
+        const segments = url.slice(querySeparatorIndex + 1).split('&');
+        for (const segment of segments) {
+            const segmentKey = segment.split('=', 1)[0];
+            if (segmentKey.toLowerCase() === key.toLowerCase()) {
+                return segment;
+            }
+        }
+
+        return null;
+    }
+
+    function hasQueryKey(segment, key) {
+        return segment.split('=', 1)[0].toLowerCase() === key.toLowerCase();
+    }
+
+    function mergePayjoinIntoPaymentUrl(baseUrl, payjoinUrl) {
+        if (!baseUrl) {
+            return payjoinUrl;
+        }
+
+        if (!payjoinUrl) {
+            return baseUrl;
+        }
+
+        const endpointParameter = extractQueryParameter(payjoinUrl, 'pj');
+        const outputSubstitutionParameter = extractQueryParameter(payjoinUrl, 'pjos');
+        const payjoinParameters = [];
+        if (outputSubstitutionParameter) {
+            payjoinParameters.push(outputSubstitutionParameter);
+        }
+        if (endpointParameter) {
+            payjoinParameters.push(endpointParameter);
+        }
+
+        const querySeparatorIndex = baseUrl.indexOf('?');
+        const prefix = querySeparatorIndex >= 0 ? baseUrl.slice(0, querySeparatorIndex) : baseUrl;
+        const query = querySeparatorIndex >= 0 ? baseUrl.slice(querySeparatorIndex + 1) : '';
+        const segments = query
+            ? query.split('&').filter(segment => segment && !hasQueryKey(segment, 'pj') && !hasQueryKey(segment, 'pjos'))
+            : [];
+
+        if (payjoinParameters.length > 0) {
+            const lightningIndex = segments.findIndex(segment => hasQueryKey(segment, 'lightning'));
+            const insertIndex = lightningIndex >= 0 ? lightningIndex : segments.length;
+            segments.splice(insertIndex, 0, ...payjoinParameters);
+        }
+
+        return segments.length === 0 ? prefix : prefix + '?' + segments.join('&');
+    }
+
+    function applyFetchedPaymentUrl(model, response) {
+        const bip21 = response && (response.bip21 || response.Bip21);
+        const payjoinEnabled = response && (response.payjoinEnabled === true || response.PayjoinEnabled === true);
+        if (!bip21 || !payjoinEnabled) {
+            return;
+        }
+
+        const vm = getCheckoutVm();
+        if (!vm || !vm.srvModel || vm.srvModel.invoiceId !== model.invoiceId) {
+            return;
+        }
+
+        const nextModel = Object.assign({}, vm.srvModel, {
+            payjoinPaymentUrl: mergePayjoinIntoPaymentUrl(model.payjoinPlainBitcoinUrl, bip21),
+            payjoinPaymentUrlQR: mergePayjoinIntoPaymentUrl(model.payjoinPlainBitcoinUrlQR, bip21)
+        });
+
+        if (vm.$set) {
+            vm.$set(vm, 'srvModel', nextModel);
+        } else {
+            vm.srvModel = nextModel;
+        }
+    }
+
+    function requestPayjoinPaymentUrl(model) {
+        if (!model ||
+            model.status !== 'New' ||
+            model.paymentMethodId !== 'BTC-CHAIN' ||
+            !model.payjoinPaymentUrlEndpoint ||
+            !model.payjoinPlainBitcoinUrl ||
+            model.payjoinPaymentUrl ||
+            paymentUrlFetchInvoiceId === model.invoiceId) {
+            return;
+        }
+
+        paymentUrlFetchInvoiceId = model.invoiceId;
+        fetch(model.payjoinPaymentUrlEndpoint, {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+        })
+            .then(response => response.ok ? response.json() : null)
+            .then(response => applyFetchedPaymentUrl(model, response))
+            .catch(error => console.error('PayJoin payment URL fetch failed', error))
+            .finally(function () {
+                scheduleTick();
+            });
+    }
+
+    function refreshPaymentDom(paymentUrl, paymentUrlQr) {
+        const payInWallet = getPayInWalletButton();
+        if (payInWallet) {
+            payInWallet.setAttribute('href', paymentUrl);
+        }
+
+        const qrContainer = document.querySelector('#payment .payment-box .qr-container');
+        if (qrContainer) {
+            qrContainer.dataset.qrValue = paymentUrlQr;
+            qrContainer.dataset.clipboard = paymentUrl;
+        }
+    }
+
+    function getPaymentFields(model, mode) {
+        if (mode === 'standard') {
+            return {
+                url: model.payjoinPlainBitcoinUrl,
+                qr: model.payjoinPlainBitcoinUrlQR
+            };
+        }
+
+        return {
+            url: model.payjoinPaymentUrl,
+            qr: model.payjoinPaymentUrlQR
+        };
+    }
+
+    function getSelectedPaymentMode(model) {
+        if (selectedPaymentMode) {
+            return selectedPaymentMode;
+        }
+
+        return model.payjoinEnabledByDefault === false ? 'standard' : 'payjoin';
+    }
+
+    function setPaymentUrl(paymentUrl, paymentUrlQr) {
+        const vm = getCheckoutVm();
+        const model = vm && vm.srvModel;
+        if (!model || !paymentUrl || !paymentUrlQr) {
+            return;
+        }
+
+        const nextModel = Object.assign({}, model, {
+            invoiceBitcoinUrl: paymentUrl,
+            invoiceBitcoinUrlQR: paymentUrlQr
+        });
+
+        if (vm.$set) {
+            vm.$set(vm, 'srvModel', nextModel);
+        } else {
+            vm.srvModel = nextModel;
+        }
+
+        refreshPaymentDom(paymentUrl, paymentUrlQr);
+        if (vm.$nextTick) {
+            vm.$nextTick(function () {
+                refreshPaymentDom(paymentUrl, paymentUrlQr);
+                scheduleTick();
+            });
+        } else {
+            scheduleTick();
+        }
+    }
+
+    function applySelectedPaymentMode(model) {
+        if (!shouldShowControls(model)) {
+            return;
+        }
+
+        const mode = getSelectedPaymentMode(model);
+        const paymentFields = getPaymentFields(model, mode);
+        if (!paymentFields.url || !paymentFields.qr) {
+            return;
+        }
+
+        if (model.invoiceBitcoinUrl !== paymentFields.url || model.invoiceBitcoinUrlQR !== paymentFields.qr) {
+            setPaymentUrl(paymentFields.url, paymentFields.qr);
+        }
+    }
+
+    function getControls() {
+        return document.getElementById(controlsId);
+    }
+
+    function removeControls() {
+        const controls = getControls();
+        if (controls) {
+            controls.remove();
+        }
+    }
+
+    function getPayInWalletButton() {
+        return document.querySelector('#payment .payment-box #PayInWallet');
+    }
+
+    function getControlsMount() {
+        return document.getElementById(controlsMountId);
+    }
+
+    function getActiveTabStyle() {
+        const payInWallet = getPayInWalletButton();
+        if (!payInWallet || !window.getComputedStyle) {
+            return null;
+        }
+
+        const style = window.getComputedStyle(payInWallet);
+        return {
+            backgroundColor: style.backgroundColor,
+            borderColor: style.borderColor,
+            color: style.color
+        };
+    }
+
+    function buildControls(model) {
+        const controls = document.createElement('div');
+        controls.id = controlsId;
+        controls.className = 'payjoin-checkout-controls mt-3';
+        controls.innerHTML = [
+            '<div class="d-flex align-items-center justify-content-center gap-1 text-muted" style="font-size: 0.8125rem;">',
+            '  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">',
+            '    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>',
+            '    <polyline points="9 12 11 14 15 10"></polyline>',
+            '  </svg>',
+            '  <span>PayJoin</span>',
+            '</div>',
+            '<div class="btn-group d-flex w-100 mt-3" role="tablist" aria-label="Bitcoin payment mode">',
+            '  <button type="button" class="btn" role="tab" data-payjoin-mode="payjoin">PayJoin</button>',
+            '  <button type="button" class="btn" role="tab" data-payjoin-mode="standard">Standard BTC</button>',
+            '</div>'
+        ].join('');
+
+        updateControlState(controls, model);
+        return controls;
+    }
+
+    function updateTabState(button, active, activeStyle) {
+        button.classList.toggle('active', active);
+        button.classList.toggle('btn-primary', active);
+        button.classList.toggle('btn-outline-secondary', !active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+
+        if (active && activeStyle) {
+            button.style.backgroundColor = activeStyle.backgroundColor;
+            button.style.borderColor = activeStyle.borderColor;
+            button.style.color = activeStyle.color;
+        } else {
+            button.style.removeProperty('background-color');
+            button.style.removeProperty('border-color');
+            button.style.removeProperty('color');
+        }
+    }
+
+    function updateControlState(controls, model) {
+        const payjoinButton = controls.querySelector('[data-payjoin-mode="payjoin"]');
+        const standardButton = controls.querySelector('[data-payjoin-mode="standard"]');
+        const payjoinActive = model.invoiceBitcoinUrl === model.payjoinPaymentUrl;
+        const standardActive = model.invoiceBitcoinUrl === model.payjoinPlainBitcoinUrl;
+        const activeStyle = getActiveTabStyle();
+        controls.classList.toggle('payjoin-mode-payjoin', payjoinActive);
+        controls.classList.toggle('payjoin-mode-standard', standardActive);
+        updateTabState(payjoinButton, payjoinActive, activeStyle);
+        updateTabState(standardButton, standardActive, activeStyle);
+    }
+
+    function placeControls(controls, payInWallet, controlsMount) {
+        if (payInWallet) {
+            if (controls.previousElementSibling !== payInWallet) {
+                payInWallet.insertAdjacentElement('afterend', controls);
+            }
+            return true;
+        }
+
+        if (controlsMount) {
+            if (controls.parentElement !== controlsMount) {
+                controlsMount.appendChild(controls);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    function renderControls() {
+        const model = getModel();
+        if (!shouldShowControls(model)) {
+            removeControls();
+            return;
+        }
+
+        const payInWallet = getPayInWalletButton();
+        const controlsMount = getControlsMount();
+        if (!payInWallet && !controlsMount) {
+            return;
+        }
+
+        let controls = getControls();
+        if (!controls) {
+            controls = buildControls(model);
+            placeControls(controls, payInWallet, controlsMount);
+            return;
+        }
+
+        if (placeControls(controls, payInWallet, controlsMount)) {
+            updateControlState(controls, model);
+        }
+    }
+
+    function scheduleTick() {
+        if (tickScheduled) {
+            return;
+        }
+
+        tickScheduled = true;
+        window.requestAnimationFrame(function () {
+            tickScheduled = false;
+            tick();
+        });
+    }
+
+    function getTestPayment() {
+        return document.getElementById(testPaymentId);
+    }
+
+    function removeTestPayment() {
+        const testPayment = getTestPayment();
+        if (testPayment) {
+            testPayment.remove();
+        }
+    }
+
+    function buildTestPayment(model) {
+        const wrapper = document.createElement('div');
+        wrapper.id = testPaymentId;
+        wrapper.className = 'payjoin-test-payment mt-4';
+
+        const label = document.createElement('label');
+        label.className = 'control-label form-label';
+        label.textContent = 'PayJoin test payment';
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-secondary rounded-pill w-100';
+        button.dataset.payjoinRunTest = '';
+        button.dataset.label = 'Run Payjoin test payment';
+        button.dataset.testEndpoint = runTestEndpoint || '';
+        button.textContent = 'Run Payjoin test payment';
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(button);
+        updateTestPayment(wrapper, model);
+        return wrapper;
+    }
+
+    function updateTestPayment(testPayment, model) {
+        const button = testPayment.querySelector('[data-payjoin-run-test]');
+        if (!button) {
+            return;
+        }
+
+        button.dataset.invoiceId = model.invoiceId || '';
+        button.dataset.paymentUrl = model.payjoinPaymentUrl || '';
+    }
+
+    function renderTestPayment() {
+        const model = getModel();
+        if (!runTestEnabled || !shouldShowControls(model)) {
+            removeTestPayment();
+            return;
+        }
+
+        const cheatSection = document.querySelector('#checkout-cheating section');
+        if (!cheatSection) {
+            return;
+        }
+
+        let testPayment = getTestPayment();
+        if (!testPayment) {
+            testPayment = buildTestPayment(model);
+            const fakePaymentForm = cheatSection.querySelector('form#test-payment');
+            const mineBlockForm = cheatSection.querySelector('form#mine-block');
+            if (fakePaymentForm) {
+                fakePaymentForm.insertAdjacentElement('afterend', testPayment);
+            } else if (mineBlockForm) {
+                mineBlockForm.insertAdjacentElement('beforebegin', testPayment);
+            } else {
+                cheatSection.appendChild(testPayment);
+            }
+            return;
+        }
+
+        updateTestPayment(testPayment, model);
+    }
+
+    const observer = new MutationObserver(scheduleTick);
+
+    function startObserver() {
+        if (observerStarted) {
+            return;
+        }
+
+        const target = document.getElementById('Checkout') || document.getElementById('payment');
+        if (!target) {
+            return;
+        }
+
+        observerStarted = true;
+        observer.observe(target, { childList: true, subtree: true });
+    }
+
+    function tick() {
+        startObserver();
+        requestPayjoinPaymentUrl(getModel());
+        applySelectedPaymentMode(getModel());
+        renderControls();
+        renderTestPayment();
+    }
+
+    document.addEventListener('click', function (event) {
+        const modeButton = event.target.closest('#' + controlsId + ' [data-payjoin-mode]');
+        if (!modeButton) {
+            return;
+        }
+
+        const model = getModel();
+        if (!shouldShowControls(model)) {
+            return;
+        }
+
+        selectedPaymentMode = modeButton.dataset.payjoinMode === 'standard' ? 'standard' : 'payjoin';
+        const paymentFields = getPaymentFields(model, selectedPaymentMode);
+        setPaymentUrl(paymentFields.url, paymentFields.qr);
+    });
+
+    document.addEventListener('DOMContentLoaded', function () {
+        startObserver();
+        scheduleTick();
+    });
+    tick();
+})();
+</script>
+
+@if (Env.CheatMode)
+{
+    <script>
+    (function () {
+        const resetDelayMs = 2000;
+        if (window.__payjoinRunTestBound) {
+            return;
+        }
+
+        window.__payjoinRunTestBound = true;
+
+        document.addEventListener('click', async event => {
+            const button = event.target.closest('[data-payjoin-run-test]');
+            if (!button) {
+                return;
+            }
+
+            const invoiceId = button.getAttribute('data-invoice-id');
+            const paymentUrl = button.getAttribute('data-payment-url');
+            const endpoint = button.getAttribute('data-test-endpoint');
+            if (!invoiceId || !paymentUrl || !endpoint) {
+                return;
+            }
+
+            const label = button.getAttribute('data-label') || button.textContent;
+            button.disabled = true;
+            button.textContent = 'Running...';
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ invoiceId, paymentUrl })
+                });
+                const payload = response.ok ? await response.json() : null;
+                if (payload && (payload.succeeded === true || payload.Succeeded === true)) {
+                    button.textContent = 'Done';
+                    setTimeout(() => {
+                        button.textContent = label;
+                        button.disabled = false;
+                    }, resetDelayMs);
+                    return;
+                }
+            } catch (error) {
+                console.error('Payjoin test payment failed', error);
+            }
+
+            button.textContent = label;
+            button.disabled = false;
+        });
+    })();
+    </script>
+}

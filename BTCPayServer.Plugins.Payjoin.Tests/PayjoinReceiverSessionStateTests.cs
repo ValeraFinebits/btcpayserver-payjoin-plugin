@@ -1,5 +1,7 @@
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Client.Models;
 using NBitcoin;
+using System;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -7,102 +9,108 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 public class PayjoinReceiverSessionStateTests
 {
     [Fact]
-    public void ContributedInputsAreEmptyByDefault()
+    public void ContributedInputIsMissingByDefault()
     {
         var session = CreateSession();
 
-        Assert.Empty(session.GetContributedInputs());
+        Assert.False(session.TryGetContributedInput(out _));
     }
 
     [Fact]
-    public void ContributedInputsRoundTripWithDefensiveCopies()
+    public void ContributedInputRestoresFromPersistedMetadata()
     {
-        var session = CreateSession();
-        var contributedInput = new PayjoinReceiverContributedInput(
-            new OutPoint(uint256.Parse("1111111111111111111111111111111111111111111111111111111111111111"), 1),
-            new KeyPath("0/1"));
+        var contributedOutPoint = new OutPoint(uint256.Parse("1111111111111111111111111111111111111111111111111111111111111111"), 1);
+        var session = CreateSession(
+            contributedInputTransactionId: contributedOutPoint.Hash.ToString(),
+            contributedInputOutputIndex: checked((long)contributedOutPoint.N));
 
-        session.SetContributedInputs(contributedInput);
-
-        var firstRead = session.GetContributedInputs();
-        Assert.Single(firstRead);
-        Assert.Equal(contributedInput.OutPoint, firstRead[0].OutPoint);
-        Assert.Equal(contributedInput.KeyPath, firstRead[0].KeyPath);
-
-        firstRead[0] = new PayjoinReceiverContributedInput(
-            new OutPoint(uint256.Parse("2222222222222222222222222222222222222222222222222222222222222222"), 2),
-            new KeyPath("1/2"));
-
-        var secondRead = session.GetContributedInputs();
-        Assert.Single(secondRead);
-        Assert.Equal(contributedInput.OutPoint, secondRead[0].OutPoint);
-        Assert.Equal(contributedInput.KeyPath, secondRead[0].KeyPath);
+        Assert.True(session.TryGetContributedInput(out var restoredOutPoint));
+        Assert.Equal(contributedOutPoint, restoredOutPoint);
     }
 
     [Fact]
-    public void SetContributedInputsCopiesInputArray()
+    public void ContributedInputRestoresMaximumOutputIndex()
     {
-        var session = CreateSession();
-        var originalInput = new PayjoinReceiverContributedInput(
-            new OutPoint(uint256.Parse("4444444444444444444444444444444444444444444444444444444444444444"), 4),
-            new KeyPath("3/4"));
-        var replacementInput = new PayjoinReceiverContributedInput(
-            new OutPoint(uint256.Parse("5555555555555555555555555555555555555555555555555555555555555555"), 5),
-            new KeyPath("4/5"));
-        var contributedInputs = new[] { originalInput };
+        var contributedOutPoint = new OutPoint(uint256.Parse("2222222222222222222222222222222222222222222222222222222222222222"), uint.MaxValue);
+        var session = CreateSession(
+            contributedInputTransactionId: contributedOutPoint.Hash.ToString(),
+            contributedInputOutputIndex: contributedOutPoint.N);
 
-        session.SetContributedInputs(contributedInputs);
-        contributedInputs[0] = replacementInput;
-
-        var storedInputs = session.GetContributedInputs();
-        Assert.Single(storedInputs);
-        Assert.Equal(originalInput.OutPoint, storedInputs[0].OutPoint);
-        Assert.Equal(originalInput.KeyPath, storedInputs[0].KeyPath);
+        Assert.True(session.TryGetContributedInput(out var restoredOutPoint));
+        Assert.Equal(contributedOutPoint, restoredOutPoint);
     }
 
     [Fact]
-    public void MultipleContributedInputsRoundTripInOrder()
+    public void EventsAreReturnedAsCopy()
     {
-        var session = CreateSession();
-        var firstInput = new PayjoinReceiverContributedInput(
-            new OutPoint(uint256.Parse("6666666666666666666666666666666666666666666666666666666666666666"), 6),
-            new KeyPath("5/6"));
-        var secondInput = new PayjoinReceiverContributedInput(
-            new OutPoint(uint256.Parse("7777777777777777777777777777777777777777777777777777777777777777"), 7),
-            new KeyPath("6/7"));
+        var session = CreateSession(events: new[] { "event-1", "event-2" });
 
-        session.SetContributedInputs(firstInput, secondInput);
+        var events = session.GetEvents();
+        events[0] = "mutated";
 
-        var storedInputs = session.GetContributedInputs();
-        Assert.Equal(2, storedInputs.Length);
-        Assert.Equal(firstInput.OutPoint, storedInputs[0].OutPoint);
-        Assert.Equal(firstInput.KeyPath, storedInputs[0].KeyPath);
-        Assert.Equal(secondInput.OutPoint, storedInputs[1].OutPoint);
-        Assert.Equal(secondInput.KeyPath, storedInputs[1].KeyPath);
+        Assert.Equal(new[] { "event-1", "event-2" }, session.GetEvents());
     }
 
     [Fact]
-    public void ClearContributedInputsRemovesStoredMetadata()
+    public void InitializedPollAfterCloseRequestIsAvailableUntilConsumed()
     {
-        var session = CreateSession();
-        session.SetContributedInputs(new PayjoinReceiverContributedInput(
-            new OutPoint(uint256.Parse("3333333333333333333333333333333333333333333333333333333333333333"), 3),
-            new KeyPath("2/3")));
+        var closeRequested = CreateSession(
+            isCloseRequested: true,
+            closeInvoiceStatus: InvoiceStatus.Expired,
+            closeRequestedAt: DateTimeOffset.UtcNow);
+        var consumed = CreateSession(
+            isCloseRequested: true,
+            closeInvoiceStatus: InvoiceStatus.Expired,
+            closeRequestedAt: DateTimeOffset.UtcNow,
+            initializedPollAfterCloseRequestConsumed: true);
 
-        session.ClearContributedInputs();
-
-        Assert.Empty(session.GetContributedInputs());
+        Assert.True(closeRequested.CanPollInitializedAfterCloseRequest());
+        Assert.False(consumed.CanPollInitializedAfterCloseRequest());
     }
 
-    private static PayjoinReceiverSessionState CreateSession()
+    [Fact]
+    public void InvalidPersistedContributedInputMetadataIsIgnored()
     {
+        var now = DateTimeOffset.UtcNow;
+        var session = new PayjoinReceiverSessionState(
+            "invoice-1",
+            "store-1",
+            "bcrt1qexampleaddress0000000000000000000000000",
+            new Uri("https://relay.example/"),
+            now.AddMinutes(5),
+            now,
+            now,
+            contributedInputTransactionId: "not-a-txid",
+            contributedInputOutputIndex: 1);
+
+        Assert.False(session.TryGetContributedInput(out _));
+    }
+
+    private static PayjoinReceiverSessionState CreateSession(
+        DateTimeOffset? updatedAt = null,
+        bool isCloseRequested = false,
+        InvoiceStatus? closeInvoiceStatus = null,
+        DateTimeOffset? closeRequestedAt = null,
+        bool initializedPollAfterCloseRequestConsumed = false,
+        string? contributedInputTransactionId = null,
+        long? contributedInputOutputIndex = null,
+        string[]? events = null)
+    {
+        var now = DateTimeOffset.UtcNow;
         return new PayjoinReceiverSessionState(
             "invoice-1",
             "store-1",
             "bcrt1qexampleaddress0000000000000000000000000",
             new Uri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(5),
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow);
+            now.AddMinutes(5),
+            now,
+            updatedAt ?? now,
+            isCloseRequested,
+            closeInvoiceStatus,
+            closeRequestedAt,
+            initializedPollAfterCloseRequestConsumed,
+            contributedInputTransactionId: contributedInputTransactionId,
+            contributedInputOutputIndex: contributedInputOutputIndex,
+            events: events);
     }
 }

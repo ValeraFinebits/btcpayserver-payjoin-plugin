@@ -25,11 +25,17 @@ public sealed class PayjoinUriSessionService
             LogLevel.Warning,
             new EventId(3, nameof(LogUnexpectedPayjoinFallback)),
             "Falling back to plain BIP21 for invoice {InvoiceId}: {Reason}");
+    private static readonly Action<ILogger, string, Exception?> LogUninitializedSessionRebuild =
+        LoggerMessage.Define<string>(
+            LogLevel.Warning,
+            new EventId(4, nameof(LogUninitializedSessionRebuild)),
+            "Rebuilding uninitialized payjoin receiver session for invoice {InvoiceId}.");
 
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly PayjoinReceiverSessionStore _receiverSessionStore;
     private readonly PayjoinOhttpKeysProvider _ohttpKeysProvider;
     private readonly PayjoinAvailabilityService _availabilityService;
+    private readonly PayjoinSessionBuildLock _sessionBuildLock;
     private readonly ILogger<PayjoinUriSessionService> _logger;
 
     public PayjoinUriSessionService(
@@ -37,12 +43,14 @@ public sealed class PayjoinUriSessionService
         PayjoinReceiverSessionStore receiverSessionStore,
         PayjoinOhttpKeysProvider ohttpKeysProvider,
         PayjoinAvailabilityService availabilityService,
+        PayjoinSessionBuildLock sessionBuildLock,
         ILogger<PayjoinUriSessionService> logger)
     {
         _networkProvider = networkProvider;
         _receiverSessionStore = receiverSessionStore;
         _ohttpKeysProvider = ohttpKeysProvider;
         _availabilityService = availabilityService;
+        _sessionBuildLock = sessionBuildLock;
         _logger = logger;
     }
 
@@ -107,6 +115,7 @@ public sealed class PayjoinUriSessionService
 
         try
         {
+            using var sessionBuildLock = await _sessionBuildLock.AcquireAsync(invoiceId, cancellationToken).ConfigureAwait(false);
             var session = _receiverSessionStore.CreateSession(
                 invoiceId,
                 destination,
@@ -114,15 +123,24 @@ public sealed class PayjoinUriSessionService
                 ohttpRelayUrl,
                 monitoringExpiresAt,
                 out var created);
-            var persister = PayjoinReceiverSessionStore.CreatePersister(session);
 
+            if (!created && session.GetEvents().Length == 0)
+            {
+                LogUninitializedSessionRebuild(_logger, invoiceId, null);
+                _receiverSessionStore.RemoveSession(invoiceId);
+                session = _receiverSessionStore.CreateSession(
+                    invoiceId,
+                    destination,
+                    storeId,
+                    ohttpRelayUrl,
+                    monitoringExpiresAt,
+                    out created);
+            }
+
+            var persister = _receiverSessionStore.CreatePersister(session);
             if (created)
             {
-                var amountSats = checked((ulong)Money.Coins(due).Satoshi);
-                using var receiverBuilder = new ReceiverBuilder(destination, directoryUrl, ohttpKeys);
-                using var builderWithAmount = receiverBuilder.WithAmount(amountSats);
-                using var transition = builderWithAmount.Build();
-                using var savedSession = transition.Save(persister);
+                InitializeSession(destination, due, directoryUrl, ohttpKeys, persister);
             }
 
             using var replay = PayjoinMethods.ReplayReceiverEventLog(persister);
@@ -148,6 +166,20 @@ public sealed class PayjoinUriSessionService
             LogReceiverBuilderFailure(_logger, invoiceId, e);
             return bip21;
         }
+    }
+
+    private static void InitializeSession(
+        string destination,
+        decimal due,
+        string directoryUrl,
+        OhttpKeys ohttpKeys,
+        JsonReceiverSessionPersister persister)
+    {
+        var amountSats = checked((ulong)Money.Coins(due).Satoshi);
+        using var receiverBuilder = new ReceiverBuilder(destination, directoryUrl, ohttpKeys);
+        using var builderWithAmount = receiverBuilder.WithAmount(amountSats);
+        using var transition = builderWithAmount.Build();
+        using var savedSession = transition.Save(persister);
     }
 
     private string LogExpectedFallbackAndReturnBip21(string bip21, string invoiceId, string reason)

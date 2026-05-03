@@ -27,7 +27,7 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
             return new PayjoinStoreSettings();
         }
 
-        return ReadSettings(store);
+        return ReadSettings(store.GetStoreBlob());
     }
 
     public async Task<IReadOnlyList<(string StoreId, PayjoinStoreSettings Settings)>> GetAllAsync()
@@ -36,7 +36,7 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
         var results = new List<(string StoreId, PayjoinStoreSettings Settings)>();
         foreach (var store in stores)
         {
-            results.Add((store.Id, ReadSettings(store)));
+            results.Add((store.Id, ReadSettings(store.GetStoreBlob())));
         }
 
         return results;
@@ -62,9 +62,8 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
         await _storeRepository.UpdateStore(store).ConfigureAwait(false);
     }
 
-    private static PayjoinStoreSettings ReadSettings(StoreData store)
+    internal static PayjoinStoreSettings ReadSettings(StoreBlob blob)
     {
-        var blob = store.GetStoreBlob();
         if (blob.AdditionalData is null || !blob.AdditionalData.TryGetValue(Key, out var token) || token is null)
         {
             return new PayjoinStoreSettings();

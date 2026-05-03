@@ -41,6 +41,7 @@ public class UIPayJoinController : Controller
     private readonly PaymentMethodHandlerDictionary _handlers;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly IPayjoinStoreSettingsRepository _storeSettingsRepository;
+    private readonly IPayjoinInvoicePaymentUrlService _paymentUrlService;
     private readonly IRunTestPaymentService _runTestPaymentService;
     private readonly ILogger<UIPayJoinController>? _logger;
 
@@ -51,6 +52,7 @@ public class UIPayJoinController : Controller
         PaymentMethodHandlerDictionary handlers,
         BTCPayNetworkProvider networkProvider,
         IPayjoinStoreSettingsRepository storeSettingsRepository,
+        IPayjoinInvoicePaymentUrlService paymentUrlService,
         IRunTestPaymentService runTestPaymentService,
         ILogger<UIPayJoinController>? logger = null)
     {
@@ -60,8 +62,27 @@ public class UIPayJoinController : Controller
         _handlers = handlers;
         _networkProvider = networkProvider;
         _storeSettingsRepository = storeSettingsRepository;
+        _paymentUrlService = paymentUrlService;
         _runTestPaymentService = runTestPaymentService;
         _logger = logger;
+    }
+
+    [AllowAnonymous]
+    [HttpGet("invoices/{invoiceId}/payment-url")]
+    public async Task<ActionResult<GetBip21Response>> GetInvoicePaymentUrl(string invoiceId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(invoiceId))
+        {
+            return NotFound();
+        }
+
+        var paymentUrl = await _paymentUrlService.GetInvoicePaymentUrlAsync(invoiceId, cancellationToken).ConfigureAwait(false);
+        if (paymentUrl is null)
+        {
+            return NotFound();
+        }
+
+        return Ok(paymentUrl);
     }
 
     // TODO: Remove this test endpoint.

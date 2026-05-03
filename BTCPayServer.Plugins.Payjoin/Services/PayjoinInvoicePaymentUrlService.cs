@@ -1,3 +1,4 @@
+using BTCPayServer.Client.Models;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Services.Invoices;
@@ -9,7 +10,7 @@ using PayjoinUri = Payjoin.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
-public sealed class PayjoinInvoicePaymentUrlService
+public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlService
 {
     private const string CryptoCode = "BTC";
 
@@ -43,6 +44,11 @@ public sealed class PayjoinInvoicePaymentUrlService
             return null;
         }
 
+        if (invoice.GetInvoiceState().Status != InvoiceStatus.New)
+        {
+            return null;
+        }
+
         var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(CryptoCode);
         var prompt = invoice.GetPaymentPrompt(paymentMethodId);
         if (prompt?.Destination is null)
@@ -58,15 +64,34 @@ public sealed class PayjoinInvoicePaymentUrlService
 
         var storeSettings = await _storeSettingsRepository.GetAsync(invoice.StoreId).ConfigureAwait(false);
         var calculation = prompt.Calculate();
-        var paymentUrl = await _payjoinUriSessionService.BuildAsync(
-            CryptoCode,
-            prompt.Destination,
-            calculation.Due,
-            storeSettings,
-            storeSettings.EnabledByDefault,
+        return await BuildPaymentUrlAsync(
             invoice.Id,
             invoice.StoreId,
             invoice.MonitoringExpiration,
+            prompt.Destination,
+            calculation.Due,
+            storeSettings,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<GetBip21Response?> BuildPaymentUrlAsync(
+        string invoiceId,
+        string storeId,
+        DateTimeOffset monitoringExpiresAt,
+        string destination,
+        decimal due,
+        PayjoinStoreSettings storeSettings,
+        CancellationToken cancellationToken)
+    {
+        var paymentUrl = await _payjoinUriSessionService.BuildAsync(
+            CryptoCode,
+            destination,
+            due,
+            storeSettings,
+            storeSettings.EnabledByDefault,
+            invoiceId,
+            storeId,
+            monitoringExpiresAt,
             cancellationToken).ConfigureAwait(false);
 
         return new GetBip21Response

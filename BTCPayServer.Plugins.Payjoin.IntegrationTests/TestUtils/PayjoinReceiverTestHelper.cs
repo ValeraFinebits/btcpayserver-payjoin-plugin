@@ -43,6 +43,26 @@ internal static class PayjoinReceiverTestHelper
         Assert.Fail($"Expected receiver session for invoice '{invoiceId}' to be marked for closure or removed.");
     }
 
+    public static async Task AssertReceiverSessionEventuallyHasContributedInputsAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
+    {
+        var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
+        var maxAttempts = GetAttemptCount(ReceiverSessionRemovalTimeout);
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (sessionStore.TryGetSession(invoiceId, out var session) && session is not null && session.TryGetContributedInput(out _))
+            {
+                return;
+            }
+
+            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(true);
+        }
+
+        Assert.Fail($"Expected receiver session for invoice '{invoiceId}' to contain contributed inputs.");
+    }
+
     public static PayjoinReceiverSessionState GetRequiredReceiverSession(ServerTester tester, string invoiceId)
     {
         var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
