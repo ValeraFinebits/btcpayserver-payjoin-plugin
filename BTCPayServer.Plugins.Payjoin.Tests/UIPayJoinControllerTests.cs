@@ -13,7 +13,7 @@ public class UIPayJoinControllerTests
 {
     private static UIPayJoinController CreateController()
     {
-        return new UIPayJoinController(null!, null!, null!, null!, null!, null!, null!);
+        return new UIPayJoinController(null!, null!, null!, null!, null!, null!, null!, null!);
     }
 
     private static RunTestPaymentResponse AssertRunTestPaymentFailure(ActionResult<RunTestPaymentResponse> actionResult, string expectedMessage)
