@@ -227,9 +227,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         Assert.DoesNotContain(sessionStore.GetSessions(), session => session.InvoiceId == invoiceId);
     }
 
-    [Fact
-    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
-    ]
+    [Fact]
     [Trait("Integration", "Integration")]
     public async Task CheckoutModelStoresMetadataAndGetBip21CreatesSessionWhenEnabled()
     {
