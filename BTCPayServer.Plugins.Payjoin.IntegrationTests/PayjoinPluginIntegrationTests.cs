@@ -227,7 +227,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         Assert.DoesNotContain(sessionStore.GetSessions(), session => session.InvoiceId == invoiceId);
     }
 
-    [Fact]
+    [Fact
+    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
+    ]
     [Trait("Integration", "Integration")]
     public async Task CheckoutModelStoresMetadataAndGetBip21CreatesSessionWhenEnabled()
     {
@@ -265,7 +267,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
     }
 
-    [Fact]
+    [Fact
+    (Skip = "Manual Docker-backed integration test. Remove Skip to run it explicitly.")
+    ]
     [Trait("Integration", "Integration")]
     public async Task CheckoutModelStoresDisabledPayjoinMetadataWhenDisabled()
     {
