@@ -1,4 +1,3 @@
-using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
