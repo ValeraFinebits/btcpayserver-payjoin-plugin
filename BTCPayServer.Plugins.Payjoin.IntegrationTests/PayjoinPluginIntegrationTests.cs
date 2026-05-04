@@ -229,7 +229,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
-    public async Task CheckoutModelUsesPayjoinUrlAndCreatesReceiverSessionWhenEnabled()
+    public async Task CheckoutModelStoresMetadataAndGetBip21CreatesSessionWhenEnabled()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
         using var tester = CreateServerTester(newDb: true);
@@ -246,19 +246,28 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         var checkoutModel = await PayjoinIntegrationTestSupport.GetCheckoutModelAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
 
-        Assert.Contains("pj=", checkoutModel.InvoiceBitcoinUrl, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("pjos=0", checkoutModel.InvoiceBitcoinUrl, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("pj=", checkoutModel.InvoiceBitcoinUrlQR, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("pjos=0", checkoutModel.InvoiceBitcoinUrlQR, StringComparison.OrdinalIgnoreCase);
         Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey));
-        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey));
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlQrKey));
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinPaymentUrlEndpointKey));
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinDefaultEnabledKey));
+        Assert.Equal(checkoutModel.InvoiceBitcoinUrl, checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey].ToObject<string>());
+        Assert.Equal(checkoutModel.InvoiceBitcoinUrlQR, checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlQrKey].ToObject<string>());
+        Assert.False(string.IsNullOrWhiteSpace(checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinPaymentUrlEndpointKey].ToObject<string>()));
+        Assert.True(checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinDefaultEnabledKey].ToObject<bool>());
+        Assert.False(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey));
+
+        var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
+        Assert.False(sessionStore.TryGetSession(invoice.Id, out _));
+
+        var bip21Response = await PayjoinIntegrationTestSupport.GetBip21Async(tester, invoice.Id, cts.Token).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
     }
 
     [Fact]
     [Trait("Integration", "Integration")]
-    public async Task CheckoutModelFallsBackToPlainBip21WhenDisabled()
+    public async Task CheckoutModelStoresDisabledPayjoinMetadataWhenDisabled()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
         using var tester = CreateServerTester(newDb: true);
@@ -275,11 +284,14 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         var checkoutModel = await PayjoinIntegrationTestSupport.GetCheckoutModelAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
 
-        Assert.DoesNotContain("pj=", checkoutModel.InvoiceBitcoinUrl, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("pjos=", checkoutModel.InvoiceBitcoinUrl, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("pj=", checkoutModel.InvoiceBitcoinUrlQR, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("pjos=", checkoutModel.InvoiceBitcoinUrlQR, StringComparison.OrdinalIgnoreCase);
-        Assert.False(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey));
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey));
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlQrKey));
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinPaymentUrlEndpointKey));
+        Assert.True(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinDefaultEnabledKey));
+        Assert.Equal(checkoutModel.InvoiceBitcoinUrl, checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey].ToObject<string>());
+        Assert.Equal(checkoutModel.InvoiceBitcoinUrlQR, checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlQrKey].ToObject<string>());
+        Assert.False(string.IsNullOrWhiteSpace(checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinPaymentUrlEndpointKey].ToObject<string>()));
+        Assert.False(checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinDefaultEnabledKey].ToObject<bool>());
         Assert.False(checkoutModel.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey));
 
         var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
