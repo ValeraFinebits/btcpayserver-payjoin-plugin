@@ -610,6 +610,7 @@ public class PayjoinReceiverPollerTests
 
     private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
     {
+        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
         private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
 
         public TestPayjoinPluginDbContextFactory()
@@ -618,10 +619,9 @@ public class PayjoinReceiverPollerTests
                 ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
             }))
         {
-            var databaseRoot = new InMemoryDatabaseRoot();
             var databaseName = $"payjoin-poller-tests-{Guid.NewGuid():N}";
             _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                .UseInMemoryDatabase(databaseName, databaseRoot)
+                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
                 .Options;
 
             using var db = CreateContext();
