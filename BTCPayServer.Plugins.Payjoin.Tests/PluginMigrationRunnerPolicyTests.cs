@@ -67,6 +67,7 @@ public class PluginMigrationRunnerPolicyTests
 
         protected internal override Task MigrateAsync(PayjoinPluginDbContext context, CancellationToken cancellationToken)
         {
+            _ = context;
             MigrateAsyncCallCount++;
 
             return _migrationBehavior switch
