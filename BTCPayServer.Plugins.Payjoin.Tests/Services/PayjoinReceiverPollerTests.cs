@@ -49,7 +49,7 @@ public class PayjoinReceiverPollerTests
         // Arrange
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-expired-cleanup", out _);
+        var session = CreateSession(store, "invoice-expired-cleanup");
         var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 1);
         Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(-1)));
 
@@ -98,7 +98,7 @@ public class PayjoinReceiverPollerTests
         }
     }
 
-    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId, out bool created)
+    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
         return store.CreateSession(
             invoiceId,
@@ -106,7 +106,7 @@ public class PayjoinReceiverPollerTests
             "store-1",
             new Uri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(15),
-            out created);
+            ["bootstrap-event"]);
     }
 
     private sealed class TestContext : IDisposable
