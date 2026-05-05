@@ -482,6 +482,44 @@ public class PayjoinReceiverPollerTests
         Assert.Equal("stored-psbt", result);
     }
 
+    [Fact]
+    public async Task ExecuteAsyncLogsAndContinuesAfterGetSessionsFailure()
+    {
+        // Arrange
+        var logger = new TestLogger<PayjoinReceiverPoller>();
+        using var dbContextFactory = new ThrowingOncePayjoinPluginDbContextFactory();
+        using var poller = new PayjoinReceiverPoller(
+            new PayjoinReceiverSessionStore(dbContextFactory),
+            Substitute.For<IHttpClientFactory>(),
+            CreateEmptyNetworkProvider(),
+            null!,
+            null!,
+            new PaymentMethodHandlerDictionary(Array.Empty<IPaymentMethodHandler>()),
+            null!,
+            null!,
+            Substitute.For<IPayjoinStoreSettingsRepository>(),
+            logger);
+        using var cancellationTokenSource = new CancellationTokenSource();
+
+        // Act
+        await poller.StartAsync(cancellationTokenSource.Token).ConfigureAwait(true);
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(12);
+        while (dbContextFactory.SuccessfulCreateContextCalls == 0 && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(100), global::Xunit.TestContext.Current.CancellationToken).ConfigureAwait(true);
+        }
+        cancellationTokenSource.Cancel();
+        await poller.StopAsync(CancellationToken.None).ConfigureAwait(true);
+
+        // Assert
+        var logEntry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warning, logEntry.LogLevel);
+        Assert.Equal(new EventId(1, "LogPayjoinReceiverPollingFailed"), logEntry.EventId);
+        var exception = Assert.IsType<InvalidOperationException>(logEntry.Exception);
+        Assert.Equal("Simulated session load failure.", exception.Message);
+        Assert.True(dbContextFactory.SuccessfulCreateContextCalls > 0);
+    }
+
     private static PayjoinReceiverPoller CreatePoller(
         PayjoinReceiverSessionStore sessionStore,
         BTCPayNetworkProvider? networkProvider = null)
@@ -631,6 +669,77 @@ public class PayjoinReceiverPollerTests
         public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
         {
             return new PayjoinPluginDbContext(_dbContextOptions);
+        }
+    }
+
+    private sealed class ThrowingOncePayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory, IDisposable
+    {
+        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
+        private bool _throwOnFirstCreateContext = true;
+
+        public int SuccessfulCreateContextCalls { get; private set; }
+
+        public ThrowingOncePayjoinPluginDbContextFactory()
+            : base(Options.Create(new DatabaseOptions
+            {
+                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
+            }))
+        {
+            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
+                .UseInMemoryDatabase($"payjoin-poller-failing-tests-{Guid.NewGuid():N}", new InMemoryDatabaseRoot())
+                .Options;
+
+            using var db = new PayjoinPluginDbContext(_dbContextOptions);
+            db.Database.EnsureCreated();
+        }
+
+        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
+        {
+            if (_throwOnFirstCreateContext)
+            {
+                _throwOnFirstCreateContext = false;
+                throw new InvalidOperationException("Simulated session load failure.");
+            }
+
+            SuccessfulCreateContextCalls++;
+            return new PayjoinPluginDbContext(_dbContextOptions);
+        }
+
+        public void Dispose()
+        {
+            using var db = new PayjoinPluginDbContext(_dbContextOptions);
+            db.Database.EnsureDeleted();
+        }
+    }
+
+    private sealed class TestLogger<T> : ILogger<T>
+    {
+        public List<LogEntry> Entries { get; } = new();
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull
+        {
+            return NullScope.Instance;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(new LogEntry(logLevel, eventId, exception));
+        }
+
+        public sealed record LogEntry(LogLevel LogLevel, EventId EventId, Exception? Exception);
+
+        private sealed class NullScope : IDisposable
+        {
+            public static NullScope Instance { get; } = new();
+
+            public void Dispose()
+            {
+            }
         }
     }
 }

@@ -102,38 +102,46 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
         {
-            foreach (var session in _sessionStore.GetSessions())
+            try
             {
-                try
-                {
-                    await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (HttpRequestException ex)
-                {
-                    LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-                }
-                catch (InvalidOperationException ex)
-                {
-                    LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-                    RemoveSession(session.InvoiceId, "receiver session failed with invalid operation");
-                }
-                catch (TaskCanceledException ex)
-                {
-                    LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-                }
-                catch (UniffiException ex)
-                {
-                    LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-                    RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
-                }
-                catch (Exception ex)
-                {
-                    LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-                }
+                await ProcessTickAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                LogPayjoinReceiverPollingFailed(_logger, ex);
+            }
+        }
+    }
+
+    internal async Task ProcessTickAsync(CancellationToken stoppingToken)
+    {
+        foreach (var session in _sessionStore.GetSessions())
+        {
+            try
+            {
+                await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+            }
+            catch (InvalidOperationException ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+                RemoveSession(session.InvoiceId, "receiver session failed with invalid operation");
+            }
+            catch (TaskCanceledException ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+            }
+            catch (UniffiException ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+                RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
             }
         }
     }
@@ -212,27 +220,27 @@ public sealed class PayjoinReceiverPoller : BackgroundService
                 await ProcessWantsInputsAsync(wantsInputs.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsFeeRange wantsFeeRange:
-            {
-                var contributedCoinsForFeeRange = await TryGetRequiredPersistedContributedCoinsAsync(session, "persisted receiver input unavailable", stoppingToken).ConfigureAwait(false);
-                if (contributedCoinsForFeeRange is null)
                 {
-                    return;
-                }
+                    var contributedCoinsForFeeRange = await TryGetRequiredPersistedContributedCoinsAsync(session, "persisted receiver input unavailable", stoppingToken).ConfigureAwait(false);
+                    if (contributedCoinsForFeeRange is null)
+                    {
+                        return;
+                    }
 
-                await ProcessWantsFeeRangeAsync(wantsFeeRange.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, contributedCoinsForFeeRange, stoppingToken).ConfigureAwait(false);
-                break;
-            }
+                    await ProcessWantsFeeRangeAsync(wantsFeeRange.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, contributedCoinsForFeeRange, stoppingToken).ConfigureAwait(false);
+                    break;
+                }
             case ReceiveSession.ProvisionalProposal provisionalProposal:
-            {
-                var contributedCoinsForProposal = await TryGetRequiredPersistedContributedCoinsAsync(session, "persisted receiver input unavailable", stoppingToken).ConfigureAwait(false);
-                if (contributedCoinsForProposal is null)
                 {
-                    return;
-                }
+                    var contributedCoinsForProposal = await TryGetRequiredPersistedContributedCoinsAsync(session, "persisted receiver input unavailable", stoppingToken).ConfigureAwait(false);
+                    if (contributedCoinsForProposal is null)
+                    {
+                        return;
+                    }
 
-                await ProcessProvisionalProposalAsync(provisionalProposal.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, contributedCoinsForProposal, stoppingToken).ConfigureAwait(false);
-                break;
-            }
+                    await ProcessProvisionalProposalAsync(provisionalProposal.inner, persister, receiverScript, session.OhttpRelayUrl, session.StoreId, session.InvoiceId, contributedCoinsForProposal, stoppingToken).ConfigureAwait(false);
+                    break;
+                }
             case ReceiveSession.PayjoinProposal payjoinProposal:
                 await PostPayjoinProposalAsync(payjoinProposal.inner, persister, session.OhttpRelayUrl, stoppingToken).ConfigureAwait(false);
                 break;
