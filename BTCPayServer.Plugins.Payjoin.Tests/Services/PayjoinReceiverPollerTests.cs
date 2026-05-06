@@ -106,7 +106,7 @@ public class PayjoinReceiverPollerTests
             "store-1",
             new Uri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(15),
-            ["bootstrap-event"]);
+            out _);
     }
 
     private sealed class TestContext : IDisposable

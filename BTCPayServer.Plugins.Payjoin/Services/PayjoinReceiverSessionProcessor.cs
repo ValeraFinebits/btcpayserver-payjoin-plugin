@@ -62,6 +62,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         _logger = logger;
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Session processing isolates per-session failures so one receiver session does not stop the polling loop.")]
     public async Task ProcessTickAsync(CancellationToken stoppingToken)
     {
         await Parallel.ForEachAsync(
