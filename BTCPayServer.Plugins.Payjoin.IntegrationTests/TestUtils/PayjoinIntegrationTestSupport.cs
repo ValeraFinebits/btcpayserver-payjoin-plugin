@@ -205,7 +205,7 @@ internal static class PayjoinIntegrationTestSupport
         Uri paymentUrl,
         CancellationToken cancellationToken)
     {
-        return await PayInvoiceViaExternalPayjoinPayerAsync(tester, payer, network, storeId, paymentUrl, preProposalPollDelay: null, cancellationToken).ConfigureAwait(true);
+        return await PayInvoiceViaExternalPayjoinPayerAsync(tester, payer, network, storeId, paymentUrl, preProposalPollDelay: null, mineBlockAfterBroadcast: true, cancellationToken).ConfigureAwait(true);
     }
 
     public static async Task<string> PayInvoiceViaExternalPayjoinPayerAsync(
@@ -217,10 +217,23 @@ internal static class PayjoinIntegrationTestSupport
         TimeSpan? preProposalPollDelay,
         CancellationToken cancellationToken)
     {
+        return await PayInvoiceViaExternalPayjoinPayerAsync(tester, payer, network, storeId, paymentUrl, preProposalPollDelay, mineBlockAfterBroadcast: true, cancellationToken).ConfigureAwait(true);
+    }
+
+    public static async Task<string> PayInvoiceViaExternalPayjoinPayerAsync(
+        ServerTester tester,
+        TestAccount payer,
+        BTCPayNetwork network,
+        string storeId,
+        Uri paymentUrl,
+        TimeSpan? preProposalPollDelay,
+        bool mineBlockAfterBroadcast,
+        CancellationToken cancellationToken)
+    {
         var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
         Assert.NotNull(storeSettings.OhttpRelayUrl);
 
-        var payjoinPayer = new PayjoinTestPayer(tester, payer, network);
+        var payjoinPayer = new PayjoinTestPayer(tester, payer, network, mineBlockAfterBroadcast: mineBlockAfterBroadcast);
         var paymentResult = await payjoinPayer.PayAsync(paymentUrl, storeSettings.OhttpRelayUrl, preProposalPollDelay, cancellationToken).ConfigureAwait(true);
         Assert.False(string.IsNullOrWhiteSpace(paymentResult.TransactionId), "TransactionId must be returned on success");
 

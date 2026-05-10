@@ -26,8 +26,14 @@ internal sealed class PayjoinTestPayer
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly BTCPayWalletProvider _walletProvider;
     private readonly bool _useReservedSenderChangeAddress;
+    private readonly bool _mineBlockAfterBroadcast;
 
-    public PayjoinTestPayer(ServerTester tester, TestAccount payer, BTCPayNetwork network, bool useReservedSenderChangeAddress = false)
+    public PayjoinTestPayer(
+        ServerTester tester,
+        TestAccount payer,
+        BTCPayNetwork network,
+        bool useReservedSenderChangeAddress = false,
+        bool mineBlockAfterBroadcast = true)
     {
         ArgumentNullException.ThrowIfNull(tester);
         ArgumentNullException.ThrowIfNull(payer);
@@ -40,6 +46,7 @@ internal sealed class PayjoinTestPayer
         _httpClientFactory = tester.PayTester.GetService<IHttpClientFactory>();
         _walletProvider = tester.PayTester.GetService<BTCPayWalletProvider>();
         _useReservedSenderChangeAddress = useReservedSenderChangeAddress;
+        _mineBlockAfterBroadcast = mineBlockAfterBroadcast;
     }
 
     public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, CancellationToken cancellationToken)
@@ -69,7 +76,10 @@ internal sealed class PayjoinTestPayer
 
         var transaction = signedProposal.ExtractTransaction();
         await BroadcastTransactionAsync(transaction, cancellationToken).ConfigureAwait(false);
-        await MineBlockAsync(cancellationToken).ConfigureAwait(false);
+        if (_mineBlockAfterBroadcast)
+        {
+            await MineBlockAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         return new PayjoinTestPaymentResult(
             transaction.GetHash().ToString(),
