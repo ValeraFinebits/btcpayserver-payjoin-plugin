@@ -248,7 +248,6 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             Math.Min(receiverOutpointsBeforeSecondWave.Count, concurrentSessionCount),
             secondWave.SuccessfulPaymentCount);
     }
-
     private static Task<PaymentOutcome> CapturePaymentOutcomeAsync(Task<string> paymentTask)
     {
         return paymentTask.ContinueWith(completedTask =>
