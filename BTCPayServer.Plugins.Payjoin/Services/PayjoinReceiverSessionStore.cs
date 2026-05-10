@@ -219,10 +219,17 @@ public sealed class PayjoinReceiverSessionStore
             return 0;
         }
 
+        var impactedInvoiceIds = expiredReservations
+            .Select(x => x.InvoiceId)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var impactedSessions = context.ReceiverSessions
+            .Where(x => impactedInvoiceIds.Contains(x.InvoiceId))
+            .ToDictionary(x => x.InvoiceId, StringComparer.Ordinal);
+
         foreach (var expiredReservation in expiredReservations)
         {
-            var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == expiredReservation.InvoiceId);
-            if (sessionData is null)
+            if (!impactedSessions.TryGetValue(expiredReservation.InvoiceId, out var sessionData))
             {
                 continue;
             }

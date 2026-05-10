@@ -81,7 +81,6 @@ public class PayjoinReceiverSessionProcessorTests
             new NoOpOutputBuilder(),
             new NoOpInputSelector(),
             new NoOpProposalFinalizer(),
-            new NoOpStoreSettingsRepository(),
             NullLogger<PayjoinReceiverSessionProcessor>.Instance);
     }
 
@@ -133,13 +132,6 @@ public class PayjoinReceiverSessionProcessorTests
         public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, WantsFeeRange proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, ProvisionalProposal proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, PayjoinProposal proposal, CancellationToken cancellationToken) => Task.CompletedTask;
-    }
-
-    private sealed class NoOpStoreSettingsRepository : IPayjoinStoreSettingsRepository
-    {
-        public Task<PayjoinStoreSettings> GetAsync(string storeId) => Task.FromResult(new PayjoinStoreSettings());
-        public Task<IReadOnlyList<(string StoreId, PayjoinStoreSettings Settings)>> GetAllAsync() => Task.FromResult<IReadOnlyList<(string StoreId, PayjoinStoreSettings Settings)>>([]);
-        public Task SetAsync(string storeId, PayjoinStoreSettings settings) => Task.CompletedTask;
     }
 
     private sealed class SelectiveGuard(string failingInvoiceId) : IPayjoinReceiverSessionGuard

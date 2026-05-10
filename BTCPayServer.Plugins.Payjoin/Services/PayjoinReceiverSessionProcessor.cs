@@ -2,7 +2,6 @@ using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging;
 using Payjoin;
 using System;
-using System.Diagnostics.CodeAnalysis;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -43,7 +42,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private readonly IPayjoinReceiverInputSelector _inputSelector;
     private readonly IPayjoinReceiverProposalFinalizer _proposalFinalizer;
     private readonly ILogger<PayjoinReceiverSessionProcessor> _logger;
-    private readonly IPayjoinStoreSettingsRepository _storeSettingsRepository;
 
     public PayjoinReceiverSessionProcessor(
         PayjoinReceiverSessionStore sessionStore,
@@ -52,7 +50,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         IPayjoinReceiverOutputBuilder outputBuilder,
         IPayjoinReceiverInputSelector inputSelector,
         IPayjoinReceiverProposalFinalizer proposalFinalizer,
-        IPayjoinStoreSettingsRepository storeSettingsRepository,
         ILogger<PayjoinReceiverSessionProcessor> logger)
     {
         _sessionStore = sessionStore;
@@ -61,7 +58,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         _outputBuilder = outputBuilder;
         _inputSelector = inputSelector;
         _proposalFinalizer = proposalFinalizer;
-        _storeSettingsRepository = storeSettingsRepository;
         _logger = logger;
     }
 
