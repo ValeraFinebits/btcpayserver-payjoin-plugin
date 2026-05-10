@@ -2,6 +2,7 @@ using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Tests;
 using NBitpayClient;
+using NBXplorer;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -232,6 +233,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         await MineSingleBlockAsync(tester, network, cts.Token).ConfigureAwait(true);
 
         var expectedSuccessCount = Math.Min(receiverInputCount, concurrentSessionCount);
+<<<<<<< HEAD
         var actualSuccessCount = paymentResults.Count(result => result.Succeeded);
         if (actualSuccessCount != expectedSuccessCount)
         {
@@ -239,6 +241,9 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{diagnostics}");
         }
 
+=======
+        Assert.Equal(expectedSuccessCount, paymentResults.Count(result => result.Succeeded));
+>>>>>>> faedb80 (test: Add concurrency tests)
         Assert.Equal(paymentResults.Length - expectedSuccessCount, paymentResults.Count(result => !result.Succeeded));
 
         var successfulIndexes = paymentResults
@@ -379,6 +384,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         await MineSingleBlockAsync(tester, network, cancellationToken).ConfigureAwait(true);
 
         var expectedSuccessCount = Math.Min(availableReceiverInputCount, concurrentSessionCount);
+<<<<<<< HEAD
         var actualSuccessCount = paymentResults.Count(result => result.Succeeded);
         if (actualSuccessCount != expectedSuccessCount)
         {
@@ -386,6 +392,9 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{diagnostics}");
         }
 
+=======
+        Assert.Equal(expectedSuccessCount, paymentResults.Count(result => result.Succeeded));
+>>>>>>> faedb80 (test: Add concurrency tests)
         Assert.Equal(paymentResults.Length - expectedSuccessCount, paymentResults.Count(result => !result.Succeeded));
 
         var successfulIndexes = paymentResults
@@ -414,6 +423,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         return new ContentionWaveResult(expectedSuccessCount);
     }
 
+<<<<<<< HEAD
     private static async Task<string> DescribeReceiverDiagnosticsAsync(ServerTester tester, IEnumerable<string> invoiceIds)
     {
         var diagnostics = await Task.WhenAll(invoiceIds.Select(async invoiceId =>
@@ -480,6 +490,8 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         }
     }
 
+=======
+>>>>>>> faedb80 (test: Add concurrency tests)
     private sealed record PaymentOutcome(bool Succeeded, string? TransactionId, Exception? Exception);
 
     private sealed record ContentionWaveResult(int SuccessfulPaymentCount);
