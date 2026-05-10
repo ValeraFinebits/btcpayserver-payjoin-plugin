@@ -1,4 +1,5 @@
 using BTCPayServer.Abstractions.Models;
+using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Wallets;
 using Microsoft.EntityFrameworkCore;

@@ -108,7 +108,6 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             bip21RequestsPerInvoice,
             cts.Token).ConfigureAwait(true);
     }
-
     [Fact]
     [Trait("Integration", "Integration")]
     public async Task ConcurrentReceiverSessionsAllowOnlyOneSuccessfulPaymentWhenSingleReceiverInputExists()
@@ -321,6 +320,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             Math.Min(receiverOutpointsBeforeSecondWave.Count, concurrentSessionCount),
             secondWave.SuccessfulPaymentCount);
     }
+
     private static Task<PaymentOutcome> CapturePaymentOutcomeAsync(Task<string> paymentTask)
     {
         return paymentTask.ContinueWith(completedTask =>
