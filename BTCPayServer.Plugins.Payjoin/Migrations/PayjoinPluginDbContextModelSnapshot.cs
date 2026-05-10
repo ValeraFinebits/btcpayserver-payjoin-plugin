@@ -73,6 +73,51 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.ToTable(PayjoinPluginDbSchema.ReceiverSessionsTable, PayjoinPluginDbSchema.SchemaName);
                 });
 
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverInputReservationData", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("InvoiceId")
+                        .HasColumnType("text");
+
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("ReservedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("StoreId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TransactionId")
+                        .HasMaxLength(PayjoinPluginDbSchema.TransactionIdMaxLength)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName(PayjoinPluginDbSchema.ReceiverInputReservationsExpiresAtIndex);
+
+                    b.HasIndex("InvoiceId")
+                        .HasDatabaseName(PayjoinPluginDbSchema.ReceiverInputReservationsInvoiceIdIndex);
+
+                    b.HasIndex("StoreId")
+                        .HasDatabaseName(PayjoinPluginDbSchema.ReceiverInputReservationsStoreIdIndex);
+
+                    b.HasIndex("TransactionId", "OutputIndex")
+                        .IsUnique()
+                        .HasDatabaseName(PayjoinPluginDbSchema.ReceiverInputReservationsOutPointIndex);
+
+                    b.ToTable(PayjoinPluginDbSchema.ReceiverInputReservationsTable, PayjoinPluginDbSchema.SchemaName);
+                });
+
             modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverSessionEventData", b =>
                 {
                     b.Property<long>("Id")
@@ -127,9 +172,22 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Navigation("Session");
                 });
 
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverInputReservationData", b =>
+                {
+                    b.HasOne("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverSessionData", "Session")
+                        .WithMany("InputReservations")
+                        .HasForeignKey("InvoiceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Session");
+                });
+
             modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverSessionData", b =>
                 {
                     b.Navigation("Events");
+
+                    b.Navigation("InputReservations");
                 });
 #pragma warning restore 612, 618
         }

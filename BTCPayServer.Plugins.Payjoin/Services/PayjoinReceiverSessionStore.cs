@@ -2,7 +2,6 @@ using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Data;
 using Microsoft.EntityFrameworkCore;
 using NBitcoin;
-using Npgsql;
 using Payjoin;
 using System;
 using System.Collections.Generic;
@@ -14,11 +13,16 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 public sealed class PayjoinReceiverSessionStore
 {
     private readonly PayjoinPluginDbContextFactory _pluginDbContextFactory;
+    private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
 
-    public PayjoinReceiverSessionStore(PayjoinPluginDbContextFactory pluginDbContextFactory)
+    internal PayjoinReceiverSessionStore(
+        PayjoinPluginDbContextFactory pluginDbContextFactory,
+        IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector)
     {
         ArgumentNullException.ThrowIfNull(pluginDbContextFactory);
+        ArgumentNullException.ThrowIfNull(uniqueConstraintViolationDetector);
         _pluginDbContextFactory = pluginDbContextFactory;
+        _uniqueConstraintViolationDetector = uniqueConstraintViolationDetector;
     }
 
     public PayjoinReceiverSessionState CreateSession(
@@ -98,6 +102,14 @@ public sealed class PayjoinReceiverSessionStore
             context.ReceiverSessionEvents.RemoveRange(sessionEvents);
         }
 
+        var inputReservations = context.ReceiverInputReservations
+            .Where(x => x.InvoiceId == invoiceId)
+            .ToArray();
+        if (inputReservations.Length > 0)
+        {
+            context.ReceiverInputReservations.RemoveRange(inputReservations);
+        }
+
         context.ReceiverSessions.Remove(sessionData);
         context.SaveChanges();
         return true;
@@ -131,6 +143,103 @@ public sealed class PayjoinReceiverSessionStore
         return true;
     }
 
+    public bool TryReserveContributedInput(
+        string storeId,
+        string invoiceId,
+        OutPoint outPoint,
+        DateTimeOffset expiresAt)
+    {
+        ArgumentNullException.ThrowIfNull(outPoint);
+        using var context = _pluginDbContextFactory.CreateContext();
+        var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
+        if (sessionData is null)
+        {
+            return false;
+        }
+
+        var transactionId = outPoint.Hash.ToString();
+        var outputIndex = checked((long)outPoint.N);
+        if (!string.Equals(sessionData.StoreId, storeId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var existingReservation = context.ReceiverInputReservations
+            .SingleOrDefault(x => x.TransactionId == transactionId && x.OutputIndex == outputIndex);
+        if (existingReservation is not null)
+        {
+            if (string.Equals(existingReservation.InvoiceId, invoiceId, StringComparison.Ordinal))
+            {
+                return sessionData.ContributedInputTransactionId == transactionId &&
+                       sessionData.ContributedInputOutputIndex == outputIndex;
+            }
+
+            return false;
+        }
+
+        if (sessionData.ContributedInputTransactionId is not null || sessionData.ContributedInputOutputIndex is not null)
+        {
+            return sessionData.ContributedInputTransactionId == transactionId &&
+                   sessionData.ContributedInputOutputIndex == outputIndex;
+        }
+
+        var reservedAt = DateTimeOffset.UtcNow;
+        sessionData.ContributedInputTransactionId = transactionId;
+        sessionData.ContributedInputOutputIndex = outputIndex;
+        sessionData.UpdatedAt = reservedAt;
+        context.ReceiverInputReservations.Add(new PayjoinReceiverInputReservationData
+        {
+            InvoiceId = invoiceId,
+            StoreId = storeId,
+            TransactionId = transactionId,
+            OutputIndex = outputIndex,
+            ReservedAt = reservedAt,
+            ExpiresAt = expiresAt
+        });
+
+        try
+        {
+            context.SaveChanges();
+            return true;
+        }
+        catch (DbUpdateException ex) when (IsReceiverInputReservationConflict(ex))
+        {
+            return false;
+        }
+    }
+
+    public int CleanupExpiredInputReservations(DateTimeOffset now)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        var expiredReservations = context.ReceiverInputReservations
+            .Where(x => x.ExpiresAt <= now)
+            .ToArray();
+        if (expiredReservations.Length == 0)
+        {
+            return 0;
+        }
+
+        foreach (var expiredReservation in expiredReservations)
+        {
+            var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == expiredReservation.InvoiceId);
+            if (sessionData is null)
+            {
+                continue;
+            }
+
+            if (string.Equals(sessionData.ContributedInputTransactionId, expiredReservation.TransactionId, StringComparison.Ordinal) &&
+                sessionData.ContributedInputOutputIndex == expiredReservation.OutputIndex)
+            {
+                sessionData.ContributedInputTransactionId = null;
+                sessionData.ContributedInputOutputIndex = null;
+                sessionData.UpdatedAt = now;
+            }
+        }
+
+        context.ReceiverInputReservations.RemoveRange(expiredReservations);
+        return context.SaveChanges();
+    }
+
     public bool TryConsumeInitializedPollAfterCloseRequest(string invoiceId)
     {
         using var context = _pluginDbContextFactory.CreateContext();
@@ -143,30 +252,6 @@ public sealed class PayjoinReceiverSessionStore
         }
 
         sessionData.InitializedPollAfterCloseRequestConsumed = true;
-        sessionData.UpdatedAt = DateTimeOffset.UtcNow;
-        context.SaveChanges();
-        return true;
-    }
-
-    public bool TryPersistContributedInput(string invoiceId, OutPoint outPoint)
-    {
-        ArgumentNullException.ThrowIfNull(outPoint);
-        using var context = _pluginDbContextFactory.CreateContext();
-        var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
-        if (sessionData is null)
-        {
-            return false;
-        }
-
-        var transactionId = outPoint.Hash.ToString();
-        var outputIndex = checked((long)outPoint.N);
-        if (sessionData.ContributedInputTransactionId == transactionId && sessionData.ContributedInputOutputIndex == outputIndex)
-        {
-            return true;
-        }
-
-        sessionData.ContributedInputTransactionId = transactionId;
-        sessionData.ContributedInputOutputIndex = outputIndex;
         sessionData.UpdatedAt = DateTimeOffset.UtcNow;
         context.SaveChanges();
         return true;
@@ -224,14 +309,14 @@ public sealed class PayjoinReceiverSessionStore
         }
     }
 
-    private static bool IsReceiverSessionEventSequenceConflict(DbUpdateException exception)
+    private bool IsReceiverSessionEventSequenceConflict(DbUpdateException exception)
     {
-        return exception.InnerException is PostgresException postgresException &&
-               postgresException.SqlState == PostgresErrorCodes.UniqueViolation &&
-               string.Equals(
-                   postgresException.ConstraintName,
-                   PayjoinPluginDbSchema.ReceiverSessionEventsInvoiceSequenceIndex,
-                   StringComparison.Ordinal);
+        return _uniqueConstraintViolationDetector.IsUniqueConstraintViolation(exception, PayjoinPluginDbSchema.ReceiverSessionEventsInvoiceSequenceIndex);
+    }
+
+    private bool IsReceiverInputReservationConflict(DbUpdateException exception)
+    {
+        return _uniqueConstraintViolationDetector.IsUniqueConstraintViolation(exception, PayjoinPluginDbSchema.ReceiverInputReservationsOutPointIndex);
     }
 
     private static PayjoinReceiverSessionState CreateState(PayjoinReceiverSessionData sessionData, string[]? events = null)

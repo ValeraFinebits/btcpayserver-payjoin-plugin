@@ -1,14 +1,11 @@
-using BTCPayServer.Client.Models;
 using BTCPayServer.Abstractions.Models;
-using BTCPayServer.Plugins.Payjoin;
+using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
-using System;
-using System.Linq;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -68,14 +65,14 @@ public class PayjoinReceiverSessionStoreTests
     }
 
     [Fact]
-    public void ContributedInputRoundTripsThroughFreshStoreInstance()
+    public void ReservedContributedInputRoundTripsThroughFreshStoreInstance()
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-input", out _);
         var expectedOutPoint = new OutPoint(uint256.Parse("1111111111111111111111111111111111111111111111111111111111111111"), uint.MaxValue);
 
-        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint));
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
 
         var reloadedStore = testContext.CreateStore();
         Assert.True(reloadedStore.TryGetSession(session.InvoiceId, out var reloadedSession));
@@ -84,20 +81,20 @@ public class PayjoinReceiverSessionStoreTests
     }
 
     [Fact]
-    public void PersistingSameContributedInputDoesNotAdvanceUpdatedAt()
+    public void ReservingSameContributedInputDoesNotAdvanceUpdatedAt()
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-same-input", out _);
         var expectedOutPoint = new OutPoint(uint256.Parse("3333333333333333333333333333333333333333333333333333333333333333"), 3);
 
-        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint));
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
         using var firstContext = testContext.CreateDbContext();
         var firstUpdatedAt = firstContext.ReceiverSessions
             .Single(x => x.InvoiceId == session.InvoiceId)
             .UpdatedAt;
 
-        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint));
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
         using var secondContext = testContext.CreateDbContext();
         var secondUpdatedAt = secondContext.ReceiverSessions
             .Single(x => x.InvoiceId == session.InvoiceId)
@@ -107,7 +104,7 @@ public class PayjoinReceiverSessionStoreTests
     }
 
     [Fact]
-    public void ContributedInputAndEventsReplayTogetherThroughFreshStoreInstance()
+    public void ReservedContributedInputAndEventsReplayTogetherThroughFreshStoreInstance()
     {
         using var testContext = new TestContext();
         var firstStore = testContext.CreateStore();
@@ -116,7 +113,7 @@ public class PayjoinReceiverSessionStoreTests
         var firstPersister = firstStore.CreatePersister(firstSession);
 
         firstPersister.Save("event-before-input");
-        Assert.True(firstStore.TryPersistContributedInput(firstSession.InvoiceId, expectedOutPoint));
+        Assert.True(firstStore.TryReserveContributedInput(firstSession.StoreId, firstSession.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
         firstPersister.Save("event-after-input");
 
         var replayedStore = testContext.CreateStore();
@@ -126,6 +123,75 @@ public class PayjoinReceiverSessionStoreTests
 
         var replayedPersister = replayedStore.CreatePersister(replayedSession);
         Assert.Equal(new[] { "event-before-input", "event-after-input" }, replayedPersister.Load());
+    }
+
+    [Fact]
+    public void TryReserveContributedInputPersistsReservationAndContributedInput()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-reserve", out _);
+        var outPoint = new OutPoint(uint256.Parse("4444444444444444444444444444444444444444444444444444444444444444"), 4);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, expiresAt));
+
+        var reloadedStore = testContext.CreateStore();
+        Assert.True(reloadedStore.TryGetSession(session.InvoiceId, out var reloadedSession));
+        Assert.True(reloadedSession!.TryGetContributedInput(out var actualOutPoint));
+        Assert.Equal(outPoint, actualOutPoint);
+
+        using var context = testContext.CreateDbContext();
+        var reservation = context.ReceiverInputReservations.Single();
+        Assert.Equal(session.InvoiceId, reservation.InvoiceId);
+        Assert.Equal(session.StoreId, reservation.StoreId);
+        Assert.Equal(outPoint.Hash.ToString(), reservation.TransactionId);
+        Assert.Equal((long)outPoint.N, reservation.OutputIndex);
+        Assert.Equal(expiresAt, reservation.ExpiresAt);
+    }
+
+    [Fact]
+    public void TryReserveContributedInputRejectsReservationConflictForDifferentInvoice()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var firstSession = CreateSession(store, "invoice-reserve-first", out _);
+        var secondSession = CreateSession(store, "invoice-reserve-second", out _);
+        var outPoint = new OutPoint(uint256.Parse("5555555555555555555555555555555555555555555555555555555555555555"), 5);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+
+        Assert.True(store.TryReserveContributedInput(firstSession.StoreId, firstSession.InvoiceId, outPoint, expiresAt));
+        Assert.False(store.TryReserveContributedInput(secondSession.StoreId, secondSession.InvoiceId, outPoint, expiresAt));
+    }
+
+    [Fact]
+    public void TryReserveContributedInputIsIdempotentForSameInvoiceAndOutPoint()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-reserve-idempotent", out _);
+        var outPoint = new OutPoint(uint256.Parse("6666666666666666666666666666666666666666666666666666666666666666"), 6);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, expiresAt));
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, expiresAt));
+
+        using var context = testContext.CreateDbContext();
+        Assert.Single(context.ReceiverInputReservations);
+    }
+
+    [Fact]
+    public void TryReserveContributedInputRejectsChangingExistingContributedInput()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-reserve-change", out _);
+        var firstOutPoint = new OutPoint(uint256.Parse("7777777777777777777777777777777777777777777777777777777777777777"), 7);
+        var secondOutPoint = new OutPoint(uint256.Parse("8888888888888888888888888888888888888888888888888888888888888888"), 8);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, firstOutPoint, expiresAt));
+        Assert.False(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, secondOutPoint, expiresAt));
     }
 
     [Fact]
@@ -145,6 +211,69 @@ public class PayjoinReceiverSessionStoreTests
         using var context = testContext.CreateDbContext();
         Assert.Empty(context.ReceiverSessions);
         Assert.Empty(context.ReceiverSessionEvents);
+    }
+
+    [Fact]
+    public void RemoveSessionDeletesInputReservations()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-remove-reservation", out _);
+        var outPoint = new OutPoint(uint256.Parse("9999999999999999999999999999999999999999999999999999999999999999"), 9);
+
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.RemoveSession(session.InvoiceId));
+
+        using var context = testContext.CreateDbContext();
+        Assert.Empty(context.ReceiverInputReservations);
+    }
+
+    [Fact]
+    public void CleanupExpiredInputReservationsRemovesOnlyExpiredReservations()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var expiredSession = CreateSession(store, "invoice-expired-reservation", out _);
+        var activeSession = CreateSession(store, "invoice-active-reservation", out _);
+
+        Assert.True(store.TryReserveContributedInput(
+            expiredSession.StoreId,
+            expiredSession.InvoiceId,
+            new OutPoint(uint256.Parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 1),
+            DateTimeOffset.UtcNow.AddMinutes(-1)));
+        Assert.True(store.TryReserveContributedInput(
+            activeSession.StoreId,
+            activeSession.InvoiceId,
+            new OutPoint(uint256.Parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 2),
+            DateTimeOffset.UtcNow.AddMinutes(10)));
+
+        var affected = store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow);
+
+        Assert.True(affected > 0);
+        using var context = testContext.CreateDbContext();
+        var remainingReservation = Assert.Single(context.ReceiverInputReservations);
+        Assert.Equal(activeSession.InvoiceId, remainingReservation.InvoiceId);
+    }
+
+    [Fact]
+    public void CleanupExpiredInputReservationsClearsMatchingSessionMetadata()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-expired-metadata", out _);
+        var reservedOutPoint = new OutPoint(uint256.Parse("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"), 3);
+
+        Assert.True(store.TryReserveContributedInput(
+            session.StoreId,
+            session.InvoiceId,
+            reservedOutPoint,
+            DateTimeOffset.UtcNow.AddMinutes(-1)));
+
+        store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow);
+
+        var reloadedStore = testContext.CreateStore();
+        Assert.True(reloadedStore.TryGetSession(session.InvoiceId, out var reloadedSession));
+        Assert.False(reloadedSession!.TryGetContributedInput(out _));
     }
 
     [Fact]
@@ -185,13 +314,15 @@ public class PayjoinReceiverSessionStoreTests
     private sealed class TestContext : IDisposable
     {
         private readonly TestPayjoinPluginDbContextFactory _dbContextFactory;
+        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
 
         public TestContext()
         {
             _dbContextFactory = new TestPayjoinPluginDbContextFactory();
+            _uniqueConstraintViolationDetector = new PostgresPayjoinUniqueConstraintViolationDetector();
         }
 
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory);
+        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
         public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
 

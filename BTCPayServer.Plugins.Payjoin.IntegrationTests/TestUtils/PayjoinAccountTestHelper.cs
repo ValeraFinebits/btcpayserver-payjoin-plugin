@@ -9,23 +9,23 @@ internal static class PayjoinAccountTestHelper
 {
     private const string BitcoinCode = "BTC";
     private static readonly Money InitialWalletFunding = Money.Coins(1.0m);
-    private const int InitialFundingUtxoCount = 2;
+    private const int DefaultInitialFundingUtxoCount = 2;
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan WalletFundingConfirmationTimeout = TimeSpan.FromSeconds(30);
 
-    public static async Task<TestContext> CreateInitializedTestContextAsync(ServerTester tester, bool confirmFunding = true, CancellationToken cancellationToken = default)
+    public static async Task<TestContext> CreateInitializedTestContextAsync(ServerTester tester, bool confirmFunding = true, int initialFundingUtxoCount = DefaultInitialFundingUtxoCount, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tester);
 
         await tester.StartAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
 
         var network = GetBitcoinNetwork(tester);
-        var merchant = await CreateInitializedAccountAsync(tester, network, confirmFunding, cancellationToken).ConfigureAwait(true);
+        var merchant = await CreateInitializedAccountAsync(tester, network, confirmFunding, initialFundingUtxoCount, cancellationToken).ConfigureAwait(true);
 
         return new TestContext(network, merchant);
     }
 
-    public static async Task<TestAccount> CreateInitializedAccountAsync(ServerTester tester, BTCPayNetwork network, bool confirmFunding = true, CancellationToken cancellationToken = default)
+    public static async Task<TestAccount> CreateInitializedAccountAsync(ServerTester tester, BTCPayNetwork network, bool confirmFunding = true, int initialFundingUtxoCount = DefaultInitialFundingUtxoCount, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tester);
         ArgumentNullException.ThrowIfNull(network);
@@ -33,10 +33,10 @@ internal static class PayjoinAccountTestHelper
         var user = tester.NewAccount();
         await user.GrantAccessAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
         await user.RegisterDerivationSchemeAsync(BitcoinCode, ScriptPubKeyType.Segwit, true).WaitAsync(cancellationToken).ConfigureAwait(true);
-        await FundWalletAsync(user, network, cancellationToken).ConfigureAwait(true);
+        await FundWalletAsync(user, network, initialFundingUtxoCount, cancellationToken).ConfigureAwait(true);
         if (confirmFunding)
         {
-            await ConfirmWalletFundingAsync(tester, user, network, cancellationToken).ConfigureAwait(true);
+            await ConfirmWalletFundingAsync(tester, user, network, initialFundingUtxoCount, cancellationToken).ConfigureAwait(true);
         }
 
         return user;
@@ -49,13 +49,15 @@ internal static class PayjoinAccountTestHelper
         return network;
     }
 
-    private static async Task FundWalletAsync(TestAccount user, BTCPayNetwork network, CancellationToken cancellationToken)
+    private static async Task FundWalletAsync(TestAccount user, BTCPayNetwork network, int initialFundingUtxoCount, CancellationToken cancellationToken)
     {
-        await user.ReceiveUTXO(InitialWalletFunding, network).WaitAsync(cancellationToken).ConfigureAwait(true);
-        await user.ReceiveUTXO(InitialWalletFunding, network).WaitAsync(cancellationToken).ConfigureAwait(true);
+        for (var i = 0; i < initialFundingUtxoCount; i++)
+        {
+            await user.ReceiveUTXO(InitialWalletFunding, network).WaitAsync(cancellationToken).ConfigureAwait(true);
+        }
     }
 
-    private static async Task ConfirmWalletFundingAsync(ServerTester tester, TestAccount user, BTCPayNetwork network, CancellationToken cancellationToken)
+    private static async Task ConfirmWalletFundingAsync(ServerTester tester, TestAccount user, BTCPayNetwork network, int initialFundingUtxoCount, CancellationToken cancellationToken)
     {
         var rewardAddress = await tester.ExplorerNode.GetNewAddressAsync(cancellationToken).ConfigureAwait(true);
         await tester.ExplorerNode.GenerateToAddressAsync(1, rewardAddress, cancellationToken).ConfigureAwait(true);
@@ -66,7 +68,7 @@ internal static class PayjoinAccountTestHelper
         for (var attempt = 0; attempt < GetAttemptCount(WalletFundingConfirmationTimeout); attempt++)
         {
             var confirmedCoins = await wallet.GetUnspentCoins(user.DerivationScheme, true, cancellationToken).ConfigureAwait(true);
-            if (confirmedCoins.Length >= InitialFundingUtxoCount)
+            if (confirmedCoins.Length >= initialFundingUtxoCount)
             {
                 return;
             }

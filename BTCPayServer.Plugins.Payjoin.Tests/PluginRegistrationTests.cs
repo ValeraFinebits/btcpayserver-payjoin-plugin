@@ -12,8 +12,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 using NBXplorer;
-using System.Collections.Generic;
-using System.Linq;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -41,6 +39,9 @@ public class PluginRegistrationTests
         Assert.Contains(services, descriptor =>
             descriptor.ServiceType == typeof(ISwaggerProvider) &&
             descriptor.ImplementationType == typeof(PayjoinSwaggerProvider));
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(IPayjoinReceiverInputSelector) &&
+            descriptor.ImplementationType == typeof(PayjoinReceiverInputSelector));
     }
 
     [Fact]

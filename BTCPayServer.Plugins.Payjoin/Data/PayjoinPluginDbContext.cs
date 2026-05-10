@@ -19,6 +19,8 @@ public class PayjoinPluginDbContext : DbContext
 
     internal DbSet<PayjoinReceiverSessionEventData> ReceiverSessionEvents { get; set; } = null!;
 
+    internal DbSet<PayjoinReceiverInputReservationData> ReceiverInputReservations { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         System.ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -37,6 +39,10 @@ public class PayjoinPluginDbContext : DbContext
                 .WithOne(x => x.Session)
                 .HasForeignKey(x => x.InvoiceId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(x => x.InputReservations)
+                .WithOne(x => x.Session)
+                .HasForeignKey(x => x.InvoiceId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
         modelBuilder.Entity<PayjoinReceiverSessionEventData>(entity =>
         {
@@ -45,6 +51,21 @@ public class PayjoinPluginDbContext : DbContext
             entity.HasIndex(x => new { x.InvoiceId, x.Sequence })
                 .IsUnique()
                 .HasDatabaseName(PayjoinPluginDbSchema.ReceiverSessionEventsInvoiceSequenceIndex);
+        });
+        modelBuilder.Entity<PayjoinReceiverInputReservationData>(entity =>
+        {
+            entity.ToTable(PayjoinPluginDbSchema.ReceiverInputReservationsTable);
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.TransactionId).HasMaxLength(PayjoinPluginDbSchema.TransactionIdMaxLength);
+            entity.HasIndex(x => new { x.TransactionId, x.OutputIndex })
+                .IsUnique()
+                .HasDatabaseName(PayjoinPluginDbSchema.ReceiverInputReservationsOutPointIndex);
+            entity.HasIndex(x => x.InvoiceId)
+                .HasDatabaseName(PayjoinPluginDbSchema.ReceiverInputReservationsInvoiceIdIndex);
+            entity.HasIndex(x => x.StoreId)
+                .HasDatabaseName(PayjoinPluginDbSchema.ReceiverInputReservationsStoreIdIndex);
+            entity.HasIndex(x => x.ExpiresAt)
+                .HasDatabaseName(PayjoinPluginDbSchema.ReceiverInputReservationsExpiresAtIndex);
         });
     }
 }

@@ -12,64 +12,67 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
 {
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly PayjoinAvailabilityService _availabilityService;
+    private readonly PayjoinReceiverSessionStore _sessionStore;
 
     public PayjoinReceiverInputSelector(
         BTCPayNetworkProvider networkProvider,
-        PayjoinAvailabilityService availabilityService)
+        PayjoinAvailabilityService availabilityService,
+        PayjoinReceiverSessionStore sessionStore)
     {
         _networkProvider = networkProvider;
         _availabilityService = availabilityService;
+        _sessionStore = sessionStore;
     }
 
     public async Task<ReceiverInputContributionResult> TryContributeInputsAsync(
         WantsInputs proposal,
         string storeId,
+        string invoiceId,
+        DateTimeOffset reservationExpiresAt,
         CancellationToken cancellationToken)
     {
         var (receiverInputs, receiverCoins) = await GetReceiverInputsAsync(storeId, cancellationToken).ConfigureAwait(false);
 
-        WantsInputs? withInputs = null;
-        ReceivedCoin[]? contributedCoins = null;
         var contributionFailures = new List<string>();
-        try
+        var orderedCandidates = receiverCoins
+            .Select((coin, index) => new { coin, index })
+            .OrderBy(x => x.coin.Coin.Amount.Satoshi)
+            .Select(x => x.index);
+
+        foreach (var index in orderedCandidates)
         {
-            var orderedCandidates = receiverCoins
-                .Select((coin, index) => new { coin, index })
-                .OrderBy(x => x.coin.Coin.Amount.Satoshi)
-                .Select(x => x.index);
-
-            foreach (var index in orderedCandidates)
+            WantsInputs? withInputs = null;
+            try
             {
-                try
+                withInputs = proposal.ContributeInputs(new[] { receiverInputs[index] });
+                var contributedCoins = new[] { receiverCoins[index] };
+                if (_sessionStore.TryReserveContributedInput(storeId, invoiceId, contributedCoins[0].OutPoint, reservationExpiresAt))
                 {
-                    withInputs = proposal.ContributeInputs(new[] { receiverInputs[index] });
-                    contributedCoins = new[] { receiverCoins[index] };
-                    break;
+                    return ReceiverInputContributionResult.Success(withInputs, contributedCoins);
                 }
-                catch (InputContributionException ex)
-                {
-                    contributionFailures.Add($"candidate '{receiverCoins[index].OutPoint}' rejected: {ex.Message}");
-                }
-            }
 
-            if (withInputs is null || contributedCoins is null)
+                contributionFailures.Add($"candidate '{receiverCoins[index].OutPoint}' reservation conflict");
+                withInputs.Dispose();
+                withInputs = null;
+            }
+            catch (InputContributionException ex)
             {
-                var failureMessage = contributionFailures.Count switch
-                {
-                    > 3 => string.Join(" | ", contributionFailures.Take(3)) + " | ...",
-                    > 0 => string.Join(" | ", contributionFailures),
-                    _ => "no confirmed receiver coins available"
-                };
-                return ReceiverInputContributionResult.Failure(failureMessage);
+                contributionFailures.Add($"candidate '{receiverCoins[index].OutPoint}' rejected: {ex.Message}");
             }
-
-            return ReceiverInputContributionResult.Success(withInputs, contributedCoins);
+            catch
+            {
+                withInputs?.Dispose();
+                throw;
+            }
         }
-        catch
+
+        var failureMessage = contributionFailures.Count switch
         {
-            withInputs?.Dispose();
-            throw;
-        }
+            > 3 => string.Join(" | ", contributionFailures.Take(3)) + " | ...",
+            > 0 => string.Join(" | ", contributionFailures),
+            _ => "no confirmed receiver coins available"
+        };
+        return ReceiverInputContributionResult.Failure(failureMessage);
     }
 
     public async Task<ReceivedCoin[]?> TryGetPersistedContributedCoinsAsync(

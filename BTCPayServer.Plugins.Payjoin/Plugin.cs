@@ -24,7 +24,10 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddUIExtension("checkout-end", "PayJoinBitcoinCheckoutEnd");
         applicationBuilder.AddSingleton<PayjoinAvailabilityService>();
         applicationBuilder.AddSingleton<PayjoinBitcoinCheckoutModelExtension>();
-        applicationBuilder.AddSingleton<PayjoinReceiverSessionStore>();
+        applicationBuilder.AddSingleton<IPayjoinUniqueConstraintViolationDetector, PostgresPayjoinUniqueConstraintViolationDetector>();
+        applicationBuilder.AddSingleton(provider => new PayjoinReceiverSessionStore(
+            provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
+            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
         applicationBuilder.AddSingleton<IPayjoinReceiverSessionGuard, PayjoinReceiverSessionGuard>();
         applicationBuilder.AddSingleton<IPayjoinReceiverRelayClient, PayjoinReceiverRelayClient>();
         applicationBuilder.AddSingleton<IPayjoinReceiverStateProcessor, PayjoinReceiverStateProcessor>();

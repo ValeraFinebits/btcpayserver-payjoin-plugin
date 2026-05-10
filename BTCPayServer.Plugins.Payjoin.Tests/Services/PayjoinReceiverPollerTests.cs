@@ -1,5 +1,10 @@
 ﻿using BTCPayServer.Plugins.Payjoin.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using NBitcoin;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
@@ -11,8 +16,10 @@ public class PayjoinReceiverPollerTests
     {
         // Arrange
         var logger = new TestLogger<PayjoinReceiverPoller>();
+        using var testContext = new TestContext();
         var sessionProcessor = new ThrowingOnceSessionProcessor();
         using var poller = new PayjoinReceiverPoller(
+            testContext.CreateStore(),
             sessionProcessor,
             logger);
         using var cancellationTokenSource = new CancellationTokenSource();
@@ -36,6 +43,31 @@ public class PayjoinReceiverPollerTests
         Assert.True(sessionProcessor.HasSuccessfulExecution);
     }
 
+    [Fact]
+    public async Task ProcessTickOnceAsyncCleansExpiredReservationsBeforeProcessingSessions()
+    {
+        // Arrange
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-expired-cleanup", out _);
+        var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 1);
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(-1)));
+
+        var sessionProcessor = new RecordingSessionProcessor();
+        using var poller = new PayjoinReceiverPoller(
+            store,
+            sessionProcessor,
+            new TestLogger<PayjoinReceiverPoller>());
+
+        // Act
+        await poller.ProcessTickOnceAsync(CancellationToken.None).ConfigureAwait(true);
+
+        // Assert
+        Assert.Equal(1, sessionProcessor.InvocationCount);
+        Assert.True(store.TryGetSession(session.InvoiceId, out var reloadedSession));
+        Assert.False(reloadedSession!.TryGetContributedInput(out _));
+    }
+
     private sealed class ThrowingOnceSessionProcessor : IPayjoinReceiverSessionProcessor
     {
         private int _hasThrown;
@@ -52,6 +84,68 @@ public class PayjoinReceiverPollerTests
 
             HasSuccessfulExecution = true;
             await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class RecordingSessionProcessor : IPayjoinReceiverSessionProcessor
+    {
+        public int InvocationCount { get; private set; }
+
+        public Task ProcessTickAsync(CancellationToken stoppingToken)
+        {
+            InvocationCount++;
+            return Task.CompletedTask;
+        }
+    }
+
+    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId, out bool created)
+    {
+        return store.CreateSession(
+            invoiceId,
+            "bcrt1qexampleaddress0000000000000000000000000",
+            "store-1",
+            new Uri("https://relay.example/"),
+            DateTimeOffset.UtcNow.AddMinutes(15),
+            out created);
+    }
+
+    private sealed class TestContext : IDisposable
+    {
+        private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
+        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
+
+        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+
+        public void Dispose()
+        {
+            using var db = _dbContextFactory.CreateContext();
+            db.Database.EnsureDeleted();
+        }
+    }
+
+    private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
+    {
+        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
+        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
+
+        public TestPayjoinPluginDbContextFactory()
+            : base(Options.Create(new global::BTCPayServer.Abstractions.Models.DatabaseOptions
+            {
+                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
+            }))
+        {
+            var databaseName = $"payjoin-poller-tests-{Guid.NewGuid():N}";
+            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
+                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
+                .Options;
+
+            using var db = CreateContext();
+            db.Database.EnsureCreated();
+        }
+
+        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
+        {
+            return new PayjoinPluginDbContext(_dbContextOptions);
         }
     }
 

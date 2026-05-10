@@ -71,6 +71,27 @@ internal static class PayjoinReceiverTestHelper
         return session;
     }
 
+    public static async Task<PayjoinReceiverSessionState> GetRequiredReceiverSessionEventuallyAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
+    {
+        var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
+        var maxAttempts = GetAttemptCount(ReceiverSessionCreationTimeout);
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (sessionStore.TryGetSession(invoiceId, out var session) && session is not null)
+            {
+                return session;
+            }
+
+            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(true);
+        }
+
+        Assert.Fail($"Expected receiver session for invoice '{invoiceId}' to be available.");
+        return null!;
+    }
+
     public static async Task<string> GetReceiverSideDiagnosticsAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tester);

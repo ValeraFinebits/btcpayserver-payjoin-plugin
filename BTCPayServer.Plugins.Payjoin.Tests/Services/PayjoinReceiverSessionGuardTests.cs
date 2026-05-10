@@ -237,8 +237,9 @@ public class PayjoinReceiverSessionGuardTests
     private sealed class TestContext : IDisposable
     {
         private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
+        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory);
+        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
         public void Dispose()
         {

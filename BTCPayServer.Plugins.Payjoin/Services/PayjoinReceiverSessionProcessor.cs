@@ -12,6 +12,8 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionProcessor
 {
+    internal const int MaxConcurrentReceiverSessions = 8;
+
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverPollingFailedForInvoice =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(2, nameof(LogPayjoinReceiverPollingFailedForInvoice)),
             "Payjoin receiver polling failed for {InvoiceId}");
@@ -63,38 +65,48 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         _logger = logger;
     }
 
-    // TODO: Process sessions concurrently instead of sequentially.
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Session processing isolates per-session failures so one receiver session does not stop the polling loop.")]
     public async Task ProcessTickAsync(CancellationToken stoppingToken)
     {
-        foreach (var session in _sessionStore.GetSessions())
+        await Parallel.ForEachAsync(
+            _sessionStore.GetSessions(),
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = MaxConcurrentReceiverSessions,
+                CancellationToken = stoppingToken
+            },
+            async (session, cancellationToken) =>
+            {
+                await ProcessSessionWithIsolationAsync(session, cancellationToken).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+    }
+
+    private async ValueTask ProcessSessionWithIsolationAsync(PayjoinReceiverSessionState session, CancellationToken stoppingToken)
+    {
+        try
         {
-            try
-            {
-                await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (HttpRequestException ex)
-            {
-                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-            }
-            catch (InvalidOperationException ex)
-            {
-                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-                RemoveSession(session.InvoiceId, "receiver session failed with invalid operation");
-            }
-            catch (TaskCanceledException ex)
-            {
-                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-            }
-            catch (UniffiException ex)
-            {
-                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-                RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
-            }
+            await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (HttpRequestException ex)
+        {
+            LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+        }
+        catch (InvalidOperationException ex)
+        {
+            LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+            RemoveSession(session.InvoiceId, "receiver session failed with invalid operation");
+        }
+        catch (TaskCanceledException ex)
+        {
+            LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+        }
+        catch (UniffiException ex)
+        {
+            LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+            RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
         }
     }
 
@@ -135,7 +147,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                 await ContinueWithOutputsAsync(wantsOutputs.inner, stateContext, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsInputs wantsInputs:
-                await ProcessWantsInputsAsync(wantsInputs.inner, persister, receiverScript, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, stoppingToken).ConfigureAwait(false);
+                await ProcessWantsInputsAsync(wantsInputs.inner, persister, receiverScript, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, GetReservationExpiresAt(session), stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsFeeRange wantsFeeRange:
                 {
@@ -193,6 +205,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             context.OhttpRelayUrl,
             context.StoreId,
             context.InvoiceId,
+            GetReservationExpiresAt(context.Session),
             cancellationToken);
     }
 
@@ -203,6 +216,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         SystemUri ohttpRelayUrl,
         string storeId,
         string invoiceId,
+        DateTimeOffset reservationExpiresAt,
         CancellationToken stoppingToken)
     {
         var exactPaymentOutputs = await _outputBuilder.TryCreateExactPaymentOutputsAsync(storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
@@ -219,7 +233,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             using var transition = modified.CommitOutputs();
             using var wantsInputs = transition.Save(persister);
             LogPayjoinReceiverPreparedExactPaymentOutputs(_logger, invoiceId, null);
-            await ProcessWantsInputsAsync(wantsInputs, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, stoppingToken).ConfigureAwait(false);
+            await ProcessWantsInputsAsync(wantsInputs, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
         }
         catch (OutputSubstitutionException ex)
         {
@@ -235,11 +249,12 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         SystemUri ohttpRelayUrl,
         string storeId,
         string invoiceId,
+        DateTimeOffset reservationExpiresAt,
         CancellationToken stoppingToken)
     {
         // TODO: Restore `proposal.TryPreservingPrivacy(receiverInputs)` only after rust-payjoin/payjoin-ffi lets us identify which `ReceivedCoin` was actually selected.
         // TODO: We must persist only the truly contributed coin(s) into `contributedCoins`; otherwise the signing step can treat unrelated wallet inputs as receiver-owned and produce an invalid proposal.
-        var contribution = await _inputSelector.TryContributeInputsAsync(proposal, storeId, stoppingToken).ConfigureAwait(false);
+        var contribution = await _inputSelector.TryContributeInputsAsync(proposal, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
         if (contribution.ProposalWithInputs is null || contribution.ContributedCoins is null)
         {
             LogPayjoinReceiverInputContributionFailed(_logger, invoiceId, contribution.FailureMessage, null);
@@ -249,11 +264,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
 
         try
         {
-            if (!_sessionStore.TryPersistContributedInput(invoiceId, contribution.ContributedCoins[0].OutPoint))
-            {
-                RemoveSession(invoiceId, "failed to persist contributed receiver input");
-                return;
-            }
             using var transition = contribution.ProposalWithInputs.CommitInputs();
             using var wantsFeeRange = transition.Save(persister);
             await _proposalFinalizer.FinalizeAsync(
@@ -282,6 +292,12 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         LogPayjoinReceiverPersistedInputUnavailable(_logger, session.InvoiceId, null);
         RemoveSession(session.InvoiceId, removalReason);
         return null;
+    }
+
+    private static DateTimeOffset GetReservationExpiresAt(PayjoinReceiverSessionState session)
+    {
+        // TODO: Revisit whether receiver-input reservations should always live until MonitoringExpiresAt or use a shorter policy-derived lifetime.
+        return session.MonitoringExpiresAt;
     }
 
     private bool RemoveSession(string invoiceId, string reason)

@@ -18,7 +18,7 @@ public class PayjoinReceiverInputSelectorTests
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenOutPointMissing()
     {
         using var context = new TestContext();
-        var selector = CreateSelector();
+        var selector = CreateSelector(context.CreateStore());
         var session = CreateSession();
 
         var result = await selector.TryGetPersistedContributedCoinsAsync(session, CancellationToken.None);
@@ -30,7 +30,7 @@ public class PayjoinReceiverInputSelectorTests
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenContributedInputTransactionIdIsInvalid()
     {
         using var context = new TestContext();
-        var selector = CreateSelector();
+        var selector = CreateSelector(context.CreateStore());
         var session = CreateSession(
             contributedInputTransactionId: "not-a-transaction-id",
             contributedInputOutputIndex: 0);
@@ -44,7 +44,7 @@ public class PayjoinReceiverInputSelectorTests
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenContributedInputOutputIndexIsNegative()
     {
         using var context = new TestContext();
-        var selector = CreateSelector();
+        var selector = CreateSelector(context.CreateStore());
         var session = CreateSession(
             contributedInputTransactionId: uint256.One.ToString(),
             contributedInputOutputIndex: -1);
@@ -58,7 +58,7 @@ public class PayjoinReceiverInputSelectorTests
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenContributedInputOutputIndexOverflowsUInt()
     {
         using var context = new TestContext();
-        var selector = CreateSelector();
+        var selector = CreateSelector(context.CreateStore());
         var session = CreateSession(
             contributedInputTransactionId: uint256.One.ToString(),
             contributedInputOutputIndex: (long)uint.MaxValue + 1);
@@ -72,7 +72,7 @@ public class PayjoinReceiverInputSelectorTests
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenNetworkUnavailable()
     {
         using var context = new TestContext();
-        var selector = CreateSelector(CreateEmptyNetworkProvider());
+        var selector = CreateSelector(context.CreateStore(), CreateEmptyNetworkProvider());
         var outPoint = new OutPoint(uint256.Parse("8888888888888888888888888888888888888888888888888888888888888888"), 2);
         var session = CreateSession(
             contributedInputTransactionId: outPoint.Hash.ToString(),
@@ -83,11 +83,12 @@ public class PayjoinReceiverInputSelectorTests
         Assert.Null(result);
     }
 
-    private static PayjoinReceiverInputSelector CreateSelector(BTCPayNetworkProvider? networkProvider = null)
+    private static PayjoinReceiverInputSelector CreateSelector(PayjoinReceiverSessionStore sessionStore, BTCPayNetworkProvider? networkProvider = null)
     {
         return new PayjoinReceiverInputSelector(
             networkProvider ?? CreateEmptyNetworkProvider(),
-            new PayjoinAvailabilityService(null!, null!, null!));
+            new PayjoinAvailabilityService(null!, null!, null!),
+            sessionStore);
     }
 
     private static PayjoinReceiverSessionState CreateSession(
@@ -135,8 +136,9 @@ public class PayjoinReceiverInputSelectorTests
     private sealed class TestContext : IDisposable
     {
         private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
+        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory);
+        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
         public void Dispose()
         {
