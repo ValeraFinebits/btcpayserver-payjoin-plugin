@@ -50,7 +50,6 @@ public sealed class PayjoinReceiverSessionStore
         {
             return CreateState(sessionData, LoadEventsCore(context, invoiceId));
         }
-
         sessionData = new PayjoinReceiverSessionData
         {
             InvoiceId = invoiceId,

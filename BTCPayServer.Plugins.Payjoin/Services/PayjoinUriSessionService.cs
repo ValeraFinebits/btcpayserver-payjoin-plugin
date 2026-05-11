@@ -31,7 +31,6 @@ public sealed class PayjoinUriSessionService
             LogLevel.Warning,
             new EventId(4, nameof(LogInvalidPersistedSessionRebuild)),
             "Persisted payjoin receiver session for invoice {InvoiceId} had an empty event log and will be rebuilt.");
-
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly PayjoinReceiverSessionStore _receiverSessionStore;
     private readonly PayjoinOhttpKeysProvider _ohttpKeysProvider;
