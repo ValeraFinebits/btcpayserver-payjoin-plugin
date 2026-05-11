@@ -30,16 +30,6 @@ public sealed class PayjoinReceiverSessionStore
         string receiverAddress,
         string storeId,
         SystemUri ohttpRelayUrl,
-        DateTimeOffset monitoringExpiresAt)
-    {
-        return CreateSession(invoiceId, receiverAddress, storeId, ohttpRelayUrl, monitoringExpiresAt, []);
-    }
-
-    internal PayjoinReceiverSessionState CreateSession(
-        string invoiceId,
-        string receiverAddress,
-        string storeId,
-        SystemUri ohttpRelayUrl,
         DateTimeOffset monitoringExpiresAt,
         IEnumerable<string> bootstrapEvents)
     {
