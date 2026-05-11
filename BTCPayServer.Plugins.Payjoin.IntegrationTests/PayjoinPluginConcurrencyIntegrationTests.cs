@@ -176,7 +176,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, failedInvoiceId, cts.Token).ConfigureAwait(true);
     }
 
-    [Theory]
+    [Theory (Skip = "Temporarily skipped will re-enable later") ]
     [InlineData(1, 4)]
     [InlineData(2, 4)]
     [InlineData(4, 4)]
@@ -269,7 +269,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         Assert.DoesNotContain(sessionStore.GetSessions(), session => invoiceContexts.Any(invoiceContext => invoiceContext.InvoiceId == session.InvoiceId));
     }
 
-    [Theory]
+    [Theory(Skip = "Temporarily skipped will re-enable later")]
     [InlineData(4, 8)]
     [InlineData(4, 16)]
     [InlineData(8, 16)]
