@@ -1,4 +1,3 @@
-using BTCPayServer.Client.Models;
 using BTCPayServer.Controllers;
 using BTCPayServer.Data;
 using BTCPayServer.Models.InvoicingModels;
@@ -145,8 +144,7 @@ internal static class PayjoinIntegrationTestSupport
         var controller = tester.PayTester.GetController<UIPayJoinController>();
         var paymentActionResult = await controller.RunTestPayment(new RunTestPaymentRequest
         {
-            InvoiceId = payjoinContext.InvoiceId,
-            PaymentUrl = payjoinContext.PaymentUrl
+            InvoiceId = payjoinContext.InvoiceId
         }, cancellationToken).ConfigureAwait(true);
         var paymentResult = Assert.IsType<OkObjectResult>(paymentActionResult.Result);
         var paymentResponse = Assert.IsType<RunTestPaymentResponse>(paymentResult.Value);

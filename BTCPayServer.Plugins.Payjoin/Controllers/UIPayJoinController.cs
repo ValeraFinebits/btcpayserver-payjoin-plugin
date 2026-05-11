@@ -95,9 +95,15 @@ public class UIPayJoinController : Controller
             return RunTestPaymentFailure("invoiceId is required");
         }
 
-        if (request.PaymentUrl is null)
+        var invoicePaymentUrl = await _paymentUrlService.GetInvoicePaymentUrlAsync(request.InvoiceId, cancellationToken).ConfigureAwait(false);
+        if (invoicePaymentUrl is null)
         {
-            return RunTestPaymentFailure("paymentUrl is required");
+            return RunTestPaymentFailure("paymentUrl not available for invoice");
+        }
+
+        if (!System.Uri.TryCreate(invoicePaymentUrl.Bip21, UriKind.Absolute, out var canonicalPaymentUrl))
+        {
+            return RunTestPaymentFailure("invoice paymentUrl invalid");
         }
 
         var invoice = await _invoiceRepository.GetInvoice(request.InvoiceId).ConfigureAwait(false);
@@ -128,7 +134,7 @@ public class UIPayJoinController : Controller
         decimal paymentAmount;
         try
         {
-            using var parsedUri = PayjoinUri.Parse(request.PaymentUrl.ToString());
+            using var parsedUri = PayjoinUri.Parse(canonicalPaymentUrl.ToString());
             paymentAddress = parsedUri.Address();
             var amountSats = parsedUri.AmountSats();
             if (amountSats is null)
@@ -164,7 +170,7 @@ public class UIPayJoinController : Controller
 
         var runTestPaymentContext = new RunTestPaymentContext(
             request.InvoiceId,
-            request.PaymentUrl,
+            canonicalPaymentUrl,
             storeSettings.OhttpRelayUrl,
             paymentAddressValue,
             paymentAmount,

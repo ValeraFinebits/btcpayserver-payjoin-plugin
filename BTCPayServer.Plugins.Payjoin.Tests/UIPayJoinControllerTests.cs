@@ -1,7 +1,9 @@
 using BTCPayServer.Filters;
 using BTCPayServer.Plugins.Payjoin.Controllers;
 using BTCPayServer.Plugins.Payjoin.Models;
+using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.AspNetCore.Mvc;
+using NSubstitute;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -13,14 +15,13 @@ public class UIPayJoinControllerTests
         return new UIPayJoinController(null!, null!, null!, null!, null!, null!, null!, null!);
     }
 
-    private static RunTestPaymentResponse AssertRunTestPaymentFailure(ActionResult<RunTestPaymentResponse> actionResult, string expectedMessage)
+    private static void AssertRunTestPaymentFailure(ActionResult<RunTestPaymentResponse> actionResult, string expectedMessage)
     {
         var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
         var response = Assert.IsType<RunTestPaymentResponse>(okResult.Value);
         Assert.False(response.Succeeded);
         Assert.Equal(expectedMessage, response.Message);
         Assert.Null(response.TransactionId);
-        return response;
     }
 
     [Fact]
@@ -52,16 +53,39 @@ public class UIPayJoinControllerTests
     }
 
     [Fact]
-    public async Task RunTestPaymentReturnsFailureWhenPaymentUrlMissing()
+    public async Task RunTestPaymentReturnsFailureWhenInvoicePaymentUrlUnavailable()
     {
-        using var controller = CreateController();
+        var paymentUrlService = Substitute.For<IPayjoinInvoicePaymentUrlService>();
+        paymentUrlService.GetInvoicePaymentUrlAsync("invoice-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<GetBip21Response?>(null));
+        using var controller = new UIPayJoinController(null!, null!, null!, null!, null!, null!, paymentUrlService, null!);
 
         var result = await controller.RunTestPayment(new RunTestPaymentRequest
         {
             InvoiceId = "invoice-1"
         }, TestContext.Current.CancellationToken);
 
-        AssertRunTestPaymentFailure(result, "paymentUrl is required");
+        AssertRunTestPaymentFailure(result, "paymentUrl not available for invoice");
+    }
+
+    [Fact]
+    public async Task RunTestPaymentReturnsFailureWhenInvoicePaymentUrlInvalid()
+    {
+        var paymentUrlService = Substitute.For<IPayjoinInvoicePaymentUrlService>();
+        paymentUrlService.GetInvoicePaymentUrlAsync("invoice-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<GetBip21Response?>(new GetBip21Response
+            {
+                Bip21 = "not-a-valid-uri",
+                PayjoinEnabled = true
+            }));
+        using var controller = new UIPayJoinController(null!, null!, null!, null!, null!, null!, paymentUrlService, null!);
+
+        var result = await controller.RunTestPayment(new RunTestPaymentRequest
+        {
+            InvoiceId = "invoice-1"
+        }, TestContext.Current.CancellationToken);
+
+        AssertRunTestPaymentFailure(result, "invoice paymentUrl invalid");
     }
 
 }

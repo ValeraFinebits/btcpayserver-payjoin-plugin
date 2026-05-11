@@ -404,7 +404,6 @@
         }
 
         button.dataset.invoiceId = model.invoiceId || '';
-        button.dataset.paymentUrl = model.payjoinPaymentUrl || '';
     }
 
     function renderTestPayment() {
@@ -503,9 +502,8 @@
             }
 
             const invoiceId = button.getAttribute('data-invoice-id');
-            const paymentUrl = button.getAttribute('data-payment-url');
             const endpoint = button.getAttribute('data-test-endpoint');
-            if (!invoiceId || !paymentUrl || !endpoint) {
+            if (!invoiceId || !endpoint) {
                 return;
             }
 
@@ -518,7 +516,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify({ invoiceId, paymentUrl })
+                    body: JSON.stringify({ invoiceId })
                 });
                 const payload = response.ok ? await response.json() : null;
                 if (payload && (payload.succeeded === true || payload.Succeeded === true)) {
