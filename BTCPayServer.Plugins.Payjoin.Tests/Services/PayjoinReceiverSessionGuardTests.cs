@@ -29,8 +29,7 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(-1),
-            out _);
+            DateTimeOffset.UtcNow.AddMinutes(-1));
 
         var expired = guard.TryExpireSession(session);
 
@@ -49,8 +48,7 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10),
-            out _);
+            DateTimeOffset.UtcNow.AddMinutes(10));
 
         var expired = guard.TryExpireSession(session);
 
@@ -69,8 +67,7 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10),
-            out _);
+            DateTimeOffset.UtcNow.AddMinutes(10));
         using var state = CreateMonitorState();
 
         var removed = guard.TryRemoveCloseRequestedSession(session, state);
@@ -90,8 +87,7 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10),
-            out _);
+            DateTimeOffset.UtcNow.AddMinutes(10));
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
         using var state = CreateHasReplyableErrorState();
@@ -113,8 +109,7 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10),
-            out _);
+            DateTimeOffset.UtcNow.AddMinutes(10));
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
         using var state = CreateInitializedState();
@@ -136,8 +131,7 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10),
-            out _);
+            DateTimeOffset.UtcNow.AddMinutes(10));
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryConsumeInitializedPollAfterCloseRequest(session.InvoiceId));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
@@ -160,8 +154,7 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10),
-            out _);
+            DateTimeOffset.UtcNow.AddMinutes(10));
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
         using var state = CreateMonitorState();
@@ -183,8 +176,7 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10),
-            out _);
+            DateTimeOffset.UtcNow.AddMinutes(10));
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
         using var state = CreateUncheckedOriginalPayloadState();

@@ -32,7 +32,7 @@ public class PayjoinReceiverSessionProcessorTests
         // Arrange
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-expired-cleanup", out _);
+        var session = CreateSession(store, "invoice-expired-cleanup");
         var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 1);
         Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(-1)));
 
@@ -54,8 +54,8 @@ public class PayjoinReceiverSessionProcessorTests
         // Arrange
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var failingSession = CreateSession(store, "invoice-failing", out _);
-        var survivingSession = CreateSession(store, "invoice-surviving", out _);
+        var failingSession = CreateSession(store, "invoice-failing");
+        var survivingSession = CreateSession(store, "invoice-surviving");
         var guard = new SelectiveGuard(failingSession.InvoiceId);
         var processor = CreateProcessor(store, guard);
 
@@ -84,15 +84,14 @@ public class PayjoinReceiverSessionProcessorTests
             NullLogger<PayjoinReceiverSessionProcessor>.Instance);
     }
 
-    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId, out bool created)
+    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
         return store.CreateSession(
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new global::System.Uri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(15),
-            out created);
+            DateTimeOffset.UtcNow.AddMinutes(15));
     }
 
     private sealed class RecordingSessionGuard : IPayjoinReceiverSessionGuard

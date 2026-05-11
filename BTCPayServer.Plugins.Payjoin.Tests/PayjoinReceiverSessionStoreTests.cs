@@ -1,5 +1,6 @@
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client.Models;
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -18,9 +19,7 @@ public class PayjoinReceiverSessionStoreTests
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
 
-        var createdSession = CreateSession(store, "invoice-create", out var created);
-
-        Assert.True(created);
+        var createdSession = CreateSession(store, "invoice-create");
 
         var reloadedStore = testContext.CreateStore();
         Assert.True(reloadedStore.TryGetSession(createdSession.InvoiceId, out var reloadedSession));
@@ -37,7 +36,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var firstStore = testContext.CreateStore();
-        var firstSession = CreateSession(firstStore, "invoice-events", out _);
+        var firstSession = CreateSession(firstStore, "invoice-events");
 
         var firstPersister = firstStore.CreatePersister(firstSession);
         firstPersister.Save("event-1");
@@ -69,7 +68,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-input", out _);
+        var session = CreateSession(store, "invoice-input");
         var expectedOutPoint = new OutPoint(uint256.Parse("1111111111111111111111111111111111111111111111111111111111111111"), uint.MaxValue);
 
         Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
@@ -85,7 +84,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-same-input", out _);
+        var session = CreateSession(store, "invoice-same-input");
         var expectedOutPoint = new OutPoint(uint256.Parse("3333333333333333333333333333333333333333333333333333333333333333"), 3);
 
         Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
@@ -108,7 +107,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var firstStore = testContext.CreateStore();
-        var firstSession = CreateSession(firstStore, "invoice-input-events", out _);
+        var firstSession = CreateSession(firstStore, "invoice-input-events");
         var expectedOutPoint = new OutPoint(uint256.Parse("2222222222222222222222222222222222222222222222222222222222222222"), 2);
         var firstPersister = firstStore.CreatePersister(firstSession);
 
@@ -130,7 +129,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-reserve", out _);
+        var session = CreateSession(store, "invoice-reserve");
         var outPoint = new OutPoint(uint256.Parse("4444444444444444444444444444444444444444444444444444444444444444"), 4);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
@@ -155,8 +154,8 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var firstSession = CreateSession(store, "invoice-reserve-first", out _);
-        var secondSession = CreateSession(store, "invoice-reserve-second", out _);
+        var firstSession = CreateSession(store, "invoice-reserve-first");
+        var secondSession = CreateSession(store, "invoice-reserve-second");
         var outPoint = new OutPoint(uint256.Parse("5555555555555555555555555555555555555555555555555555555555555555"), 5);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
@@ -169,7 +168,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-reserve-idempotent", out _);
+        var session = CreateSession(store, "invoice-reserve-idempotent");
         var outPoint = new OutPoint(uint256.Parse("6666666666666666666666666666666666666666666666666666666666666666"), 6);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
@@ -185,7 +184,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-reserve-change", out _);
+        var session = CreateSession(store, "invoice-reserve-change");
         var firstOutPoint = new OutPoint(uint256.Parse("7777777777777777777777777777777777777777777777777777777777777777"), 7);
         var secondOutPoint = new OutPoint(uint256.Parse("8888888888888888888888888888888888888888888888888888888888888888"), 8);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
@@ -199,7 +198,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-remove", out _);
+        var session = CreateSession(store, "invoice-remove");
         var persister = store.CreatePersister(session);
         persister.Save("event-1");
 
@@ -218,7 +217,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-remove-reservation", out _);
+        var session = CreateSession(store, "invoice-remove-reservation");
         var outPoint = new OutPoint(uint256.Parse("9999999999999999999999999999999999999999999999999999999999999999"), 9);
 
         Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
@@ -233,8 +232,8 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var expiredSession = CreateSession(store, "invoice-expired-reservation", out _);
-        var activeSession = CreateSession(store, "invoice-active-reservation", out _);
+        var expiredSession = CreateSession(store, "invoice-expired-reservation");
+        var activeSession = CreateSession(store, "invoice-active-reservation");
 
         Assert.True(store.TryReserveContributedInput(
             expiredSession.StoreId,
@@ -249,7 +248,7 @@ public class PayjoinReceiverSessionStoreTests
 
         var affected = store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow);
 
-        Assert.True(affected > 0);
+        Assert.Equal(1, affected);
         using var context = testContext.CreateDbContext();
         var remainingReservation = Assert.Single(context.ReceiverInputReservations);
         Assert.Equal(activeSession.InvoiceId, remainingReservation.InvoiceId);
@@ -260,7 +259,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-expired-metadata", out _);
+        var session = CreateSession(store, "invoice-expired-metadata");
         var reservedOutPoint = new OutPoint(uint256.Parse("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"), 3);
 
         Assert.True(store.TryReserveContributedInput(
@@ -281,7 +280,7 @@ public class PayjoinReceiverSessionStoreTests
     {
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-close", out _);
+        var session = CreateSession(store, "invoice-close");
 
         Assert.True(store.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
 
@@ -300,15 +299,35 @@ public class PayjoinReceiverSessionStoreTests
         Assert.False(consumedStore.TryConsumeInitializedPollAfterCloseRequest(session.InvoiceId));
     }
 
-    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId, out bool created)
+    [Fact]
+    public void CreateSessionWithBootstrapEventsPersistsThemAtomically()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+
+        var session = store.CreateSession(
+            "invoice-bootstrap",
+            "bcrt1qexampleaddress0000000000000000000000000",
+            "store-1",
+            new Uri("https://relay.example/"),
+            DateTimeOffset.UtcNow.AddMinutes(15),
+            new[] { "event-1", "event-2" });
+
+        Assert.Equal(new[] { "event-1", "event-2" }, session.GetEvents());
+
+        var reloadedStore = testContext.CreateStore();
+        Assert.True(reloadedStore.TryGetSession(session.InvoiceId, out var reloadedSession));
+        Assert.Equal(new[] { "event-1", "event-2" }, reloadedSession!.GetEvents());
+    }
+
+    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
         return store.CreateSession(
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new Uri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(15),
-            out created);
+            DateTimeOffset.UtcNow.AddMinutes(15));
     }
 
     private sealed class TestContext : IDisposable
@@ -335,6 +354,7 @@ public class PayjoinReceiverSessionStoreTests
 
     private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
     {
+        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
         private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
 
         public TestPayjoinPluginDbContextFactory()
@@ -343,10 +363,9 @@ public class PayjoinReceiverSessionStoreTests
                 ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
             }))
         {
-            var databaseRoot = new InMemoryDatabaseRoot();
             var databaseName = $"payjoin-plugin-tests-{Guid.NewGuid():N}";
             _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                .UseInMemoryDatabase(databaseName, databaseRoot)
+                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
                 .Options;
 
             using var context = CreateContext();

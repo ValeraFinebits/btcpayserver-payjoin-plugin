@@ -19,8 +19,8 @@ public class PayjoinReceiverSessionStoreRelationalTests
         using var testContext = new RelationalTestContext();
         var firstStore = testContext.CreateStore();
         var secondStore = testContext.CreateStore();
-        var firstSession = CreateSession(firstStore, "invoice-relational-first", out _);
-        var secondSession = CreateSession(secondStore, "invoice-relational-second", out _);
+        var firstSession = CreateSession(firstStore, "invoice-relational-first");
+        var secondSession = CreateSession(secondStore, "invoice-relational-second");
         var outPoint = new OutPoint(uint256.Parse("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"), 1);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
@@ -43,8 +43,8 @@ public class PayjoinReceiverSessionStoreRelationalTests
         using var testContext = new RelationalTestContext();
         var firstStore = testContext.CreateStore();
         var secondStore = testContext.CreateStore();
-        var firstSession = CreateSession(firstStore, "invoice-relational-concurrent-first", out _);
-        var secondSession = CreateSession(secondStore, "invoice-relational-concurrent-second", out _);
+        var firstSession = CreateSession(firstStore, "invoice-relational-concurrent-first");
+        var secondSession = CreateSession(secondStore, "invoice-relational-concurrent-second");
         var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 2);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
@@ -75,15 +75,14 @@ public class PayjoinReceiverSessionStoreRelationalTests
         Assert.Contains(reservation.InvoiceId, new[] { firstSession.InvoiceId, secondSession.InvoiceId });
     }
 
-    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId, out bool created)
+    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
         return store.CreateSession(
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new Uri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(15),
-            out created);
+            DateTimeOffset.UtcNow.AddMinutes(15));
     }
 
     private sealed class RelationalTestContext : IDisposable
