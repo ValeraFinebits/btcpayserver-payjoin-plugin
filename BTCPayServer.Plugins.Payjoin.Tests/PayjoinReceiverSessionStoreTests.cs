@@ -44,7 +44,7 @@ public class PayjoinReceiverSessionStoreTests
         Assert.True(secondStore.TryGetSession(firstSession.InvoiceId, out var secondSession));
         var secondPersister = secondStore.CreatePersister(secondSession!);
 
-        Assert.Equal(new[] { "event-1" }, secondPersister.Load());
+        Assert.Equal(new[] { "bootstrap-event", "event-1" }, secondPersister.Load());
 
         secondPersister.Save("event-2");
 
@@ -52,14 +52,14 @@ public class PayjoinReceiverSessionStoreTests
         Assert.True(thirdStore.TryGetSession(firstSession.InvoiceId, out var thirdSession));
         var thirdPersister = thirdStore.CreatePersister(thirdSession!);
 
-        Assert.Equal(new[] { "event-1", "event-2" }, thirdPersister.Load());
+        Assert.Equal(new[] { "bootstrap-event", "event-1", "event-2" }, thirdPersister.Load());
 
         using var context = testContext.CreateDbContext();
         var persistedSequences = context.ReceiverSessionEvents
             .OrderBy(x => x.Sequence)
             .Select(x => x.Sequence)
             .ToArray();
-        Assert.Equal(new[] { 1, 2 }, persistedSequences);
+        Assert.Equal(new[] { 1, 2, 3 }, persistedSequences);
     }
 
     [Fact]
@@ -120,7 +120,7 @@ public class PayjoinReceiverSessionStoreTests
         Assert.Equal(expectedOutPoint, actualOutPoint);
 
         var replayedPersister = replayedStore.CreatePersister(replayedSession);
-        Assert.Equal(new[] { "event-before-input", "event-after-input" }, replayedPersister.Load());
+        Assert.Equal(new[] { "bootstrap-event", "event-before-input", "event-after-input" }, replayedPersister.Load());
     }
 
     [Fact]
@@ -319,6 +319,23 @@ public class PayjoinReceiverSessionStoreTests
         Assert.Equal(new[] { "event-1", "event-2" }, reloadedSession!.GetEvents());
     }
 
+    [Fact]
+    public void CreateSessionRejectsEmptyBootstrapEvents()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+
+        var exception = Assert.Throws<ArgumentException>(() => store.CreateSession(
+            "invoice-empty-bootstrap",
+            "bcrt1qexampleaddress0000000000000000000000000",
+            "store-1",
+            new Uri("https://relay.example/"),
+            DateTimeOffset.UtcNow.AddMinutes(15),
+            []));
+
+        Assert.Equal("bootstrapEvents", exception.ParamName);
+    }
+
     private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
         return store.CreateSession(
@@ -326,7 +343,8 @@ public class PayjoinReceiverSessionStoreTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new Uri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(15));
+            DateTimeOffset.UtcNow.AddMinutes(15),
+            ["bootstrap-event"]);
     }
 
     private sealed class TestContext : IDisposable

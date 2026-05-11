@@ -25,16 +25,6 @@ public sealed class PayjoinReceiverSessionStore
         _uniqueConstraintViolationDetector = uniqueConstraintViolationDetector;
     }
 
-    public PayjoinReceiverSessionState CreateSession(
-        string invoiceId,
-        string receiverAddress,
-        string storeId,
-        SystemUri ohttpRelayUrl,
-        DateTimeOffset monitoringExpiresAt)
-    {
-        return CreateSession(invoiceId, receiverAddress, storeId, ohttpRelayUrl, monitoringExpiresAt, []);
-    }
-
     internal PayjoinReceiverSessionState CreateSession(
         string invoiceId,
         string receiverAddress,
@@ -47,6 +37,11 @@ public sealed class PayjoinReceiverSessionStore
         ArgumentNullException.ThrowIfNull(bootstrapEvents);
 
         var persistedEvents = bootstrapEvents.ToArray();
+        if (persistedEvents.Length == 0)
+        {
+            throw new ArgumentException("Bootstrap events must contain the initial receiver session state.", nameof(bootstrapEvents));
+        }
+
         using var context = _pluginDbContextFactory.CreateContext();
         var sessionData = LoadSessionDataCore(context, invoiceId, asNoTracking: false);
         var now = DateTimeOffset.UtcNow;

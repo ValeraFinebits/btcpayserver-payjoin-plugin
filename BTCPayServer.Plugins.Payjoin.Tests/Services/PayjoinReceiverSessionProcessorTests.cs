@@ -1,5 +1,4 @@
 using BTCPayServer.Abstractions.Models;
-using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Wallets;
 using Microsoft.EntityFrameworkCore;
@@ -91,7 +90,8 @@ public class PayjoinReceiverSessionProcessorTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new global::System.Uri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(15));
+            DateTimeOffset.UtcNow.AddMinutes(15),
+            ["bootstrap-event"]);
     }
 
     private sealed class RecordingSessionGuard : IPayjoinReceiverSessionGuard

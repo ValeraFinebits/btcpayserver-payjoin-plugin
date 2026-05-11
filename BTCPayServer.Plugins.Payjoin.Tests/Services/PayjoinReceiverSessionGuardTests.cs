@@ -29,7 +29,8 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(-1));
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            ["bootstrap-event"]);
 
         var expired = guard.TryExpireSession(session);
 
@@ -48,7 +49,8 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10));
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            ["bootstrap-event"]);
 
         var expired = guard.TryExpireSession(session);
 
@@ -67,7 +69,8 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10));
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            ["bootstrap-event"]);
         using var state = CreateMonitorState();
 
         var removed = guard.TryRemoveCloseRequestedSession(session, state);
@@ -87,7 +90,8 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10));
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
         using var state = CreateHasReplyableErrorState();
@@ -109,7 +113,8 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10));
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
         using var state = CreateInitializedState();
@@ -131,7 +136,8 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10));
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryConsumeInitializedPollAfterCloseRequest(session.InvoiceId));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
@@ -154,7 +160,8 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10));
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
         using var state = CreateMonitorState();
@@ -176,7 +183,8 @@ public class PayjoinReceiverSessionGuardTests
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10));
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
         using var state = CreateUncheckedOriginalPayloadState();
