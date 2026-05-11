@@ -1,6 +1,5 @@
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client.Models;
-using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
