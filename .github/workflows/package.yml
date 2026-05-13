@@ -27,10 +27,10 @@ jobs:
           rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
 
       - name: Publish plugin
-        run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-build -o "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
+        run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-build --no-restore -o "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
 
       - name: Build packer
-        run: dotnet build "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release --no-restore
+        run: dotnet build "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release
 
       - name: Pack .btcpay
         shell: bash
