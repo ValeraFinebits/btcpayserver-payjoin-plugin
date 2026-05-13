@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUSTUP_TOOLCHAIN: 1.85.0
+
 jobs:
   pack:
     runs-on: ubuntu-latest
@@ -18,19 +21,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - name: Set up Payjoin CI
+        uses: ./.github/actions/prepare-ci-build
         with:
-          dotnet-version: "8.0.x"
-
-      - name: Restore
-        run: dotnet restore "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj"
+          rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
 
       - name: Publish plugin
-        run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-restore -o "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
+        run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-build -o "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
 
       - name: Build packer
-        run: dotnet build "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release
+        run: dotnet build "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release --no-restore
 
       - name: Pack .btcpay
         shell: bash
