@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
-using NSubstitute;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -31,6 +30,11 @@ public class PluginMigrationRunnerPolicyTests
 
         Assert.Null(exception);
         Assert.Equal(1, testContext.Runner.MigrateAsyncCallCount);
+        var logEntry = Assert.Single(testContext.Logger.Entries);
+        Assert.Equal(LogLevel.Error, logEntry.LogLevel);
+        Assert.Equal(new EventId(2, "LogPluginMigrationFailed"), logEntry.EventId);
+        var loggedException = Assert.IsType<InvalidOperationException>(logEntry.Exception);
+        Assert.Equal("Exception", loggedException.Message);
     }
 
     [Fact]
@@ -49,9 +53,9 @@ public class PluginMigrationRunnerPolicyTests
     private static RunnerTestContext CreateTestContext(MigrationBehavior migrationBehavior)
     {
         var dbContextFactory = new TestPayjoinPluginDbContextFactory();
-        var logger = Substitute.For<ILogger<PluginMigrationRunner>>();
+        var logger = new TestLogger<PluginMigrationRunner>();
         var runner = new TestPluginMigrationRunner(migrationBehavior, dbContextFactory, logger);
-        return new RunnerTestContext(dbContextFactory, runner);
+        return new RunnerTestContext(dbContextFactory, runner, logger);
     }
 
     private sealed class TestPluginMigrationRunner : PluginMigrationRunner
@@ -84,13 +88,16 @@ public class PluginMigrationRunnerPolicyTests
     {
         private readonly TestPayjoinPluginDbContextFactory _dbContextFactory;
 
-        public RunnerTestContext(TestPayjoinPluginDbContextFactory dbContextFactory, TestPluginMigrationRunner runner)
+        public RunnerTestContext(TestPayjoinPluginDbContextFactory dbContextFactory, TestPluginMigrationRunner runner, TestLogger<PluginMigrationRunner> logger)
         {
             _dbContextFactory = dbContextFactory;
             Runner = runner;
+            Logger = logger;
         }
 
         public TestPluginMigrationRunner Runner { get; }
+
+        public TestLogger<PluginMigrationRunner> Logger { get; }
 
         public void Dispose()
         {
@@ -138,5 +145,36 @@ public class PluginMigrationRunnerPolicyTests
         Success,
         Fail,
         Cancel
+    }
+
+    private sealed class TestLogger<T> : ILogger<T>
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull
+        {
+            return NullScope.Instance;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(new LogEntry(logLevel, eventId, exception));
+        }
+
+        public sealed record LogEntry(LogLevel LogLevel, EventId EventId, Exception? Exception);
+
+        private sealed class NullScope : IDisposable
+        {
+            public static NullScope Instance { get; } = new();
+
+            public void Dispose()
+            {
+            }
+        }
     }
 }

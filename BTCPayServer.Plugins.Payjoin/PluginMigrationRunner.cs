@@ -54,6 +54,7 @@ public class PluginMigrationRunner : IHostedService
         }
         catch (Exception ex)
         {
+            // TODO: Revisit whether migration failures should remain fail-soft or become fail-fast once operational guarantees are defined.
             LogPluginMigrationFailed(_logger, ex);
         }
     }

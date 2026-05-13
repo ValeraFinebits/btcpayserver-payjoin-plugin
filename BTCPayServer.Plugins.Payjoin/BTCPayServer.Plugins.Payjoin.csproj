@@ -8,8 +8,8 @@
   <!-- Plugin specific properties -->
   <PropertyGroup>
     <Product>Payjoin</Product>
-    <Description>A demo payjoin plugin for BTCPay Server.</Description>
-    <Version>0.1.0</Version>
+    <Description>Payjoin v2 plugin for BTCPay Server.</Description>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
   <!-- Plugin development properties -->

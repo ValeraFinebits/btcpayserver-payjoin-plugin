@@ -39,6 +39,28 @@ dotnet build BTCPayServer.Plugins.Payjoin.sln -c Release
 dotnet test BTCPayServer.Plugins.Payjoin.sln -c Release
 ```
 
+### Managing EF Migrations
+
+Entity Framework migrations for the plugin use the dedicated design-time startup project at `BTCPayServer.Plugins.Payjoin.Migrations`.
+
+List migrations:
+
+```sh
+dotnet ef migrations list --project BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj --startup-project BTCPayServer.Plugins.Payjoin.Migrations/BTCPayServer.Plugins.Payjoin.Migrations.csproj
+```
+
+Add a migration:
+
+```sh
+dotnet ef migrations add <MigrationName> --project BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj --startup-project BTCPayServer.Plugins.Payjoin.Migrations/BTCPayServer.Plugins.Payjoin.Migrations.csproj --output-dir Migrations
+```
+
+Remove the latest migration:
+
+```sh
+dotnet ef migrations remove --project BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj --startup-project BTCPayServer.Plugins.Payjoin.Migrations/BTCPayServer.Plugins.Payjoin.Migrations.csproj --force
+```
+
 ## Related Links
 
 - Payjoin Rust implementation: https://github.com/payjoin/rust-payjoin
