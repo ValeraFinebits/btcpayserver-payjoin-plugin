@@ -3,7 +3,6 @@ using BTCPayServer.Payments;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
-using NBitcoin;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;

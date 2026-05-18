@@ -1,10 +1,10 @@
 using BTCPayServer.Plugins.Payjoin.Models;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
+using Payjoin;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using Payjoin;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
