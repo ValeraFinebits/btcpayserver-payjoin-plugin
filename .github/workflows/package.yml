@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dotnet "./btcpayserver/BTCPayServer.PluginPacker/bin/Release/net10.0/BTCPayServer.PluginPacker.dll" \
+          dotnet run --project "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release --no-build -- \
             "./artifacts/publish/BTCPayServer.Plugins.Payjoin" \
             "BTCPayServer.Plugins.Payjoin" \
             "./artifacts/packages"
