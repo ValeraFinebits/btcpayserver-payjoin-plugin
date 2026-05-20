@@ -148,9 +148,14 @@ public sealed class PayjoinReceiverSessionStore
         return true;
     }
 
-    public bool TryPersistContributedInput(string invoiceId, OutPoint outPoint)
+    public bool TryPersistContributedInput(string invoiceId, OutPoint outPoint, long valueSats)
     {
         ArgumentNullException.ThrowIfNull(outPoint);
+        if (valueSats < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(valueSats), valueSats, "Contributed input value must be non-negative.");
+        }
+
         using var context = _pluginDbContextFactory.CreateContext();
         var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
         if (sessionData is null)
@@ -160,13 +165,41 @@ public sealed class PayjoinReceiverSessionStore
 
         var transactionId = outPoint.Hash.ToString();
         var outputIndex = checked((long)outPoint.N);
-        if (sessionData.ContributedInputTransactionId == transactionId && sessionData.ContributedInputOutputIndex == outputIndex)
+        if (sessionData.ContributedInputTransactionId == transactionId &&
+            sessionData.ContributedInputOutputIndex == outputIndex &&
+            sessionData.ContributedInputValueSats == valueSats)
         {
             return true;
         }
 
         sessionData.ContributedInputTransactionId = transactionId;
         sessionData.ContributedInputOutputIndex = outputIndex;
+        sessionData.ContributedInputValueSats = valueSats;
+        sessionData.UpdatedAt = DateTimeOffset.UtcNow;
+        context.SaveChanges();
+        return true;
+    }
+
+    public bool TryPersistPayjoinTransactionId(string invoiceId, string payjoinTransactionId)
+    {
+        if (string.IsNullOrWhiteSpace(payjoinTransactionId))
+        {
+            throw new ArgumentException("Payjoin transaction id must be provided.", nameof(payjoinTransactionId));
+        }
+
+        using var context = _pluginDbContextFactory.CreateContext();
+        var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
+        if (sessionData is null)
+        {
+            return false;
+        }
+
+        if (sessionData.PayjoinTransactionId == payjoinTransactionId)
+        {
+            return true;
+        }
+
+        sessionData.PayjoinTransactionId = payjoinTransactionId;
         sessionData.UpdatedAt = DateTimeOffset.UtcNow;
         context.SaveChanges();
         return true;
@@ -250,6 +283,8 @@ public sealed class PayjoinReceiverSessionStore
             sessionData.InitializedPollAfterCloseRequestConsumed,
             sessionData.ContributedInputTransactionId,
             sessionData.ContributedInputOutputIndex,
+            sessionData.ContributedInputValueSats,
+            sessionData.PayjoinTransactionId,
             events ?? []);
     }
 

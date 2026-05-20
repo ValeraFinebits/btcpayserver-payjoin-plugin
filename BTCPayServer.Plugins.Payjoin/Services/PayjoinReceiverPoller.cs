@@ -8,7 +8,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBXplorer;
-using NBXplorer.DerivationStrategy;
 using Payjoin;
 using System;
 using System.Collections.Generic;
@@ -69,7 +68,6 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     private readonly PaymentMethodHandlerDictionary _handlers;
     private readonly PayjoinAvailabilityService _availabilityService;
     private readonly ExplorerClientProvider _explorerClientProvider;
-    private readonly IPayjoinStoreSettingsRepository _storeSettingsRepository;
 
     public PayjoinReceiverPoller(
         PayjoinReceiverSessionStore sessionStore,
@@ -80,7 +78,6 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         PaymentMethodHandlerDictionary handlers,
         PayjoinAvailabilityService availabilityService,
         ExplorerClientProvider explorerClientProvider,
-        IPayjoinStoreSettingsRepository storeSettingsRepository,
         ILogger<PayjoinReceiverPoller> logger)
     {
         _sessionStore = sessionStore;
@@ -91,7 +88,6 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         _handlers = handlers;
         _availabilityService = availabilityService;
         _explorerClientProvider = explorerClientProvider;
-        _storeSettingsRepository = storeSettingsRepository;
         _logger = logger;
     }
 
@@ -516,7 +512,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         string invoiceId,
         CancellationToken stoppingToken)
     {
-        var exactPaymentOutputs = await TryCreateExactPaymentReceiverOutputsAsync(storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
+        var exactPaymentOutputs = await TryCreateExactPaymentReceiverOutputsAsync(invoiceId, receiverScript).ConfigureAwait(false);
         if (exactPaymentOutputs is null)
         {
             LogPayjoinReceiverExactPaymentOutputsUnavailable(_logger, invoiceId, null);
@@ -526,7 +522,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
 
         try
         {
-            using var modified = proposal.ReplaceReceiverOutputs(exactPaymentOutputs.Value.ExactPaymentOutputs, exactPaymentOutputs.Value.ReceiverChangeScript);
+            using var modified = proposal.ReplaceReceiverOutputs(exactPaymentOutputs, receiverScript);
             using var transition = modified.CommitOutputs();
             using var wantsInputs = transition.Save(persister);
             LogPayjoinReceiverPreparedExactPaymentOutputs(_logger, invoiceId, null);
@@ -539,28 +535,20 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         }
     }
 
-    private async Task<(PlainTxOut[] ExactPaymentOutputs, byte[] ReceiverChangeScript)?> TryCreateExactPaymentReceiverOutputsAsync(
-        string storeId,
+    private async Task<PlainTxOut[]?> TryCreateExactPaymentReceiverOutputsAsync(
         string invoiceId,
-        byte[] receiverScript,
-        CancellationToken cancellationToken)
+        byte[] receiverScript)
     {
         // TODO: Add an explicit rust-payjoin / payjoin-ffi API for reading receiver outputs or original PSBT data.
         // TODO: Replace the invoice.Due fallback below with values read directly from the incoming payjoin proposal.
         // TODO: Validate that the invoice amount matches the receiver amount in the incoming proposal before building replacement outputs.
-        var receiverChangeScript = await GetReceiverChangeScriptAsync(storeId, invoiceId, receiverScript, cancellationToken).ConfigureAwait(false);
-        if (receiverChangeScript is null)
-        {
-            return null;
-        }
-
         var exactPaymentAmountSats = await TryGetExactPaymentAmountSatsAsync(invoiceId).ConfigureAwait(false);
         if (exactPaymentAmountSats is null)
         {
             return null;
         }
 
-        return CreateExactPaymentReceiverOutputs(exactPaymentAmountSats.Value, receiverScript, receiverChangeScript);
+        return CreateExactPaymentReceiverOutputs(exactPaymentAmountSats.Value, receiverScript);
     }
 
     private async Task<ulong?> TryGetExactPaymentAmountSatsAsync(string invoiceId)
@@ -588,90 +576,14 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         return checked((ulong)dueSats);
     }
 
-    internal static (PlainTxOut[] ExactPaymentOutputs, byte[] ReceiverChangeScript) CreateExactPaymentReceiverOutputs(
+    internal static PlainTxOut[] CreateExactPaymentReceiverOutputs(
         ulong exactPaymentAmountSats,
-        byte[] receiverScript,
-        byte[] receiverChangeScript)
+        byte[] receiverScript)
     {
-        return (
-            new[]
-            {
-                new PlainTxOut(exactPaymentAmountSats, receiverScript),
-                new PlainTxOut(0, receiverChangeScript)
-            },
-            receiverChangeScript);
-    }
-
-    private async Task<byte[]?> GetReceiverChangeScriptAsync(
-        string storeId,
-        string invoiceId,
-        byte[] receiverScript,
-        CancellationToken cancellationToken)
-    {
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>("BTC");
-        if (network is null)
+        return new[]
         {
-            return null;
-        }
-
-        var client = _explorerClientProvider.GetExplorerClient(network);
-
-        var coldWalletDerivation = await TryParseColdWalletDerivationAsync(storeId, network).ConfigureAwait(false);
-        if (coldWalletDerivation is not null)
-        {
-            var coldChangeAddress = await client.GetUnusedAsync(coldWalletDerivation, DerivationFeature.Change, 0, true, cancellationToken).ConfigureAwait(false);
-            var coldChangeScript = coldChangeAddress?.ScriptPubKey?.ToBytes();
-            if (coldChangeScript is not null && coldChangeScript.Length > 0 && !coldChangeScript.SequenceEqual(receiverScript))
-            {
-                return coldChangeScript;
-            }
-        }
-
-        var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false);
-        if (store is null)
-        {
-            return null;
-        }
-
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
-        var derivationScheme = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, _handlers, true);
-        if (derivationScheme is null)
-        {
-            return null;
-        }
-
-        var changeAddress = await client.GetUnusedAsync(derivationScheme.AccountDerivation, DerivationFeature.Change, 0, true, cancellationToken).ConfigureAwait(false);
-        var generatedReceiverChangeScriptPubKey = changeAddress?.ScriptPubKey;
-        if (generatedReceiverChangeScriptPubKey is null)
-        {
-            return null;
-        }
-
-        var generatedReceiverChangeScript = generatedReceiverChangeScriptPubKey.ToBytes();
-        if (generatedReceiverChangeScript.SequenceEqual(receiverScript))
-        {
-            return null;
-        }
-
-        return generatedReceiverChangeScript;
-    }
-
-    private async Task<DerivationStrategyBase?> TryParseColdWalletDerivationAsync(string storeId, BTCPayNetwork network)
-    {
-        var storeSettings = await _storeSettingsRepository.GetAsync(storeId).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(storeSettings.ColdWalletDerivationScheme))
-        {
-            return null;
-        }
-
-        try
-        {
-            return DerivationSchemeHelper.Parse(storeSettings.ColdWalletDerivationScheme, network).AccountDerivation;
-        }
-        catch (FormatException)
-        {
-            return null;
-        }
+            new PlainTxOut(exactPaymentAmountSats, receiverScript)
+        };
     }
 
     private async Task ProcessWantsInputsAsync(
@@ -724,7 +636,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
                 return;
             }
 
-            if (!_sessionStore.TryPersistContributedInput(invoiceId, contributedCoins[0].OutPoint))
+            if (!_sessionStore.TryPersistContributedInput(invoiceId, contributedCoins[0].OutPoint, contributedCoins[0].Coin.Amount.Satoshi))
             {
                 RemoveSession(invoiceId, "failed to persist contributed receiver input");
                 return;
@@ -885,7 +797,18 @@ public sealed class PayjoinReceiverPoller : BackgroundService
 
         using var transition = proposal.FinalizeProposal(new SigningProcessPsbt(proposalPsbt.ToBase64()));
         using var payjoinProposal = transition.Save(persister);
+        PersistPayjoinTransactionId(invoiceId, payjoinProposal, network);
         await PostPayjoinProposalAsync(payjoinProposal, persister, ohttpRelayUrl, stoppingToken).ConfigureAwait(false);
+    }
+
+    private void PersistPayjoinTransactionId(string invoiceId, PayjoinProposal payjoinProposal, BTCPayNetwork network)
+    {
+        var finalPsbt = PSBT.Parse(payjoinProposal.Psbt(), network.NBitcoinNetwork);
+        var txHash = finalPsbt.GetGlobalTransaction().GetHash().ToString();
+        if (!_sessionStore.TryPersistPayjoinTransactionId(invoiceId, txHash))
+        {
+            RemoveSession(invoiceId, "failed to persist payjoin transaction id");
+        }
     }
 
     internal static void EnsureContributedInputsPresent(PSBT proposalPsbt, ReceivedCoin[] receiverCoins)

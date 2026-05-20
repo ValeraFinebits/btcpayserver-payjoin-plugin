@@ -32,5 +32,9 @@ internal class PayjoinReceiverSessionData
 
     public long? ContributedInputOutputIndex { get; set; }
 
+    public long? ContributedInputValueSats { get; set; }
+
+    public string? PayjoinTransactionId { get; set; }
+
     public ICollection<PayjoinReceiverSessionEventData> Events { get; } = [];
 }

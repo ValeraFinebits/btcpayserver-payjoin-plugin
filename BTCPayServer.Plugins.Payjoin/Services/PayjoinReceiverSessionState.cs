@@ -25,6 +25,8 @@ public sealed class PayjoinReceiverSessionState
         bool initializedPollAfterCloseRequestConsumed = false,
         string? contributedInputTransactionId = null,
         long? contributedInputOutputIndex = null,
+        long? contributedInputValueSats = null,
+        string? payjoinTransactionId = null,
         IEnumerable<string>? events = null)
     {
         InvoiceId = invoiceId;
@@ -40,6 +42,8 @@ public sealed class PayjoinReceiverSessionState
         InitializedPollAfterCloseRequestConsumed = initializedPollAfterCloseRequestConsumed;
         ContributedInputTransactionId = contributedInputTransactionId;
         ContributedInputOutputIndex = contributedInputOutputIndex;
+        ContributedInputValueSats = contributedInputValueSats;
+        PayjoinTransactionId = payjoinTransactionId;
         _events = events?.ToArray() ?? [];
     }
 
@@ -68,6 +72,10 @@ public sealed class PayjoinReceiverSessionState
     public string? ContributedInputTransactionId { get; }
 
     public long? ContributedInputOutputIndex { get; }
+
+    public long? ContributedInputValueSats { get; }
+
+    public string? PayjoinTransactionId { get; }
 
     internal bool CanPollInitializedAfterCloseRequest()
     {

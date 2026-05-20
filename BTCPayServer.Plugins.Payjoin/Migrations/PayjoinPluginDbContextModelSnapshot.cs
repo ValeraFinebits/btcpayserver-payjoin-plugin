@@ -42,6 +42,9 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                         .HasMaxLength(PayjoinPluginDbSchema.TransactionIdMaxLength)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<long?>("ContributedInputValueSats")
+                        .HasColumnType("bigint");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -57,6 +60,10 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Property<string>("OhttpRelayUrl")
                         .HasMaxLength(PayjoinPluginDbSchema.OhttpRelayUrlMaxLength)
                         .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("PayjoinTransactionId")
+                        .HasMaxLength(PayjoinPluginDbSchema.TransactionIdMaxLength)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<string>("ReceiverAddress")
                         .HasMaxLength(PayjoinPluginDbSchema.ReceiverAddressMaxLength)
