@@ -115,25 +115,7 @@ internal static class PayjoinIntegrationTestSupport
         return coldDerivation;
     }
 
-    public static async Task AssertColdWalletReceivedPayjoinChangeAsync(
-        ServerTester tester,
-        DerivationStrategyBase coldDerivation,
-        (Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId) paymentResult,
-        CancellationToken cancellationToken = default)
-    {
-        var explorerClient = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(GetBitcoinNetwork(tester));
-        var coldWalletUtxos = await explorerClient.GetUTXOsAsync(coldDerivation, cancellationToken).ConfigureAwait(true);
-        Assert.NotNull(coldWalletUtxos);
-
-        var coldUtxo = Assert.Single(coldWalletUtxos.GetUnspentUTXOs());
-        Assert.NotEqual(paymentResult.InvoiceScript, coldUtxo.ScriptPubKey);
-        Assert.True((Money)coldUtxo.Value > Money.Zero, "Cold wallet UTXO should have positive value");
-        var coldTxOutput = paymentResult.PayjoinTransaction.Outputs.FirstOrDefault(o => o.ScriptPubKey == coldUtxo.ScriptPubKey);
-        Assert.NotNull(coldTxOutput);
-        Assert.Equal((Money)coldUtxo.Value, coldTxOutput.Value);
-    }
-
-    public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaRunTestPaymentWithExternalPayerAsync(
+public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceViaRunTestPaymentWithExternalPayerAsync(
         ServerTester tester,
         TestAccount merchant,
         BTCPayNetwork network,

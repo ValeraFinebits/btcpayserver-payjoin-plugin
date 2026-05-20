@@ -75,12 +75,13 @@ public class PayjoinReceiverSessionStoreTests
         var session = CreateSession(store, "invoice-input", out _);
         var expectedOutPoint = new OutPoint(uint256.Parse("1111111111111111111111111111111111111111111111111111111111111111"), uint.MaxValue);
 
-        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint));
+        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint, 12345L));
 
         var reloadedStore = testContext.CreateStore();
         Assert.True(reloadedStore.TryGetSession(session.InvoiceId, out var reloadedSession));
         Assert.True(reloadedSession!.TryGetContributedInput(out var actualOutPoint));
         Assert.Equal(expectedOutPoint, actualOutPoint);
+        Assert.Equal(12345L, reloadedSession.ContributedInputValueSats);
     }
 
     [Fact]
@@ -91,13 +92,13 @@ public class PayjoinReceiverSessionStoreTests
         var session = CreateSession(store, "invoice-same-input", out _);
         var expectedOutPoint = new OutPoint(uint256.Parse("3333333333333333333333333333333333333333333333333333333333333333"), 3);
 
-        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint));
+        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint, 7777L));
         using var firstContext = testContext.CreateDbContext();
         var firstUpdatedAt = firstContext.ReceiverSessions
             .Single(x => x.InvoiceId == session.InvoiceId)
             .UpdatedAt;
 
-        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint));
+        Assert.True(store.TryPersistContributedInput(session.InvoiceId, expectedOutPoint, 7777L));
         using var secondContext = testContext.CreateDbContext();
         var secondUpdatedAt = secondContext.ReceiverSessions
             .Single(x => x.InvoiceId == session.InvoiceId)
@@ -116,7 +117,7 @@ public class PayjoinReceiverSessionStoreTests
         var firstPersister = firstStore.CreatePersister(firstSession);
 
         firstPersister.Save("event-before-input");
-        Assert.True(firstStore.TryPersistContributedInput(firstSession.InvoiceId, expectedOutPoint));
+        Assert.True(firstStore.TryPersistContributedInput(firstSession.InvoiceId, expectedOutPoint, 4242L));
         firstPersister.Save("event-after-input");
 
         var replayedStore = testContext.CreateStore();

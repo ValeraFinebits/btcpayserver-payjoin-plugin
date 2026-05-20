@@ -223,25 +223,20 @@ public class PayjoinReceiverPollerTests
     }
 
     [Fact]
-    public void CreateExactPaymentReceiverOutputsCreatesDedicatedChangeOutput()
+    public void CreateExactPaymentReceiverOutputsEmitsSingleMergedOutput()
     {
         // Arrange
         var receiverScript = new byte[] { 0x01, 0x02 };
-        var receiverChangeScript = new byte[] { 0xAA, 0xBB };
 
         // Act
         var result = PayjoinReceiverPoller.CreateExactPaymentReceiverOutputs(
             50_000UL,
-            receiverScript,
-            receiverChangeScript);
+            receiverScript);
 
         // Assert
-        Assert.Equal(receiverChangeScript, result.ReceiverChangeScript);
-        Assert.Equal(2, result.ExactPaymentOutputs.Length);
-        Assert.Equal<ulong>(50_000UL, result.ExactPaymentOutputs[0].valueSat);
-        Assert.Equal(receiverScript, result.ExactPaymentOutputs[0].scriptPubkey);
-        Assert.Equal<ulong>(0UL, result.ExactPaymentOutputs[1].valueSat);
-        Assert.Equal(receiverChangeScript, result.ExactPaymentOutputs[1].scriptPubkey);
+        Assert.Single(result);
+        Assert.Equal<ulong>(50_000UL, result[0].valueSat);
+        Assert.Equal(receiverScript, result[0].scriptPubkey);
     }
 
     [Fact]
@@ -497,7 +492,6 @@ public class PayjoinReceiverPollerTests
             new PaymentMethodHandlerDictionary(Array.Empty<IPaymentMethodHandler>()),
             null!,
             null!,
-            Substitute.For<IPayjoinStoreSettingsRepository>(),
             logger);
         using var cancellationTokenSource = new CancellationTokenSource();
 
@@ -534,7 +528,6 @@ public class PayjoinReceiverPollerTests
             handlers,
             null!,
             null!,
-            Substitute.For<IPayjoinStoreSettingsRepository>(),
             Substitute.For<ILogger<PayjoinReceiverPoller>>());
     }
 
@@ -605,6 +598,8 @@ public class PayjoinReceiverPollerTests
         bool initializedPollAfterCloseRequestConsumed = false,
         string? contributedInputTransactionId = null,
         long? contributedInputOutputIndex = null,
+        long? contributedInputValueSats = null,
+        string? payjoinTransactionId = null,
         IEnumerable<string>? events = null)
     {
         var now = DateTimeOffset.UtcNow;
@@ -622,6 +617,8 @@ public class PayjoinReceiverPollerTests
             initializedPollAfterCloseRequestConsumed,
             contributedInputTransactionId,
             contributedInputOutputIndex,
+            contributedInputValueSats,
+            payjoinTransactionId,
             events);
     }
 

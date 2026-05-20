@@ -169,26 +169,6 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
-    public async Task PayjoinChangeOutputGoesToColdWalletWithExternalPayer()
-    {
-        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester(newDb: true);
-        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
-        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
-
-        var coldDerivation = await PayjoinIntegrationTestSupport.CreateTrackedColdWalletAsync(tester, cts.Token).ConfigureAwait(true);
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
-        {
-            settings.ColdWalletDerivationScheme = coldDerivation.ToString();
-        }, cts.Token).ConfigureAwait(true);
-
-        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
-
-        await PayjoinIntegrationTestSupport.AssertColdWalletReceivedPayjoinChangeAsync(tester, coldDerivation, paymentResult, cts.Token).ConfigureAwait(true);
-    }
-
-    [Fact]
-    [Trait("Integration", "Integration")]
     public async Task GetBip21DoesNotEnablePayjoinWhenMerchantHasOnlyUnconfirmedCoins()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
