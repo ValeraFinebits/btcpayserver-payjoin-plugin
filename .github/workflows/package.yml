@@ -24,6 +24,7 @@ jobs:
       - name: Set up Payjoin CI
         uses: ./.github/actions/prepare-ci-build
         with:
+          dotnet-version: 10.0.x
           rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
 
       - name: Publish plugin
@@ -36,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dotnet "./btcpayserver/BTCPayServer.PluginPacker/bin/Release/net8.0/BTCPayServer.PluginPacker.dll" \
+          dotnet "./btcpayserver/BTCPayServer.PluginPacker/bin/Release/net10.0/BTCPayServer.PluginPacker.dll" \
             "./artifacts/publish/BTCPayServer.Plugins.Payjoin" \
             "BTCPayServer.Plugins.Payjoin" \
             "./artifacts/packages"

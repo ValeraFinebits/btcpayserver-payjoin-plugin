@@ -12,12 +12,15 @@
     const controlsId = 'PayJoinCheckoutControls';
     const controlsMountId = 'PayJoinCheckoutControlsMount';
     const testPaymentId = 'PayJoinCheckoutTestPayment';
+    const bootstrapRetryDelayMs = 100;
+    const maxBootstrapRetryCount = 100;
     const runTestEnabled = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Env.CheatMode));
     const runTestEndpoint = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Url.Action("RunTestPayment", "UIPayJoin")));
     let selectedPaymentMode = null;
     let paymentUrlFetchInvoiceId = null;
     let tickScheduled = false;
     let observerStarted = false;
+    let bootstrapRetryCount = 0;
 
     function getCheckoutVm() {
         const checkout = document.getElementById('Checkout');
@@ -27,6 +30,17 @@
     function getModel() {
         const vm = getCheckoutVm();
         return vm && vm.srvModel;
+    }
+
+    function replaceSrvModel(vm, nextModel) {
+        if (!vm) {
+            return;
+        }
+
+        vm.srvModel = nextModel;
+        if (vm.$forceUpdate) {
+            vm.$forceUpdate();
+        }
     }
 
     function shouldShowControls(model) {
@@ -111,11 +125,7 @@
             payjoinPaymentUrlQR: mergePayjoinIntoPaymentUrl(model.payjoinPlainBitcoinUrlQR, bip21)
         });
 
-        if (vm.$set) {
-            vm.$set(vm, 'srvModel', nextModel);
-        } else {
-            vm.srvModel = nextModel;
-        }
+        replaceSrvModel(vm, nextModel);
     }
 
     function requestPayjoinPaymentUrl(model) {
@@ -190,11 +200,7 @@
             invoiceBitcoinUrlQR: paymentUrlQr
         });
 
-        if (vm.$set) {
-            vm.$set(vm, 'srvModel', nextModel);
-        } else {
-            vm.srvModel = nextModel;
-        }
+        replaceSrvModel(vm, nextModel);
 
         refreshPaymentDom(paymentUrl, paymentUrlQr);
         if (vm.$nextTick) {
@@ -453,11 +459,26 @@
     }
 
     function tick() {
+        const model = getModel();
         startObserver();
-        requestPayjoinPaymentUrl(getModel());
-        applySelectedPaymentMode(getModel());
+        requestPayjoinPaymentUrl(model);
+        applySelectedPaymentMode(model);
         renderControls();
         renderTestPayment();
+
+        if (bootstrapRetryCount >= maxBootstrapRetryCount) {
+            return;
+        }
+
+        if (!model ||
+            (model.status === 'New' &&
+             model.paymentMethodId === 'BTC-CHAIN' &&
+             model.payjoinPaymentUrlEndpoint &&
+             model.payjoinPlainBitcoinUrl &&
+             !model.payjoinPaymentUrl)) {
+            bootstrapRetryCount++;
+            window.setTimeout(scheduleTick, bootstrapRetryDelayMs);
+        }
     }
 
     document.addEventListener('click', function (event) {

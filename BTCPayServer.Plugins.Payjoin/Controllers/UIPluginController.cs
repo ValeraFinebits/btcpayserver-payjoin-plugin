@@ -1,4 +1,6 @@
 using BTCPayServer.Abstractions.Constants;
+using BTCPayServer.Abstractions.Extensions;
+using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Services;
@@ -24,6 +26,7 @@ public class UIPluginController : Controller
     public async Task<IActionResult> Index()
     {
         var data = await _pluginService.Get().ConfigureAwait(false);
+        ViewData.SetLayoutModel(new LayoutModel("Payjoin V2", "Payjoin V2").SetCategory(WellKnownCategories.Server));
         return View(new PluginPageViewModel(data));
     }
 }

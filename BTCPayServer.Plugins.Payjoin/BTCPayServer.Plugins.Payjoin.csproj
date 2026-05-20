@@ -1,6 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 	<Nullable>enable</Nullable>
   </PropertyGroup>
@@ -8,8 +8,8 @@
   <!-- Plugin specific properties -->
   <PropertyGroup>
     <Product>Payjoin</Product>
-    <Description>Payjoin v2 plugin for BTCPay Server.</Description>
-    <Version>0.2.0</Version>
+    <Description>Payjoin V2 plugin for BTCPay Server.</Description>
+    <Version>0.2.2</Version>
   </PropertyGroup>
 
   <!-- Plugin development properties -->
