@@ -111,6 +111,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
             state?.Dispose();
             replay?.Dispose();
         }
+    }
 
     internal async Task<PayjoinReceiverSessionState?> RefreshInvoiceCloseStateAsync(PayjoinReceiverSessionState session)
     {
