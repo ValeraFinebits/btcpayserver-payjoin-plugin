@@ -73,10 +73,32 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
         }
 
         var persister = _sessionStore.CreatePersister(session);
-        ReplayResult replay;
+        ReplayResult? replay = null;
+        ReceiveSession? state = null;
         try
         {
-            replay = PayjoinMethods.ReplayReceiverEventLog(persister);
+            var replayScope = PayjoinMethods.ReplayReceiverEventLog(persister);
+            replay = replayScope;
+
+            var replayState = replayScope.State();
+            state = replayState;
+
+            if (TryRemoveCloseRequestedSession(session, replayState))
+            {
+                return null;
+            }
+
+            var result = new PayjoinReceiverSessionGuardResult(
+                session,
+                persister,
+                receiverScript,
+                replayScope,
+                replayState,
+                RemoveCloseRequestedSession);
+
+            replay = null;
+            state = null;
+            return result;
         }
         catch (ReceiverReplayException ex)
         {
@@ -84,23 +106,11 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
             RemoveSession(session.InvoiceId, "receiver replay failed");
             return null;
         }
-
-        var state = replay.State();
-        if (TryRemoveCloseRequestedSession(session, state))
+        finally
         {
-            state.Dispose();
-            replay.Dispose();
-            return null;
+            state?.Dispose();
+            replay?.Dispose();
         }
-
-        return new PayjoinReceiverSessionGuardResult(
-            session,
-            persister,
-            receiverScript,
-            replay,
-            state,
-            RemoveCloseRequestedSession);
-    }
 
     internal async Task<PayjoinReceiverSessionState?> RefreshInvoiceCloseStateAsync(PayjoinReceiverSessionState session)
     {
