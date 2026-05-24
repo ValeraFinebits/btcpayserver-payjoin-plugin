@@ -26,6 +26,12 @@ public sealed class PayjoinUriSessionService
             LogLevel.Warning,
             new EventId(3, nameof(LogUnexpectedPayjoinFallback)),
             "Falling back to plain BIP21 for invoice {InvoiceId}: {Reason}");
+    private static readonly Action<ILogger, string, Exception?> LogInvalidPersistedSessionRebuild =
+        LoggerMessage.Define<string>(
+            LogLevel.Warning,
+            new EventId(4, nameof(LogInvalidPersistedSessionRebuild)),
+            "Persisted payjoin receiver session for invoice {InvoiceId} had an empty event log and will be rebuilt.");
+
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly PayjoinReceiverSessionStore _receiverSessionStore;
     private readonly PayjoinOhttpKeysProvider _ohttpKeysProvider;
@@ -111,7 +117,21 @@ public sealed class PayjoinUriSessionService
         try
         {
             using var sessionBuildLock = await _sessionBuildLock.AcquireAsync(invoiceId, cancellationToken).ConfigureAwait(false);
-            if (!_receiverSessionStore.TryGetSession(invoiceId, out var session) || session is null)
+            PayjoinReceiverSessionState? session = null;
+            if (_receiverSessionStore.TryGetSession(invoiceId, out var persistedSession) && persistedSession is not null)
+            {
+                if (persistedSession.GetEvents().Length == 0)
+                {
+                    LogInvalidPersistedSessionRebuild(_logger, invoiceId, null);
+                    _receiverSessionStore.RemoveSession(invoiceId);
+                }
+                else
+                {
+                    session = persistedSession;
+                }
+            }
+
+            if (session is null)
             {
                 var bootstrapPersister = new BufferedReceiverSessionPersister();
                 InitializeSession(destination, due, directoryUrl, ohttpKeys, bootstrapPersister);

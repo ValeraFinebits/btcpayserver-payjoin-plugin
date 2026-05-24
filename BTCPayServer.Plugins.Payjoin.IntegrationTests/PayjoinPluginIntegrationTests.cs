@@ -1,4 +1,5 @@
 using BTCPayServer.Client.Models;
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
@@ -325,6 +326,58 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(secondResponse);
         Assert.Equal(firstResponse.Bip21, secondResponse.Bip21);
         Assert.Single(sessionStore.GetSessions(), s => s.InvoiceId == invoiceId);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task GetBip21RebuildsPersistedReceiverSessionWhenEventLogIsEmpty()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, _) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
+        Assert.True(sessionStore.RemoveSession(invoiceId));
+
+        var invoiceRepository = tester.PayTester.GetService<InvoiceRepository>();
+        var invoice = await invoiceRepository.GetInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.NotNull(invoice);
+
+        var storeSettingsRepository = tester.PayTester.GetService<IPayjoinStoreSettingsRepository>();
+        var storeSettings = await storeSettingsRepository.GetAsync(invoice!.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.NotNull(storeSettings?.OhttpRelayUrl);
+
+        var prompt = invoice.GetPaymentPrompt(Payments.PaymentTypes.CHAIN.GetPaymentMethodId("BTC"));
+        Assert.NotNull(prompt?.Destination);
+
+        var pluginDbContextFactory = tester.PayTester.GetService<PayjoinPluginDbContextFactory>();
+        using (var db = pluginDbContextFactory.CreateContext())
+        {
+            var now = DateTimeOffset.UtcNow;
+            db.ReceiverSessions.Add(new PayjoinReceiverSessionData
+            {
+                InvoiceId = invoiceId,
+                StoreId = invoice.StoreId,
+                ReceiverAddress = prompt.Destination,
+                OhttpRelayUrl = storeSettings!.OhttpRelayUrl!.AbsoluteUri,
+                MonitoringExpiresAt = invoice.MonitoringExpiration,
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+            db.SaveChanges();
+        }
+
+        var rebuiltResponse = await PayjoinIntegrationTestSupport.GetBip21Async(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        PayjoinIntegrationTestSupport.AssertPayjoinBip21(rebuiltResponse);
+
+        var rebuiltSession = PayjoinReceiverTestHelper.GetRequiredReceiverSession(tester, invoiceId);
+        Assert.NotEmpty(rebuiltSession.GetEvents());
     }
 
     [Fact]
