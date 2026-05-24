@@ -204,7 +204,22 @@ public sealed class PayjoinReceiverSessionStore
         }
         catch (DbUpdateException ex) when (IsReceiverInputReservationConflict(ex))
         {
-            return false;
+            context.ChangeTracker.Clear();
+
+            var winningReservation = context.ReceiverInputReservations
+                .AsNoTracking()
+                .SingleOrDefault(x => x.TransactionId == transactionId && x.OutputIndex == outputIndex);
+            if (winningReservation is null ||
+                !string.Equals(winningReservation.InvoiceId, invoiceId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var winningSession = context.ReceiverSessions
+                .AsNoTracking()
+                .SingleOrDefault(x => x.InvoiceId == invoiceId);
+            return winningSession?.ContributedInputTransactionId == transactionId &&
+                   winningSession.ContributedInputOutputIndex == outputIndex;
         }
     }
 
