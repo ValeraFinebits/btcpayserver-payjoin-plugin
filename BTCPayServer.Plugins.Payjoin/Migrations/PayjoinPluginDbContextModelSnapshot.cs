@@ -18,7 +18,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 #pragma warning disable 612, 618
             modelBuilder
                 .HasDefaultSchema("BTCPayServer.Plugins.Payjoin")
-                .HasAnnotation("ProductVersion", "8.0.11")
+                .HasAnnotation("ProductVersion", "10.0.6")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
