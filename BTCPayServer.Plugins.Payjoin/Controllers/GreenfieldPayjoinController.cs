@@ -50,7 +50,7 @@ public sealed class GreenfieldPayjoinController : ControllerBase
         }
 
         var settings = await _settingsRepository.GetAsync(storeId).ConfigureAwait(false);
-        return Ok(ToData(settings));
+        return Ok(PayjoinStoreSettingsData.FromSettings(settings));
     }
 
     [HttpPut("settings")]
@@ -83,16 +83,10 @@ public sealed class GreenfieldPayjoinController : ControllerBase
             return this.CreateValidationError(ModelState);
         }
 
-        var nextSettings = new PayjoinStoreSettings
-        {
-            EnabledByDefault = settings.EnabledByDefault,
-            DirectoryUrl = settings.DirectoryUrl,
-            OhttpRelayUrl = settings.OhttpRelayUrl,
-            ColdWalletDerivationScheme = validatedDerivationScheme
-        };
+        var nextSettings = settings.ToSettings(validatedDerivationScheme);
 
         await _settingsRepository.SetAsync(storeId, nextSettings).ConfigureAwait(false);
-        return Ok(ToData(nextSettings));
+        return Ok(PayjoinStoreSettingsData.FromSettings(nextSettings));
     }
 
     [HttpGet("~/api/v1/stores/{storeId}/invoices/{invoiceId}/payjoin/payment-url")]
@@ -149,16 +143,5 @@ public sealed class GreenfieldPayjoinController : ControllerBase
             ModelState.AddModelError(nameof(PayjoinStoreSettingsData.ColdWalletDerivationScheme), $"Invalid wallet format: {ex.Message}");
             return null;
         }
-    }
-
-    private static PayjoinStoreSettingsData ToData(PayjoinStoreSettings settings)
-    {
-        return new PayjoinStoreSettingsData
-        {
-            EnabledByDefault = settings.EnabledByDefault,
-            DirectoryUrl = settings.DirectoryUrl,
-            OhttpRelayUrl = settings.OhttpRelayUrl,
-            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme
-        };
     }
 }

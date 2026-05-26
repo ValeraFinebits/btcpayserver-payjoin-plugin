@@ -79,7 +79,7 @@ internal static class PayjoinIntegrationTestSupport
     public static async Task EnablePayjoinAsync(ServerTester tester, string storeId, Action<PayjoinStoreSettings>? configure = null, CancellationToken cancellationToken = default)
     {
         var settings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
-        settings.EnabledByDefault = true;
+        settings.PayjoinV2Enabled = true;
         configure?.Invoke(settings);
         await UpdateStoreSettingsAsync(tester, storeId, settings, cancellationToken).ConfigureAwait(true);
     }
@@ -87,7 +87,7 @@ internal static class PayjoinIntegrationTestSupport
     public static async Task DisablePayjoinAsync(ServerTester tester, string storeId, Action<PayjoinStoreSettings>? configure = null, CancellationToken cancellationToken = default)
     {
         var settings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
-        settings.EnabledByDefault = false;
+        settings.PayjoinV2Enabled = false;
         configure?.Invoke(settings);
         await UpdateStoreSettingsAsync(tester, storeId, settings, cancellationToken).ConfigureAwait(true);
     }

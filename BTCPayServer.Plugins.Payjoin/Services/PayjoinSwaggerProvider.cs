@@ -170,7 +170,7 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
               "ohttpRelayUrl"
             ],
             "properties": {
-              "enabledByDefault": {
+              "payjoinV2Enabled": {
                 "type": "boolean",
                 "description": "Whether checkout and API-generated payment URLs should include PayJoin by default."
               },

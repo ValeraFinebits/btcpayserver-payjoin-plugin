@@ -40,15 +40,10 @@ public class UIStorePayjoinController : Controller
         }
 
         var settings = await _settingsRepository.GetAsync(storeId).ConfigureAwait(false);
-        var vm = new PayjoinStoreSettingsViewModel
-        {
-            StoreId = storeId,
-            EnabledByDefault = settings.EnabledByDefault,
-            DirectoryUrl = settings.DirectoryUrl,
-            OhttpRelayUrl = settings.OhttpRelayUrl,
-            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme,
-            LayoutModel = new LayoutModel("Payjoin", "Payjoin").SetCategory(WellKnownCategories.Store)
-        };
+        var vm = PayjoinStoreSettingsViewModel.FromSettings(
+            storeId,
+            settings,
+            new LayoutModel("Payjoin", "Payjoin").SetCategory(WellKnownCategories.Store));
         ViewData.SetLayoutModel(vm.LayoutModel);
         return View(vm);
     }
@@ -106,13 +101,7 @@ public class UIStorePayjoinController : Controller
             }
         }
 
-        var settings = new PayjoinStoreSettings
-        {
-            EnabledByDefault = model.EnabledByDefault,
-            DirectoryUrl = model.DirectoryUrl,
-            OhttpRelayUrl = model.OhttpRelayUrl,
-            ColdWalletDerivationScheme = validatedDerivationScheme
-        };
+        var settings = model.ToSettings(validatedDerivationScheme);
 
         await _settingsRepository.SetAsync(storeId, settings).ConfigureAwait(false);
         TempData[WellKnownTempData.SuccessMessage] = "Payjoin settings saved.";

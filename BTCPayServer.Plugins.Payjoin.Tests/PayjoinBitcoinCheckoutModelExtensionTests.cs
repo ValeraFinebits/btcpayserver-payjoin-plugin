@@ -85,7 +85,7 @@ public class PayjoinBitcoinCheckoutModelExtensionTests
         Assert.Equal(
             "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj&lightning=lnbcrt123",
             model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey].ToObject<string>());
-        Assert.True(model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinDefaultEnabledKey].ToObject<bool>());
+        Assert.True(model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinV2EnabledKey].ToObject<bool>());
     }
 
     [Fact]
@@ -125,6 +125,6 @@ public class PayjoinBitcoinCheckoutModelExtensionTests
         Assert.Equal(
             "/plugins/payjoin/invoices/test/payment-url",
             model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinPaymentUrlEndpointKey].ToObject<string>());
-        Assert.False(model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinDefaultEnabledKey].ToObject<bool>());
+        Assert.False(model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinV2EnabledKey].ToObject<bool>());
     }
 }

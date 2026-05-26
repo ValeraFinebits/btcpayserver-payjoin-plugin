@@ -185,7 +185,7 @@
             return selectedPaymentMode;
         }
 
-        return model.payjoinEnabledByDefault === false ? 'standard' : 'payjoin';
+        return model.payjoinV2Enabled === false ? 'standard' : 'payjoin';
     }
 
     function setPaymentUrl(paymentUrl, paymentUrlQr) {

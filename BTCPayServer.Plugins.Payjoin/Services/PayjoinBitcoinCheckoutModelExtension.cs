@@ -22,7 +22,7 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
     internal const string PayjoinBitcoinUrlKey = "payjoinPaymentUrl";
     internal const string PayjoinBitcoinUrlQrKey = "payjoinPaymentUrlQR";
     internal const string PayjoinPaymentUrlEndpointKey = "payjoinPaymentUrlEndpoint";
-    internal const string PayjoinDefaultEnabledKey = "payjoinEnabledByDefault";
+    internal const string PayjoinV2EnabledKey = "payjoinV2Enabled";
     private static readonly string[] PayjoinParameterKeys = [OutputSubstitutionParameterKey, PayjoinClient.BIP21EndpointKey];
     private readonly BitcoinCheckoutModelExtension _innerExtension;
 
@@ -63,10 +63,10 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
             Controller = "UIPayJoin",
             Values = new { invoiceId = context.InvoiceEntity.Id }
         });
-        ApplyPayjoinCheckoutMetadata(context.Model, paymentUrlEndpoint, storeSettings.EnabledByDefault);
+        ApplyPayjoinCheckoutMetadata(context.Model, paymentUrlEndpoint, storeSettings.PayjoinV2Enabled);
     }
 
-    internal static void ApplyPayjoinCheckoutMetadata(CheckoutModel model, string? paymentUrlEndpoint, bool payjoinEnabledByDefault)
+    internal static void ApplyPayjoinCheckoutMetadata(CheckoutModel model, string? paymentUrlEndpoint, bool payjoinV2Enabled)
     {
         ArgumentNullException.ThrowIfNull(model);
 
@@ -79,10 +79,10 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
         model.AdditionalData[PlainBitcoinUrlKey] = JToken.FromObject(model.InvoiceBitcoinUrl ?? string.Empty);
         model.AdditionalData[PlainBitcoinUrlQrKey] = JToken.FromObject(model.InvoiceBitcoinUrlQR ?? string.Empty);
         model.AdditionalData[PayjoinPaymentUrlEndpointKey] = JToken.FromObject(paymentUrlEndpoint);
-        model.AdditionalData[PayjoinDefaultEnabledKey] = JToken.FromObject(payjoinEnabledByDefault);
+        model.AdditionalData[PayjoinV2EnabledKey] = JToken.FromObject(payjoinV2Enabled);
     }
 
-    internal static void ApplyPayjoinPaymentUrl(CheckoutModel model, GetBip21Response paymentUrl, bool payjoinEnabledByDefault)
+    internal static void ApplyPayjoinPaymentUrl(CheckoutModel model, GetBip21Response paymentUrl, bool payjoinV2Enabled)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(paymentUrl);
@@ -102,7 +102,7 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
         model.AdditionalData[PlainBitcoinUrlQrKey] = JToken.FromObject(plainUrlQr);
         model.AdditionalData[PayjoinBitcoinUrlKey] = JToken.FromObject(payjoinUrl);
         model.AdditionalData[PayjoinBitcoinUrlQrKey] = JToken.FromObject(payjoinUrlQr);
-        model.AdditionalData[PayjoinDefaultEnabledKey] = JToken.FromObject(payjoinEnabledByDefault);
+        model.AdditionalData[PayjoinV2EnabledKey] = JToken.FromObject(payjoinV2Enabled);
         model.InvoiceBitcoinUrl = payjoinUrl;
         model.InvoiceBitcoinUrlQR = payjoinUrlQr;
     }

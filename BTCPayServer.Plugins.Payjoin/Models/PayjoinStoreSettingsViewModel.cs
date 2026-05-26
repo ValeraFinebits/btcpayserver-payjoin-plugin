@@ -2,25 +2,30 @@ using BTCPayServer.Abstractions.Models;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
 using System;
-using System.ComponentModel.DataAnnotations;
 
 namespace BTCPayServer.Plugins.Payjoin.Models;
 
-public class PayjoinStoreSettingsViewModel
+public class PayjoinStoreSettingsViewModel : PayjoinStoreSettingsInput
 {
     public required string StoreId { get; set; }
-
-    public bool EnabledByDefault { get; set; }
-
-    [Required]
-    public Uri? DirectoryUrl { get; set; } = PayjoinStoreSettings.DefaultDirectoryUrl;
-
-    [Required]
-    public Uri? OhttpRelayUrl { get; set; } = PayjoinStoreSettings.DefaultOhttpRelayUrl;
-
-    public string? ColdWalletDerivationScheme { get; set; }
 
     [BindNever]
     [ValidateNever]
     public LayoutModel LayoutModel { get; set; } = default!;
+
+    public static PayjoinStoreSettingsViewModel FromSettings(string storeId, PayjoinStoreSettings settings, LayoutModel layoutModel)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(layoutModel);
+
+        return new PayjoinStoreSettingsViewModel
+        {
+            StoreId = storeId,
+            PayjoinV2Enabled = settings.PayjoinV2Enabled,
+            DirectoryUrl = settings.DirectoryUrl,
+            OhttpRelayUrl = settings.OhttpRelayUrl,
+            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme,
+            LayoutModel = layoutModel
+        };
+    }
 }
