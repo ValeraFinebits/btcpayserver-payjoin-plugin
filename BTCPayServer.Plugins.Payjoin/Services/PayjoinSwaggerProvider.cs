@@ -172,7 +172,7 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
             "properties": {
               "payjoinV2Enabled": {
                 "type": "boolean",
-                "description": "Whether checkout and API-generated payment URLs should include PayJoin by default."
+                "description": "Whether checkout and API-generated payment URLs should include Payjoin v2 (BIP77) by default."
               },
               "directoryUrl": {
                 "type": "string",
