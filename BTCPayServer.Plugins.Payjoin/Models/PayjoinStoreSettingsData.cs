@@ -4,8 +4,6 @@ namespace BTCPayServer.Plugins.Payjoin.Models;
 
 public sealed class PayjoinStoreSettingsData : PayjoinStoreSettingsInput
 {
-    public override bool PayjoinV2Enabled { get; set; } = PayjoinStoreSettings.DefaultPayjoinV2Enabled;
-
     public static PayjoinStoreSettingsData FromSettings(PayjoinStoreSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);

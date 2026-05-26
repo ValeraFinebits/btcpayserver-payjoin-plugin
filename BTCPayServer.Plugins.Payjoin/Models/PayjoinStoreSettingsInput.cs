@@ -5,7 +5,7 @@ namespace BTCPayServer.Plugins.Payjoin.Models;
 
 public abstract class PayjoinStoreSettingsInput
 {
-    public virtual bool PayjoinV2Enabled { get; set; } = PayjoinStoreSettings.DefaultPayjoinV2Enabled;
+    public bool PayjoinV2Enabled { get; set; } = PayjoinStoreSettings.DefaultPayjoinV2Enabled;
 
     [Required]
     public Uri? DirectoryUrl { get; set; } = PayjoinStoreSettings.DefaultDirectoryUrl;
