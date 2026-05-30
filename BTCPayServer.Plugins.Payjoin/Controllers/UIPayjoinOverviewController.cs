@@ -8,6 +8,7 @@ using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Localization;
 using System;
 using System.Threading.Tasks;
 
@@ -21,6 +22,7 @@ public class UIPayjoinOverviewController : Controller
     private readonly PayjoinAvailabilityService _availabilityService;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly IAuthorizationService _authorizationService;
+    private IStringLocalizer StringLocalizer { get; }
 
     private const string BitcoinCode = "BTC";
 
@@ -28,12 +30,14 @@ public class UIPayjoinOverviewController : Controller
         IPayjoinStoreSettingsRepository storeSettingsRepository,
         PayjoinAvailabilityService availabilityService,
         BTCPayNetworkProvider networkProvider,
-        IAuthorizationService authorizationService)
+        IAuthorizationService authorizationService,
+        IStringLocalizer stringLocalizer)
     {
         _storeSettingsRepository = storeSettingsRepository;
         _availabilityService = availabilityService;
         _networkProvider = networkProvider;
         _authorizationService = authorizationService;
+        StringLocalizer = stringLocalizer;
     }
 
     public async Task<IActionResult> Index()
@@ -41,7 +45,7 @@ public class UIPayjoinOverviewController : Controller
         var currentStore = HttpContext.GetNavStoreData();
         if (currentStore is null)
         {
-            TempData[WellKnownTempData.ErrorMessage] = "You need to select a store first.";
+            TempData[WellKnownTempData.ErrorMessage] = StringLocalizer["You need to select a store first."].Value;
             return RedirectToAction("Index", "UIHome");
         }
 
@@ -84,36 +88,36 @@ public class UIPayjoinOverviewController : Controller
             status);
     }
 
-    private static PayjoinCurrentStoreStatus ResolveStatus(bool directoryConfigured, bool relayConfigured, bool networkAvailable, bool hasConfirmedReceiverInputs)
+    private PayjoinCurrentStoreStatus ResolveStatus(bool directoryConfigured, bool relayConfigured, bool networkAvailable, bool hasConfirmedReceiverInputs)
     {
         if (!networkAvailable)
         {
             return new PayjoinCurrentStoreStatus(
                 "danger",
-                "Unavailable",
-                "BTC network is not available on this server, so the basic Payjoin V2 prerequisites are not present for the selected store.");
+                StringLocalizer["Unavailable"].Value,
+                StringLocalizer["BTC network is not available on this server, so the basic Payjoin V2 prerequisites are not present for the selected store."].Value);
         }
 
         if (!directoryConfigured || !relayConfigured)
         {
             return new PayjoinCurrentStoreStatus(
                 "danger",
-                "Needs configuration",
-                "The selected store is missing the directory URL or OHTTP relay URL required for the basic Payjoin V2 prerequisites.");
+                StringLocalizer["Needs configuration"].Value,
+                StringLocalizer["The selected store is missing the directory URL or OHTTP relay URL required for the basic Payjoin V2 prerequisites."].Value);
         }
 
         if (!hasConfirmedReceiverInputs)
         {
             return new PayjoinCurrentStoreStatus(
                 "warning",
-                "Additional requirements pending",
-                "The basic Payjoin V2 prerequisites are configured, but the selected store has no confirmed receiver inputs right now, so checkout will fall back to a plain BIP21 payment URL.");
+                StringLocalizer["Additional requirements pending"].Value,
+                StringLocalizer["The basic Payjoin V2 prerequisites are configured, but the selected store has no confirmed receiver inputs right now, so checkout will fall back to a plain BIP21 payment URL."].Value);
         }
 
         return new PayjoinCurrentStoreStatus(
             "success",
-            "Basic prerequisites present",
-            "The selected store has the basic Payjoin V2 prerequisites in place. Checkout may still fall back to a plain BIP21 payment URL if external OHTTP dependencies are unavailable.");
+            StringLocalizer["Basic prerequisites present"].Value,
+            StringLocalizer["The selected store has the basic Payjoin V2 prerequisites in place. Checkout may still fall back to a plain BIP21 payment URL if external OHTTP dependencies are unavailable."].Value);
     }
 }
 

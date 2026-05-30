@@ -1,6 +1,7 @@
 @using BTCPayServer.Abstractions.Constants
 @using BTCPayServer.Abstractions.Extensions
 @using BTCPayServer.Client
+@inject Microsoft.Extensions.Localization.IStringLocalizer StringLocalizer
 @model BTCPayServer.Plugins.Payjoin.PayjoinOverviewViewModel
 @{
     var store = Model.CurrentStore!;
@@ -29,7 +30,7 @@
             <div class="card-body">
                 <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-3">
                     <div>
-                        <h3 class="mb-1">@(string.IsNullOrEmpty(store.StoreName) ? "Unnamed Store" : store.StoreName)</h3>
+                        <h3 class="mb-1">@(string.IsNullOrEmpty(store.StoreName) ? StringLocalizer["Unnamed Store"].Value : store.StoreName)</h3>
                         <div class="text-muted">@store.StoreId</div>
                     </div>
                     <span class="badge @(store.Status.Severity == "success" ? "bg-success" : store.Status.Severity == "warning" ? "bg-warning text-dark" : "bg-danger")">
@@ -45,7 +46,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="text-muted mb-2" text-translate="true">Default checkout mode</div>
-                <div class="h4 mb-0">@(store.EnabledByDefault ? "Payjoin V2" : "Standard BTC")</div>
+                <div class="h4 mb-0">@(store.EnabledByDefault ? StringLocalizer["Payjoin V2"].Value : StringLocalizer["Standard BTC"].Value)</div>
             </div>
         </div>
     </div>
@@ -53,7 +54,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="text-muted mb-2" text-translate="true">Receiver inputs</div>
-                <div class="h4 mb-0">@(store.HasConfirmedReceiverInputs ? "Present" : "Pending")</div>
+                <div class="h4 mb-0">@(store.HasConfirmedReceiverInputs ? StringLocalizer["Present"].Value : StringLocalizer["Pending"].Value)</div>
             </div>
         </div>
     </div>
@@ -86,7 +87,7 @@ else if (store.Status.Severity == "danger")
                         }
                         else
                         {
-                            <a href="@store.DirectoryUrl" target="_blank" rel="noreferrer noopener">@store.DirectoryUrl</a>
+                            <span class="text-break">@store.DirectoryUrl</span>
                         }
                     </dd>
 
@@ -98,7 +99,7 @@ else if (store.Status.Severity == "danger")
                         }
                         else
                         {
-                            <a href="@store.OhttpRelayUrl" target="_blank" rel="noreferrer noopener">@store.OhttpRelayUrl</a>
+                            <span class="text-break">@store.OhttpRelayUrl</span>
                         }
                     </dd>
 
@@ -118,11 +119,11 @@ else if (store.Status.Severity == "danger")
                     <dd class="col-sm-8 mb-0">
                         @if (store.EnabledByDefault)
                         {
-                            <span class="badge bg-success" text-translate="true">Payjoin V2</span>
+                            <span class="badge bg-success">@StringLocalizer["Payjoin V2"]</span>
                         }
                         else
                         {
-                            <span class="badge bg-secondary" text-translate="true">Standard BTC</span>
+                            <span class="badge bg-secondary">@StringLocalizer["Standard BTC"]</span>
                         }
                     </dd>
                 </dl>
@@ -137,15 +138,15 @@ else if (store.Status.Severity == "danger")
                 <div class="d-grid gap-3 mb-0">
                     <div class="d-flex align-items-center justify-content-between border-bottom pb-3">
                         <span text-translate="true">Directory configured</span>
-                        <span class="badge @(store.DirectoryUrl is null ? "bg-danger" : "bg-success")">@(store.DirectoryUrl is null ? "Missing" : "Present")</span>
+                        <span class="badge @(store.DirectoryUrl is null ? "bg-danger" : "bg-success")">@(store.DirectoryUrl is null ? StringLocalizer["Missing"].Value : StringLocalizer["Present"].Value)</span>
                     </div>
                     <div class="d-flex align-items-center justify-content-between border-bottom pb-3">
                         <span text-translate="true">OHTTP relay configured</span>
-                        <span class="badge @(store.OhttpRelayUrl is null ? "bg-danger" : "bg-success")">@(store.OhttpRelayUrl is null ? "Missing" : "Present")</span>
+                        <span class="badge @(store.OhttpRelayUrl is null ? "bg-danger" : "bg-success")">@(store.OhttpRelayUrl is null ? StringLocalizer["Missing"].Value : StringLocalizer["Present"].Value)</span>
                     </div>
                     <div class="d-flex align-items-center justify-content-between">
                         <span text-translate="true">Confirmed receiver inputs</span>
-                        <span class="badge @(store.HasConfirmedReceiverInputs ? "bg-success" : "bg-warning text-dark")">@(store.HasConfirmedReceiverInputs ? "Present" : "Pending")</span>
+                        <span class="badge @(store.HasConfirmedReceiverInputs ? "bg-success" : "bg-warning text-dark")">@(store.HasConfirmedReceiverInputs ? StringLocalizer["Present"].Value : StringLocalizer["Pending"].Value)</span>
                     </div>
                 </div>
             </div>
