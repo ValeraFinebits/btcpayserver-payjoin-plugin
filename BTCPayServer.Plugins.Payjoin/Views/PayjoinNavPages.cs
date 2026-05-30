@@ -1,6 +1,6 @@
 namespace BTCPayServer.Plugins.Payjoin.Views;
 
-public enum PluginNavPages
+public enum PayjoinNavPages
 {
     Index
 }
