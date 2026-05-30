@@ -44,8 +44,8 @@
     <div class="col-12 col-md-6 col-xl-2 mt-3 mt-xl-0">
         <div class="card h-100">
             <div class="card-body">
-                <div class="text-muted mb-2" text-translate="true">Payjoin V2</div>
-                <div class="h4 mb-0">@(store.EnabledByDefault ? "Enabled" : "Disabled")</div>
+                <div class="text-muted mb-2" text-translate="true">Default checkout mode</div>
+                <div class="h4 mb-0">@(store.EnabledByDefault ? "Payjoin V2" : "Standard BTC")</div>
             </div>
         </div>
     </div>
@@ -114,15 +114,15 @@ else if (store.Status.Severity == "danger")
                         }
                     </dd>
 
-                    <dt class="col-sm-4 text-muted" text-translate="true">Payjoin V2</dt>
+                    <dt class="col-sm-4 text-muted" text-translate="true">Default checkout mode</dt>
                     <dd class="col-sm-8 mb-0">
                         @if (store.EnabledByDefault)
                         {
-                            <span class="badge bg-success" text-translate="true">Enabled</span>
+                            <span class="badge bg-success" text-translate="true">Payjoin V2</span>
                         }
                         else
                         {
-                            <span class="badge bg-secondary" text-translate="true">Disabled</span>
+                            <span class="badge bg-secondary" text-translate="true">Standard BTC</span>
                         }
                     </dd>
                 </dl>
