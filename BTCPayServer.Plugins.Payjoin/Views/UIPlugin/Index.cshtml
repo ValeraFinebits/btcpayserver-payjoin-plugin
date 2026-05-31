@@ -1,15 +1,6 @@
-@using BTCPayServer.Abstractions.Extensions
-@model BTCPayServer.Plugins.Payjoin.PluginPageViewModel
 <h1>@ViewData["Title"]</h1>
 
-<h2>Persisted Data</h2>
+<h2>Payjoin V2</h2>
 <p>
-    The following is data persisted to the configured database but in an isolated DbContext.
-    Every time you start BTCPay Server with this plugin enabled, a timestamp is logged.
+    Payjoin plugin status details will be added in a later UI PR.
 </p>
-<ul class="list-group">
-    @foreach (var item in Model.Data)
-    {
-        <li class="list-group-item">@item.Id at @item.Timestamp.ToString("F")</li>
-    }
-</ul>

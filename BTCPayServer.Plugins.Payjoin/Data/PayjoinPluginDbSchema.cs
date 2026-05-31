@@ -4,9 +4,6 @@ internal static class PayjoinPluginDbSchema
 {
     internal const string SchemaName = "BTCPayServer.Plugins.Payjoin";
 
-    internal const string PluginRecordsTable = "PluginRecords";
-    internal const string PluginRecordsPrimaryKey = "PK_PluginRecords";
-
     internal const string ReceiverSessionsTable = "ReceiverSessions";
     internal const string ReceiverSessionsPrimaryKey = "PK_ReceiverSessions";
 

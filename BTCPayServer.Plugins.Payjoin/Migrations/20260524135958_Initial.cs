@@ -18,19 +18,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                 name: "BTCPayServer.Plugins.Payjoin");
 
             migrationBuilder.CreateTable(
-                name: "PluginRecords",
-                schema: "BTCPayServer.Plugins.Payjoin",
-                columns: table => new
-                {
-                    Id = table.Column<string>(type: "text", nullable: false),
-                    Timestamp = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_PluginRecords", x => x.Id);
-                });
-
-            migrationBuilder.CreateTable(
                 name: "ReceiverSessions",
                 schema: "BTCPayServer.Plugins.Payjoin",
                 columns: table => new
@@ -141,10 +128,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
-
-            migrationBuilder.DropTable(
-                name: "PluginRecords",
-                schema: "BTCPayServer.Plugins.Payjoin");
 
             migrationBuilder.DropTable(
                 name: "ReceiverInputReservations",

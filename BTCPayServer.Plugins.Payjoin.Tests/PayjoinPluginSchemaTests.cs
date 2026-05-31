@@ -24,9 +24,6 @@ public class PayjoinPluginSchemaTests
 
         Assert.Equal(PayjoinPluginDbSchema.SchemaName, model.GetDefaultSchema());
 
-        var pluginRecords = AssertEntity<PluginData>(model, PayjoinPluginDbSchema.PluginRecordsTable);
-        AssertKey(pluginRecords, PayjoinPluginDbSchema.PluginRecordsPrimaryKey);
-
         AssertKey(receiverSessions, PayjoinPluginDbSchema.ReceiverSessionsPrimaryKey);
         Assert.Equal(PayjoinPluginDbSchema.ReceiverAddressMaxLength, receiverSessions.FindProperty(nameof(PayjoinReceiverSessionData.ReceiverAddress))?.GetMaxLength());
         Assert.Equal(PayjoinPluginDbSchema.OhttpRelayUrlMaxLength, receiverSessions.FindProperty(nameof(PayjoinReceiverSessionData.OhttpRelayUrl))?.GetMaxLength());

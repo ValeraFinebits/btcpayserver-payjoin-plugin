@@ -13,8 +13,6 @@ public class PayjoinPluginDbContext : DbContext
         _designTime = designTime;
     }
 
-    public DbSet<PluginData> PluginRecords { get; set; } = null!;
-
     internal DbSet<PayjoinReceiverSessionData> ReceiverSessions { get; set; } = null!;
 
     internal DbSet<PayjoinReceiverSessionEventData> ReceiverSessionEvents { get; set; } = null!;

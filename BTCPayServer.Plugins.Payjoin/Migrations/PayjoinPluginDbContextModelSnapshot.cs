@@ -157,21 +157,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.ToTable("ReceiverSessionEvents", "BTCPayServer.Plugins.Payjoin");
                 });
 
-            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PluginData", b =>
-                {
-                    b.Property<string>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset>("Timestamp")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id")
-                        .HasName("PK_PluginRecords");
-
-                    b.ToTable("PluginRecords", "BTCPayServer.Plugins.Payjoin");
-                });
-
             modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverInputReservationData", b =>
                 {
                     b.HasOne("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverSessionData", "Session")

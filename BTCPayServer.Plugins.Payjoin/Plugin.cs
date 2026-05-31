@@ -46,7 +46,6 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddHostedService<PluginMigrationRunner>();
         applicationBuilder.AddHostedService<PayjoinReceiverPoller>();
         applicationBuilder.AddHostedService<PayjoinInvoiceSessionLifecycleService>();
-        applicationBuilder.AddSingleton<PayjoinPluginService>();
         applicationBuilder.AddSingleton<IPayjoinStoreSettingsRepository, PayjoinStoreSettingsRepository>();
         applicationBuilder.AddSingleton<PayjoinPluginDbContextFactory>();
         applicationBuilder.AddSingleton<IRunTestPaymentService, RunTestPaymentService>();
