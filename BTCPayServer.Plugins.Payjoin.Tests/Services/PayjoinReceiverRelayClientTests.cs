@@ -37,6 +37,25 @@ public class PayjoinReceiverRelayClientTests
         Assert.Equal(body, handler.LastBody);
     }
 
+    [Fact]
+    public async Task SendAsyncThrowsRelayTimeoutWhenLocalTimeoutFires()
+    {
+        // Arrange
+        var timeout = TimeSpan.FromMilliseconds(10);
+        using var handler = new DelayingHandler();
+        using var httpClient = new HttpClient(handler);
+        var httpClientFactory = Substitute.For<IHttpClientFactory>();
+        httpClientFactory.CreateClient(nameof(PayjoinReceiverPoller)).Returns(httpClient);
+        var relayClient = new PayjoinReceiverRelayClient(httpClientFactory, timeout);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<PayjoinReceiverRelayTimeoutException>(() =>
+            relayClient.SendAsync(new Uri("https://relay.example"), "application/http", Array.Empty<byte>(), CancellationToken.None));
+
+        // Assert
+        Assert.Equal(timeout, exception.Timeout);
+    }
+
     private sealed class CapturingHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFactory) : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responseFactory = responseFactory;
@@ -53,6 +72,16 @@ public class PayjoinReceiverRelayClientTests
                 ? null
                 : await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
             return _responseFactory(request);
+        }
+    }
+
+    private sealed class DelayingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            _ = request;
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            return new HttpResponseMessage(HttpStatusCode.OK);
         }
     }
 }

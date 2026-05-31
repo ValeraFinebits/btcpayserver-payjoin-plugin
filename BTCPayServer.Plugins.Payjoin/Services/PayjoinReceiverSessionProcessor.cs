@@ -34,6 +34,9 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverPersistedInputUnavailable =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(11, nameof(LogPayjoinReceiverPersistedInputUnavailable)),
             "Payjoin receiver persisted contributed input unavailable for {InvoiceId}");
+    private static readonly Action<ILogger, string, double, Exception?> LogPayjoinReceiverInitializedPollTimedOut =
+        LoggerMessage.Define<string, double>(LogLevel.Debug, new EventId(12, nameof(LogPayjoinReceiverInitializedPollTimedOut)),
+            "Payjoin receiver initialized poll timed out for {InvoiceId} after {TimeoutSeconds} seconds; receiver session remains active.");
 
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IPayjoinReceiverSessionGuard _sessionGuard;
@@ -122,7 +125,15 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         switch (guardedSession.State)
         {
             case ReceiveSession.Initialized initialized:
-                await _stateProcessor.ProcessInitializedAsync(stateContext, initialized.inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
+                try
+                {
+                    await _stateProcessor.ProcessInitializedAsync(stateContext, initialized.inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
+                }
+                catch (PayjoinReceiverRelayTimeoutException ex)
+                {
+                    LogPayjoinReceiverInitializedPollTimedOut(_logger, session.InvoiceId, ex.Timeout.TotalSeconds, null);
+                }
+
                 break;
             case ReceiveSession.HasReplyableError hasReplyableError:
                 await _stateProcessor.ProcessReplyableErrorAsync(stateContext, hasReplyableError.inner, stoppingToken).ConfigureAwait(false);
