@@ -9,6 +9,14 @@ inputs:
     description: Rust toolchain version to install
     required: false
     default: 1.85.0
+  payjoin-ffi-features:
+    description: Extra payjoin-ffi features used while generating C# bindings
+    required: false
+    default: _test-utils
+  payjoin-ffi-profile:
+    description: Cargo profile used while generating C# bindings and native binaries
+    required: false
+    default: dev
 runs:
   using: composite
   steps:
@@ -33,8 +41,10 @@ runs:
 
     - name: Generate C# bindings and native binaries
       shell: bash
-      working-directory: rust-payjoin/payjoin-ffi/csharp
-      run: bash ./scripts/generate_bindings.sh
+      env:
+        PAYJOIN_FFI_FEATURES: ${{ inputs.payjoin-ffi-features }}
+        PAYJOIN_FFI_PROFILE: ${{ inputs.payjoin-ffi-profile }}
+      run: bash ./.github/scripts/generate-csharp-bindings.sh
 
     - name: Restore .NET dependencies
       shell: bash

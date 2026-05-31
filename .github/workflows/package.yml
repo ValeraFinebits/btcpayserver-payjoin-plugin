@@ -26,6 +26,8 @@ jobs:
         with:
           dotnet-version: 10.0.x
           rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          payjoin-ffi-features: ""
+          payjoin-ffi-profile: release
 
       - name: Publish plugin
         run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-restore -o "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
