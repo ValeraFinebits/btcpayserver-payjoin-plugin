@@ -58,14 +58,14 @@ public class PluginRegistrationTests
         var paymentExtensions = provider.GetRequiredService<Dictionary<PaymentMethodId, ICheckoutModelExtension>>();
 
         Assert.IsType<PayjoinBitcoinCheckoutModelExtension>(
-            paymentExtensions[PaymentTypes.CHAIN.GetPaymentMethodId("BTC")]);
+            paymentExtensions[PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode)]);
         Assert.Same(unrelatedExtension, paymentExtensions[unrelatedPaymentMethodId]);
     }
 
     private static IServiceCollection CreateBitcoinPluginServices()
     {
         var services = new ServiceCollection();
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
         var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
         var network = CreateBitcoinNetwork(nbxplorerNetworkProvider);
 
@@ -108,9 +108,9 @@ public class PluginRegistrationTests
     {
         return new BTCPayNetwork
         {
-            CryptoCode = "BTC",
+            CryptoCode = PayjoinConstants.BitcoinCode,
             DisplayName = "Bitcoin",
-            NBXplorerNetwork = nbxplorerNetworkProvider.GetFromCryptoCode("BTC"),
+            NBXplorerNetwork = nbxplorerNetworkProvider.GetFromCryptoCode(PayjoinConstants.BitcoinCode),
             CryptoImagePath = "imlegacy/bitcoin.svg",
             LightningImagePath = "imlegacy/bitcoin-lightning.svg",
             DefaultSettings = new BTCPayDefaultSettings(),

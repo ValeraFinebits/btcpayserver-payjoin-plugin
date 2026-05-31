@@ -33,18 +33,34 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinReceiverStateProcessor, PayjoinReceiverStateProcessor>();
         applicationBuilder.AddSingleton<IPayjoinReceiverOutputBuilder, PayjoinReceiverOutputBuilder>();
         applicationBuilder.AddSingleton<IPayjoinReceiverInputSelector, PayjoinReceiverInputSelector>();
+        applicationBuilder.AddSingleton<IPayjoinAccountingBridgeService>(provider => new PayjoinAccountingBridgeService(
+            provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
+            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+        applicationBuilder.AddSingleton<IPayjoinAccountingPaymentService, PayjoinAccountingPaymentService>();
         applicationBuilder.AddSingleton<IPayjoinReceiverProposalSigner, PayjoinReceiverProposalSigner>();
         applicationBuilder.AddSingleton<IPayjoinReceiverProposalFinalizer, PayjoinReceiverProposalFinalizer>();
         applicationBuilder.AddSingleton<IPayjoinReceiverSessionProcessor, PayjoinReceiverSessionProcessor>();
         applicationBuilder.AddSingleton<PayjoinOhttpKeysProvider>();
         applicationBuilder.AddSingleton<PayjoinSessionBuildLock>();
-        applicationBuilder.AddSingleton<PayjoinUriSessionService>();
+        applicationBuilder.AddSingleton(provider => new PayjoinUriSessionService(
+            provider.GetRequiredService<BTCPayNetworkProvider>(),
+            provider.GetRequiredService<PayjoinReceiverSessionStore>(),
+            provider.GetRequiredService<PayjoinOhttpKeysProvider>(),
+            provider.GetRequiredService<PayjoinAvailabilityService>(),
+            provider.GetRequiredService<PayjoinSessionBuildLock>(),
+            provider.GetRequiredService<IPayjoinAccountingBridgeService>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinUriSessionService>>()));
         applicationBuilder.AddSingleton<ISwaggerProvider, PayjoinSwaggerProvider>();
         applicationBuilder.AddSingleton<IPayjoinInvoiceLookup, PayjoinInvoiceLookup>();
         applicationBuilder.AddSingleton<PayjoinInvoicePaymentUrlService>();
         applicationBuilder.AddSingleton<IPayjoinInvoicePaymentUrlService>(provider => provider.GetRequiredService<PayjoinInvoicePaymentUrlService>());
         applicationBuilder.AddHostedService<PluginMigrationRunner>();
-        applicationBuilder.AddHostedService<PayjoinReceiverPoller>();
+        applicationBuilder.AddHostedService(provider => new PayjoinReceiverPoller(
+            provider.GetRequiredService<PayjoinReceiverSessionStore>(),
+            provider.GetRequiredService<IPayjoinReceiverSessionProcessor>(),
+            provider.GetRequiredService<IPayjoinAccountingBridgeService>(),
+            provider.GetRequiredService<IPayjoinAccountingPaymentService>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinReceiverPoller>>()));
         applicationBuilder.AddHostedService<PayjoinInvoiceSessionLifecycleService>();
         applicationBuilder.AddSingleton<IPayjoinStoreSettingsRepository, PayjoinStoreSettingsRepository>();
         applicationBuilder.AddSingleton<PayjoinPluginDbContextFactory>();

@@ -15,7 +15,6 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtension
 {
-    private const string CryptoCode = "BTC";
     internal const string OutputSubstitutionParameterKey = "pjos";
     internal const string PlainBitcoinUrlKey = "payjoinPlainBitcoinUrl";
     internal const string PlainBitcoinUrlQrKey = "payjoinPlainBitcoinUrlQR";
@@ -35,9 +34,9 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
         ArgumentNullException.ThrowIfNull(paymentLinkExtensions);
         ArgumentNullException.ThrowIfNull(displayFormatter);
 
-        PaymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(CryptoCode);
-        var network = networkProvider.GetNetwork<BTCPayNetwork>(CryptoCode)
-            ?? throw new InvalidOperationException($"Network not available for {CryptoCode}");
+        PaymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        var network = networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode)
+            ?? throw new InvalidOperationException($"Network not available for {PayjoinConstants.BitcoinCode}");
         _innerExtension = new BitcoinCheckoutModelExtension(PaymentMethodId, network, paymentLinkExtensions, displayFormatter);
     }
 

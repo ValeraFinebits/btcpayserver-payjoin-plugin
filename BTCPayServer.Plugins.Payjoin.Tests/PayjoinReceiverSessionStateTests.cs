@@ -1,7 +1,6 @@
-using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Client.Models;
+using BTCPayServer.Plugins.Payjoin.Services;
 using NBitcoin;
-using System;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -66,6 +65,19 @@ public class PayjoinReceiverSessionStateTests
 
         Assert.True(closeRequested.CanPollInitializedAfterCloseRequest());
         Assert.False(consumed.CanPollInitializedAfterCloseRequest());
+    }
+
+    [Fact]
+    public void CloseRequestedSessionRemainsReplyableAfterInitializedPollIsConsumed()
+    {
+        var consumed = CreateSession(
+            isCloseRequested: true,
+            closeInvoiceStatus: InvoiceStatus.Processing,
+            closeRequestedAt: DateTimeOffset.UtcNow,
+            initializedPollAfterCloseRequestConsumed: true);
+
+        Assert.False(consumed.CanPollInitializedAfterCloseRequest());
+        Assert.Equal(InvoiceStatus.Processing, consumed.CloseInvoiceStatus);
     }
 
     [Fact]

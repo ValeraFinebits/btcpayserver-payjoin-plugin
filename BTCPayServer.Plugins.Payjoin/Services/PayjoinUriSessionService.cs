@@ -1,3 +1,4 @@
+using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Models;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
@@ -36,14 +37,16 @@ public sealed class PayjoinUriSessionService
     private readonly PayjoinOhttpKeysProvider _ohttpKeysProvider;
     private readonly PayjoinAvailabilityService _availabilityService;
     private readonly PayjoinSessionBuildLock _sessionBuildLock;
+    private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
     private readonly ILogger<PayjoinUriSessionService> _logger;
 
-    public PayjoinUriSessionService(
+    internal PayjoinUriSessionService(
         BTCPayNetworkProvider networkProvider,
         PayjoinReceiverSessionStore receiverSessionStore,
         PayjoinOhttpKeysProvider ohttpKeysProvider,
         PayjoinAvailabilityService availabilityService,
         PayjoinSessionBuildLock sessionBuildLock,
+        IPayjoinAccountingBridgeService accountingBridgeService,
         ILogger<PayjoinUriSessionService> logger)
     {
         _networkProvider = networkProvider;
@@ -51,6 +54,7 @@ public sealed class PayjoinUriSessionService
         _ohttpKeysProvider = ohttpKeysProvider;
         _availabilityService = availabilityService;
         _sessionBuildLock = sessionBuildLock;
+        _accountingBridgeService = accountingBridgeService;
         _logger = logger;
     }
 
@@ -147,6 +151,7 @@ public sealed class PayjoinUriSessionService
 
             using var replay = PayjoinMethods.ReplayReceiverEventLog(persister);
             using var history = replay.SessionHistory();
+            await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, monitoringExpiresAt, cancellationToken).ConfigureAwait(false);
             using var pjUri = history.PjUri();
             var payjoinUri = pjUri.AsString();
             if (string.IsNullOrWhiteSpace(payjoinUri))
@@ -182,6 +187,23 @@ public sealed class PayjoinUriSessionService
         using var builderWithAmount = receiverBuilder.WithAmount(amountSats);
         using var transition = builderWithAmount.Build();
         using var savedSession = transition.Save(persister);
+    }
+
+    private Task EnsureAccountingBridgeAsync(
+        string invoiceId,
+        string storeId,
+        string cryptoCode,
+        DateTimeOffset monitoringExpiresAt,
+        CancellationToken cancellationToken)
+    {
+        return _accountingBridgeService.CreateOrGetAsync(
+            new CreatePayjoinAccountingBridgeRequest(
+                invoiceId,
+                storeId,
+                cryptoCode,
+                PaymentTypes.CHAIN.GetPaymentMethodId(cryptoCode).ToString(),
+                monitoringExpiresAt),
+            cancellationToken);
     }
 
     private string LogExpectedFallbackAndReturnBip21(string bip21, string invoiceId, string reason)

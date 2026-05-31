@@ -1,11 +1,14 @@
 using BTCPayServer.Abstractions.Models;
+using BTCPayServer.Logging;
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Wallets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NBXplorer;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using System.Collections.Concurrent;
 using Xunit;
@@ -25,6 +28,56 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinReceiverSessionProcessorTests
 {
+    [Fact]
+    public void ResolveFallbackReceiverOutputReturnsMatchingReceiverOutputWhenItIsNotAtIndexZero()
+    {
+        using var receiverKey = new Key();
+        using var otherKey = new Key();
+        var fallbackTransaction = Network.RegTest.CreateTransaction();
+        fallbackTransaction.Outputs.Add(Money.Satoshis(10_000), otherKey.PubKey.WitHash.ScriptPubKey);
+        fallbackTransaction.Outputs.Add(Money.Satoshis(20_000), receiverKey.PubKey.WitHash.ScriptPubKey);
+
+        var match = PayjoinReceiverSessionProcessor.ResolveFallbackReceiverOutput(fallbackTransaction, receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes());
+
+        Assert.True(match.Success);
+        Assert.Equal(PayjoinReceiverSessionProcessor.FallbackReceiverOutputMatchStatus.Found, match.Status);
+        Assert.Equal(1U, match.OutputIndex);
+        Assert.Equal(20_000, match.ValueSats);
+    }
+
+    [Fact]
+    public void ResolveFallbackReceiverOutputReturnsNotFoundWhenNoReceiverOutputMatches()
+    {
+        using var receiverKey = new Key();
+        using var otherKey = new Key();
+        var fallbackTransaction = Network.RegTest.CreateTransaction();
+        fallbackTransaction.Outputs.Add(Money.Satoshis(10_000), otherKey.PubKey.WitHash.ScriptPubKey);
+
+        var match = PayjoinReceiverSessionProcessor.ResolveFallbackReceiverOutput(fallbackTransaction, receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes());
+
+        Assert.False(match.Success);
+        Assert.Equal(PayjoinReceiverSessionProcessor.FallbackReceiverOutputMatchStatus.NotFound, match.Status);
+        Assert.Null(match.OutputIndex);
+        Assert.Null(match.ValueSats);
+    }
+
+    [Fact]
+    public void ResolveFallbackReceiverOutputReturnsAmbiguousWhenMultipleReceiverOutputsMatch()
+    {
+        using var receiverKey = new Key();
+        var fallbackTransaction = Network.RegTest.CreateTransaction();
+        var receiverScript = receiverKey.PubKey.WitHash.ScriptPubKey;
+        fallbackTransaction.Outputs.Add(Money.Satoshis(10_000), receiverScript);
+        fallbackTransaction.Outputs.Add(Money.Satoshis(20_000), receiverScript);
+
+        var match = PayjoinReceiverSessionProcessor.ResolveFallbackReceiverOutput(fallbackTransaction, receiverScript.ToBytes());
+
+        Assert.False(match.Success);
+        Assert.Equal(PayjoinReceiverSessionProcessor.FallbackReceiverOutputMatchStatus.Ambiguous, match.Status);
+        Assert.Null(match.OutputIndex);
+        Assert.Null(match.ValueSats);
+    }
+
     [Fact]
     public async Task ProcessTickAsyncDoesNotOwnExpiredReservationCleanup()
     {
@@ -73,13 +126,33 @@ public class PayjoinReceiverSessionProcessorTests
         PayjoinReceiverSessionStore sessionStore,
         IPayjoinReceiverSessionGuard sessionGuard)
     {
+        var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
+        var network = new BTCPayNetwork
+        {
+            CryptoCode = PayjoinConstants.BitcoinCode,
+            DisplayName = "Bitcoin",
+            NBXplorerNetwork = nbxplorerNetworkProvider.GetFromCryptoCode(PayjoinConstants.BitcoinCode),
+            CryptoImagePath = "imlegacy/bitcoin.svg",
+            LightningImagePath = "imlegacy/bitcoin-lightning.svg",
+            DefaultSettings = new BTCPayDefaultSettings(),
+            CoinType = new KeyPath("1'"),
+            SupportRBF = true,
+            SupportPayJoin = true,
+            VaultSupported = true
+        }.SetDefaultElectrumMapping(ChainName.Regtest);
+        var networkProvider = new BTCPayNetworkProvider([network], nbxplorerNetworkProvider, new Logs());
+
         return new PayjoinReceiverSessionProcessor(
             sessionStore,
             sessionGuard,
             new NoOpStateProcessor(),
             new NoOpOutputBuilder(),
             new NoOpInputSelector(),
+            new NoOpAccountingBridgeService(),
+            new NoOpAccountingPaymentService(),
+            new NoOpInvoiceLookup(),
             new NoOpProposalFinalizer(),
+            networkProvider,
             NullLogger<PayjoinReceiverSessionProcessor>.Instance);
     }
 
@@ -115,9 +188,14 @@ public class PayjoinReceiverSessionProcessorTests
         public Task ProcessOutputsUnknownAsync(PayjoinReceiverStateContext context, OutputsUnknown proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
+    private sealed class NoOpInvoiceLookup : IPayjoinInvoiceLookup
+    {
+        public Task<InvoiceEntity?> GetInvoiceAsync(string invoiceId) => Task.FromResult<InvoiceEntity?>(null);
+    }
+
     private sealed class NoOpOutputBuilder : IPayjoinReceiverOutputBuilder
     {
-        public Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateExactPaymentOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinReceiverOutputBuilder.OutputReplacement?>(null);
+        public Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinReceiverOutputBuilder.OutputReplacement?>(null);
     }
 
     private sealed class NoOpInputSelector : IPayjoinReceiverInputSelector
@@ -131,6 +209,24 @@ public class PayjoinReceiverSessionProcessorTests
         public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, WantsFeeRange proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, ProvisionalProposal proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, PayjoinProposal proposal, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class NoOpAccountingBridgeService : IPayjoinAccountingBridgeService
+    {
+        public Task<PayjoinAccountingBridgeState> CreateOrGetAsync(CreatePayjoinAccountingBridgeRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<PayjoinAccountingBridgeState?> TryGetByInvoiceIdAsync(string invoiceId, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
+        public Task<PayjoinAccountingBridgeState?> AttachFallbackAsync(string invoiceId, string fallbackTransactionId, long fallbackOutputIndex, long fallbackValueSats, long effectiveInvoiceValueSats, string? settlementScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<PayjoinAccountingBridgeState?> SetSettlementScriptAsync(string invoiceId, string settlementScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<PayjoinAccountingBridgeState?> SetExpectedFinalTransactionAsync(string invoiceId, string expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<int> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult(0);
+    }
+
+    private sealed class NoOpAccountingPaymentService : IPayjoinAccountingPaymentService
+    {
+        public Task<PaymentEntity?> ReconcileWithFinalTransactionAsync(PayjoinAccountingBridgeState bridge, CancellationToken cancellationToken) => Task.FromResult<PaymentEntity?>(null);
     }
 
     private sealed class SelectiveGuard(string failingInvoiceId) : IPayjoinReceiverSessionGuard

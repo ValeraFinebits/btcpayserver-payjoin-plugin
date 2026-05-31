@@ -31,11 +31,15 @@ internal sealed class PayjoinReceiverProposalFinalizationContext
     public PayjoinReceiverProposalFinalizationContext(
         JsonReceiverSessionPersister persister,
         SystemUri ohttpRelayUrl,
-        string storeId)
+        string storeId,
+        string invoiceId,
+        string cryptoCode)
     {
         Persister = persister;
         OhttpRelayUrl = ohttpRelayUrl;
         StoreId = storeId;
+        InvoiceId = invoiceId;
+        CryptoCode = cryptoCode;
     }
 
     internal JsonReceiverSessionPersister Persister { get; }
@@ -43,4 +47,8 @@ internal sealed class PayjoinReceiverProposalFinalizationContext
     internal SystemUri OhttpRelayUrl { get; }
 
     internal string StoreId { get; }
+
+    internal string InvoiceId { get; }
+
+    internal string CryptoCode { get; }
 }

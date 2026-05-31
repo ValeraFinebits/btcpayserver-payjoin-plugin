@@ -14,7 +14,6 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlService
 {
-    private const string CryptoCode = "BTC";
     private static readonly Action<ILogger, string, Exception?> LogPayjoinPaymentUrlFallback =
         LoggerMessage.Define<string>(
             LogLevel.Error,
@@ -60,14 +59,14 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
             return null;
         }
 
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(CryptoCode);
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
         var prompt = invoice.GetPaymentPrompt(paymentMethodId);
         if (prompt?.Destination is null)
         {
             return null;
         }
 
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>(CryptoCode);
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         if (network is null)
         {
             return null;
@@ -118,7 +117,7 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
         CancellationToken cancellationToken)
     {
         var paymentUrl = await _payjoinUriSessionService.BuildAsync(
-            CryptoCode,
+            PayjoinConstants.BitcoinCode,
             destination,
             due,
             storeSettings,

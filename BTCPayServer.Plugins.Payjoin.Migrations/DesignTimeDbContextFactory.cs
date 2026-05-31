@@ -1,4 +1,3 @@
-using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 

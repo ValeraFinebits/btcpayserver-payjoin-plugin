@@ -48,6 +48,8 @@ internal sealed class PayjoinReceiverSessionGuardResult : IDisposable
 
     internal ReceiveSession State => _state;
 
+    internal ReplayResult Replay => _replay;
+
     internal PayjoinReceiverStateContext StateContext { get; }
 
     public void Dispose()

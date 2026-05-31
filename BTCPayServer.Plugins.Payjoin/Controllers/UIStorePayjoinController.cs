@@ -78,7 +78,7 @@ public class UIStorePayjoinController : Controller
         string? validatedDerivationScheme = null;
         if (!string.IsNullOrWhiteSpace(model.ColdWalletDerivationScheme))
         {
-            var network = _networkProvider.GetNetwork<BTCPayNetwork>("BTC");
+            var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
             if (network is null)
             {
                 ModelState.AddModelError(nameof(model.ColdWalletDerivationScheme), "BTC network is not available.");
