@@ -1,6 +1,6 @@
-﻿using System;
-using Microsoft.EntityFrameworkCore.Migrations;
+﻿using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+using System;
 
 #nullable disable
 
@@ -16,6 +16,50 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
             migrationBuilder.EnsureSchema(
                 name: "BTCPayServer.Plugins.Payjoin");
+
+            migrationBuilder.CreateTable(
+                name: "AccountingBridges",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
+                    InvoiceId = table.Column<string>(type: "text", nullable: false),
+                    StoreId = table.Column<string>(type: "text", nullable: false),
+                    CryptoCode = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
+                    PaymentMethodId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                    FallbackTransactionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    FallbackOutputIndex = table.Column<long>(type: "bigint", nullable: true),
+                    FallbackValueSats = table.Column<long>(type: "bigint", nullable: true),
+                    EffectiveInvoiceValueSats = table.Column<long>(type: "bigint", nullable: true),
+                    SettlementScript = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true),
+                    ExpectedFinalTransactionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    ExpectedFinalOutputIndex = table.Column<long>(type: "bigint", nullable: true),
+                    ExpectedFinalValueSats = table.Column<long>(type: "bigint", nullable: true),
+                    FailureMessage = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: true),
+                    Status = table.Column<int>(type: "integer", nullable: false),
+                    CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    UpdatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    ReconciledAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    ExpiresAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_AccountingBridges", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "PluginRecords",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                columns: table => new
+                {
+                    Id = table.Column<string>(type: "text", nullable: false),
+                    Timestamp = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_PluginRecords", x => x.Id);
+                });
 
             migrationBuilder.CreateTable(
                 name: "ReceiverSessions",
@@ -92,6 +136,31 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                 });
 
             migrationBuilder.CreateIndex(
+                name: "IX_AccountingBridges_ExpectedFinalTransactionId",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                table: "AccountingBridges",
+                column: "ExpectedFinalTransactionId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_AccountingBridges_FallbackTransactionId_FallbackOutputIndex",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                table: "AccountingBridges",
+                columns: new[] { "FallbackTransactionId", "FallbackOutputIndex" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_AccountingBridges_InvoiceId",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                table: "AccountingBridges",
+                column: "InvoiceId",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_AccountingBridges_Status_CreatedAt",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                table: "AccountingBridges",
+                columns: new[] { "Status", "CreatedAt" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_ReceiverInputReservations_ExpiresAt",
                 schema: "BTCPayServer.Plugins.Payjoin",
                 table: "ReceiverInputReservations",
@@ -128,6 +197,14 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
+
+            migrationBuilder.DropTable(
+                name: "AccountingBridges",
+                schema: "BTCPayServer.Plugins.Payjoin");
+
+            migrationBuilder.DropTable(
+                name: "PluginRecords",
+                schema: "BTCPayServer.Plugins.Payjoin");
 
             migrationBuilder.DropTable(
                 name: "ReceiverInputReservations",

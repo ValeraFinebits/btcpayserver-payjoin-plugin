@@ -11,6 +11,8 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 {
+    private static readonly TimeSpan CloseRequestedInitializedReplyGracePeriod = TimeSpan.FromSeconds(10);
+
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverScriptUnavailable =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(3, nameof(LogPayjoinReceiverScriptUnavailable)),
             "Payjoin receiver script unavailable for {InvoiceId}");
@@ -184,7 +186,18 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
             return true;
         }
 
-        return state is ReceiveSession.Initialized && session.CanPollInitializedAfterCloseRequest();
+        if (state is not ReceiveSession.Initialized)
+        {
+            return false;
+        }
+
+        if (!session.InitializedPollAfterCloseRequestConsumed)
+        {
+            return true;
+        }
+
+        return session.CloseRequestedAt is { } closeRequestedAt &&
+               DateTimeOffset.UtcNow - closeRequestedAt < CloseRequestedInitializedReplyGracePeriod;
     }
 
     private static DateTimeOffset GetCleanupDeadline(PayjoinReceiverSessionState session)
@@ -195,7 +208,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
     private bool TryGetReceiverScript(PayjoinReceiverSessionState session, out byte[] script)
     {
         script = Array.Empty<byte>();
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>("BTC")?.NBitcoinNetwork;
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode)?.NBitcoinNetwork;
         if (network is null)
         {
             return false;

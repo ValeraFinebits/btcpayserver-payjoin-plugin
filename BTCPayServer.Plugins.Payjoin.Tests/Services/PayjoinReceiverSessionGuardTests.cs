@@ -131,22 +131,38 @@ public class PayjoinReceiverSessionGuardTests
         using var context = new TestContext();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
-        var session = sessionStore.CreateSession(
+        var closeRequested = CreateCloseRequestedSession(
+            context,
+            sessionStore,
             "invoice-close-initialized-remove",
-            "bcrt1qexampleaddress0000000000000000000000000",
-            "store-1",
-            new SystemUri("https://relay.example/"),
-            DateTimeOffset.UtcNow.AddMinutes(10),
-            ["bootstrap-event"]);
-        Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
-        Assert.True(sessionStore.TryConsumeInitializedPollAfterCloseRequest(session.InvoiceId));
-        Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            initializedPollAfterCloseRequestConsumed: true);
         using var state = CreateInitializedState();
 
         var removed = guard.TryRemoveCloseRequestedSession(closeRequested!, state);
 
         Assert.True(removed);
-        Assert.False(sessionStore.TryGetSession(session.InvoiceId, out _));
+        Assert.False(sessionStore.TryGetSession(closeRequested.InvoiceId, out _));
+    }
+
+    [Fact]
+    public void TryRemoveCloseRequestedSessionKeepsSessionBrieflyWhenInitializedPollAfterCloseRequestConsumedRecently()
+    {
+        using var context = new TestContext();
+        var sessionStore = context.CreateStore();
+        var guard = CreateGuard(sessionStore);
+        var closeRequested = CreateCloseRequestedSession(
+            context,
+            sessionStore,
+            "invoice-close-initialized-grace",
+            DateTimeOffset.UtcNow,
+            initializedPollAfterCloseRequestConsumed: true);
+        using var state = CreateInitializedState();
+
+        var removed = guard.TryRemoveCloseRequestedSession(closeRequested!, state);
+
+        Assert.False(removed);
+        Assert.True(sessionStore.TryGetSession(closeRequested.InvoiceId, out _));
     }
 
     [Fact]
@@ -234,12 +250,41 @@ public class PayjoinReceiverSessionGuardTests
             Substitute.For<BTCPayServer.Logging.Logs>());
     }
 
+    private static PayjoinReceiverSessionState CreateCloseRequestedSession(
+        TestContext context,
+        PayjoinReceiverSessionStore sessionStore,
+        string invoiceId,
+        DateTimeOffset closeRequestedAt,
+        bool initializedPollAfterCloseRequestConsumed)
+    {
+        var session = sessionStore.CreateSession(
+            invoiceId,
+            "bcrt1qexampleaddress0000000000000000000000000",
+            "store-1",
+            new SystemUri("https://relay.example/"),
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            ["bootstrap-event"]);
+
+        Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
+
+        using var db = context.CreateDbContext();
+        var sessionData = db.ReceiverSessions.Single(x => x.InvoiceId == invoiceId);
+        sessionData.CloseRequestedAt = closeRequestedAt;
+        sessionData.InitializedPollAfterCloseRequestConsumed = initializedPollAfterCloseRequestConsumed;
+        db.SaveChanges();
+
+        Assert.True(sessionStore.TryGetSession(session.InvoiceId, out var closeRequested));
+        return closeRequested!;
+    }
+
     private sealed class TestContext : IDisposable
     {
         private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
         private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
         public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+
+        public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
 
         public void Dispose()
         {
@@ -248,7 +293,7 @@ public class PayjoinReceiverSessionGuardTests
         }
     }
 
-    private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
+    internal sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
     {
         private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
         private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;

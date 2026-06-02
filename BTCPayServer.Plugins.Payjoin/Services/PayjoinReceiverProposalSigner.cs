@@ -38,9 +38,9 @@ internal sealed class PayjoinReceiverProposalSigner : IPayjoinReceiverProposalSi
         ReceivedCoin[] receiverCoins,
         CancellationToken cancellationToken)
     {
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>("BTC") ?? throw new InvalidOperationException("BTC network not available");
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode) ?? throw new InvalidOperationException("BTC network not available");
         var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false) ?? throw new InvalidOperationException($"Store {storeId} not found");
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
         var derivationScheme = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, _handlers, true) ?? throw new InvalidOperationException("Derivation scheme not configured for BTC");
 
         if (!derivationScheme.IsHotWallet)

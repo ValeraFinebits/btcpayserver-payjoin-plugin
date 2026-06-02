@@ -5,7 +5,7 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 internal interface IPayjoinReceiverOutputBuilder
 {
-    Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateExactPaymentOutputsAsync(
+    Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateSettlementOutputsAsync(
         string storeId,
         string invoiceId,
         byte[] receiverScript,

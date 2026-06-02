@@ -50,22 +50,37 @@ internal static class SelfPayInvariantChecker
 
     private static void ValidateTransaction(string stage, Transaction transaction, SelfPayBaseline baseline, bool requireReceiverContribution)
     {
+        if (transaction.Outputs.Count != 2)
+        {
+            throw CreateInvariantException($"{stage} must use the unified receiver-output model with exactly 2 outputs. ActualOutputs={transaction.Outputs.Count}", transaction, baseline.InvoiceScript, baseline.InvoiceAmount, baseline.SenderInputCount, baseline.SenderChangeScriptCounts);
+        }
+
         var invoiceOutputs = transaction.Outputs
             .Where(output => output.ScriptPubKey == baseline.InvoiceScript)
             .ToArray();
-        if (invoiceOutputs.Length != 1)
+        if (invoiceOutputs.Length != 0)
         {
-            throw CreateInvariantException($"{stage} must contain exactly one invoice output", transaction, baseline.InvoiceScript, baseline.InvoiceAmount, baseline.SenderInputCount, baseline.SenderChangeScriptCounts);
-        }
-
-        if (invoiceOutputs[0].Value != baseline.InvoiceAmount)
-        {
-            throw CreateInvariantException($"{stage} invoice output amount mismatch. Expected={baseline.InvoiceAmount.Satoshi} sats, Actual={invoiceOutputs[0].Value.Satoshi} sats", transaction, baseline.InvoiceScript, baseline.InvoiceAmount, baseline.SenderInputCount, baseline.SenderChangeScriptCounts);
+            throw CreateInvariantException($"{stage} must not preserve an isolated original invoice output under the unified receiver-output model", transaction, baseline.InvoiceScript, baseline.InvoiceAmount, baseline.SenderInputCount, baseline.SenderChangeScriptCounts);
         }
 
         if (requireReceiverContribution && transaction.Inputs.Count <= baseline.SenderInputCount)
         {
             throw CreateInvariantException($"{stage} must add at least one receiver input. SenderInputs={baseline.SenderInputCount}, ActualInputs={transaction.Inputs.Count}", transaction, baseline.InvoiceScript, baseline.InvoiceAmount, baseline.SenderInputCount, baseline.SenderChangeScriptCounts);
+        }
+
+        var receiverOwnedOutputs = transaction.Outputs
+            .Where(output => output.ScriptPubKey != baseline.InvoiceScript &&
+                             !baseline.SenderChangeScriptCounts.ContainsKey(output.ScriptPubKey.ToString()))
+            .ToArray();
+        if (receiverOwnedOutputs.Length == 0)
+        {
+            throw CreateInvariantException($"{stage} must contain at least one receiver-owned settlement output", transaction, baseline.InvoiceScript, baseline.InvoiceAmount, baseline.SenderInputCount, baseline.SenderChangeScriptCounts);
+        }
+
+        var receiverOwnedTotalSats = receiverOwnedOutputs.Sum(output => output.Value.Satoshi);
+        if (receiverOwnedTotalSats < baseline.InvoiceAmount.Satoshi)
+        {
+            throw CreateInvariantException($"{stage} receiver-owned settlement outputs must cover at least the invoice amount. ExpectedAtLeast={baseline.InvoiceAmount.Satoshi} sats, Actual={receiverOwnedTotalSats} sats", transaction, baseline.InvoiceScript, baseline.InvoiceAmount, baseline.SenderInputCount, baseline.SenderChangeScriptCounts);
         }
 
         var reusedSenderChangeScript = transaction.Outputs
@@ -128,7 +143,7 @@ internal static class SelfPayInvariantChecker
                     ? "invoice"
                     : senderChangeScriptCounts is not null && senderChangeScriptCounts.ContainsKey(script)
                         ? "sender-change"
-                        : "other";
+                        : "receiver-settlement";
                 return $"#{index}:{output.Value.Satoshi}sats:role={role}:dust={output.GetDustThreshold().Satoshi}:script={script}";
             });
 

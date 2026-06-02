@@ -23,6 +23,97 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinAccountingBridgeData", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CryptoCode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<long?>("EffectiveInvoiceValueSats")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("ExpectedFinalOutputIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ExpectedFinalTransactionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long?>("ExpectedFinalValueSats")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<long?>("FallbackOutputIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("FallbackTransactionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long?>("FallbackValueSats")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("InvoiceId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PaymentMethodId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("ReconciledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SettlementScript")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("StoreId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id")
+                        .HasName("PK_AccountingBridges");
+
+                    b.HasIndex("ExpectedFinalTransactionId")
+                        .HasDatabaseName("IX_AccountingBridges_ExpectedFinalTransactionId");
+
+                    b.HasIndex("InvoiceId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_AccountingBridges_InvoiceId");
+
+                    b.HasIndex("FallbackTransactionId", "FallbackOutputIndex")
+                        .HasDatabaseName("IX_AccountingBridges_FallbackTransactionId_FallbackOutputIndex");
+
+                    b.HasIndex("Status", "CreatedAt")
+                        .HasDatabaseName("IX_AccountingBridges_Status_CreatedAt");
+
+                    b.ToTable("AccountingBridges", "BTCPayServer.Plugins.Payjoin");
+                });
+
             modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverInputReservationData", b =>
                 {
                     b.Property<long>("Id")

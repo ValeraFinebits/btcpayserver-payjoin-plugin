@@ -1,7 +1,10 @@
+using BTCPayServer.Payments;
 using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging;
+using NBitcoin;
 using Payjoin;
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,15 +19,15 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverPollingFailedForInvoice =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(2, nameof(LogPayjoinReceiverPollingFailedForInvoice)),
             "Payjoin receiver polling failed for {InvoiceId}");
-    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverPreparedExactPaymentOutputs =
-        LoggerMessage.Define<string>(LogLevel.Information, new EventId(6, nameof(LogPayjoinReceiverPreparedExactPaymentOutputs)),
-            "Payjoin receiver prepared exact-payment outputs with dedicated receiver change for {InvoiceId}");
-    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverExactPaymentOutputsUnavailable =
-        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(7, nameof(LogPayjoinReceiverExactPaymentOutputsUnavailable)),
-            "Payjoin receiver exact-payment outputs unavailable for {InvoiceId}");
-    private static readonly Action<ILogger, string, string, Exception?> LogPayjoinReceiverExactPaymentOutputsFailed =
-        LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(8, nameof(LogPayjoinReceiverExactPaymentOutputsFailed)),
-            "Payjoin receiver failed to prepare exact-payment outputs for {InvoiceId}: {Message}");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverPreparedSettlementOutputs =
+        LoggerMessage.Define<string>(LogLevel.Information, new EventId(6, nameof(LogPayjoinReceiverPreparedSettlementOutputs)),
+            "Payjoin receiver prepared settlement outputs for {InvoiceId}");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverSettlementOutputsUnavailable =
+        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(7, nameof(LogPayjoinReceiverSettlementOutputsUnavailable)),
+            "Payjoin receiver settlement outputs unavailable for {InvoiceId}");
+    private static readonly Action<ILogger, string, string, Exception?> LogPayjoinReceiverSettlementOutputsFailed =
+        LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(8, nameof(LogPayjoinReceiverSettlementOutputsFailed)),
+            "Payjoin receiver failed to prepare settlement outputs for {InvoiceId}: {Message}");
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinReceiverSessionRemoved =
         LoggerMessage.Define<string, string>(LogLevel.Information, new EventId(9, nameof(LogPayjoinReceiverSessionRemoved)),
             "Payjoin receiver session removed for {InvoiceId}: {Reason}");
@@ -37,13 +40,32 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private static readonly Action<ILogger, string, double, Exception?> LogPayjoinReceiverInitializedPollTimedOut =
         LoggerMessage.Define<string, double>(LogLevel.Debug, new EventId(12, nameof(LogPayjoinReceiverInitializedPollTimedOut)),
             "Payjoin receiver initialized poll timed out for {InvoiceId} after {TimeoutSeconds} seconds; receiver session remains active.");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinAccountingBridgeUnavailable =
+        LoggerMessage.Define<string>(LogLevel.Debug, new EventId(13, nameof(LogPayjoinAccountingBridgeUnavailable)),
+            "Payjoin accounting bridge not found for {InvoiceId}");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverFallbackTransactionUnavailable =
+        LoggerMessage.Define<string>(LogLevel.Debug, new EventId(14, nameof(LogPayjoinReceiverFallbackTransactionUnavailable)),
+            "Payjoin receiver fallback transaction not yet available for {InvoiceId}");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverFallbackNetworkUnavailable =
+        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(15, nameof(LogPayjoinReceiverFallbackNetworkUnavailable)),
+            "Payjoin receiver could not resolve fallback network for {InvoiceId}");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverFallbackOutputUnavailable =
+        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(16, nameof(LogPayjoinReceiverFallbackOutputUnavailable)),
+            "Payjoin receiver could not resolve a unique fallback receiver output for {InvoiceId}");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverFallbackOutputAmbiguous =
+        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(17, nameof(LogPayjoinReceiverFallbackOutputAmbiguous)),
+            "Payjoin receiver found multiple fallback outputs matching the receiver script for {InvoiceId}");
 
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IPayjoinReceiverSessionGuard _sessionGuard;
     private readonly IPayjoinReceiverStateProcessor _stateProcessor;
     private readonly IPayjoinReceiverOutputBuilder _outputBuilder;
     private readonly IPayjoinReceiverInputSelector _inputSelector;
+    private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
+    private readonly IPayjoinAccountingPaymentService _accountingPaymentService;
+    private readonly IPayjoinInvoiceLookup _invoiceLookup;
     private readonly IPayjoinReceiverProposalFinalizer _proposalFinalizer;
+    private readonly BTCPayNetworkProvider _networkProvider;
     private readonly ILogger<PayjoinReceiverSessionProcessor> _logger;
 
     public PayjoinReceiverSessionProcessor(
@@ -52,7 +74,11 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         IPayjoinReceiverStateProcessor stateProcessor,
         IPayjoinReceiverOutputBuilder outputBuilder,
         IPayjoinReceiverInputSelector inputSelector,
+        IPayjoinAccountingBridgeService accountingBridgeService,
+        IPayjoinAccountingPaymentService accountingPaymentService,
+        IPayjoinInvoiceLookup invoiceLookup,
         IPayjoinReceiverProposalFinalizer proposalFinalizer,
+        BTCPayNetworkProvider networkProvider,
         ILogger<PayjoinReceiverSessionProcessor> logger)
     {
         _sessionStore = sessionStore;
@@ -60,7 +86,11 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         _stateProcessor = stateProcessor;
         _outputBuilder = outputBuilder;
         _inputSelector = inputSelector;
+        _accountingBridgeService = accountingBridgeService;
+        _accountingPaymentService = accountingPaymentService;
+        _invoiceLookup = invoiceLookup;
         _proposalFinalizer = proposalFinalizer;
+        _networkProvider = networkProvider;
         _logger = logger;
     }
 
@@ -121,6 +151,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         var persister = guardedSession.Persister;
         var receiverScript = guardedSession.ReceiverScript;
         var stateContext = guardedSession.StateContext;
+        await TryAttachFallbackAsync(session, receiverScript, guardedSession.Replay, stoppingToken).ConfigureAwait(false);
 
         switch (guardedSession.State)
         {
@@ -165,7 +196,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     }
 
                     await _proposalFinalizer.FinalizeAsync(
-                        new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId),
+                        new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
                         wantsFeeRange.inner,
                         contributedCoinsForFeeRange,
                         stoppingToken).ConfigureAwait(false);
@@ -180,7 +211,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     }
 
                     await _proposalFinalizer.FinalizeAsync(
-                        new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId),
+                        new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
                         provisionalProposal.inner,
                         contributedCoinsForProposal,
                         stoppingToken).ConfigureAwait(false);
@@ -188,7 +219,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                 }
             case ReceiveSession.PayjoinProposal payjoinProposal:
                 await _proposalFinalizer.PostAsync(
-                    new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId),
+                    new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
                     payjoinProposal.inner,
                     stoppingToken).ConfigureAwait(false);
                 break;
@@ -226,26 +257,23 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         DateTimeOffset reservationExpiresAt,
         CancellationToken stoppingToken)
     {
-        var exactPaymentOutputs = await _outputBuilder.TryCreateExactPaymentOutputsAsync(storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
-        if (exactPaymentOutputs is null)
+        var settlementOutputs = await CreateSettlementOutputsOrRemoveSessionAsync(storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
+        if (settlementOutputs is null)
         {
-            LogPayjoinReceiverExactPaymentOutputsUnavailable(_logger, invoiceId, null);
-            RemoveSession(invoiceId, "exact-payment outputs unavailable");
             return;
         }
 
         try
         {
-            using var modified = proposal.ReplaceReceiverOutputs(exactPaymentOutputs.ExactPaymentOutputs, exactPaymentOutputs.ReceiverChangeScript);
-            using var transition = modified.CommitOutputs();
-            using var wantsInputs = transition.Save(persister);
-            LogPayjoinReceiverPreparedExactPaymentOutputs(_logger, invoiceId, null);
+            using var wantsInputs = ApplySettlementOutputs(proposal, persister, settlementOutputs);
+            await PersistSettlementScriptAsync(invoiceId, settlementOutputs, stoppingToken).ConfigureAwait(false);
+            LogPayjoinReceiverPreparedSettlementOutputs(_logger, invoiceId, null);
             await ProcessWantsInputsAsync(wantsInputs, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
         }
         catch (OutputSubstitutionException ex)
         {
-            LogPayjoinReceiverExactPaymentOutputsFailed(_logger, invoiceId, ex.Message, ex);
-            RemoveSession(invoiceId, "failed to prepare exact-payment outputs");
+            LogPayjoinReceiverSettlementOutputsFailed(_logger, invoiceId, ex.Message, ex);
+            RemoveSession(invoiceId, "failed to prepare settlement outputs");
         }
     }
 
@@ -259,30 +287,88 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         DateTimeOffset reservationExpiresAt,
         CancellationToken stoppingToken)
     {
-        // TODO: Restore `proposal.TryPreservingPrivacy(receiverInputs)` only after rust-payjoin/payjoin-ffi lets us identify which `ReceivedCoin` was actually selected.
-        // TODO: We must persist only the truly contributed coin(s) into `contributedCoins`; otherwise the signing step can treat unrelated wallet inputs as receiver-owned and produce an invalid proposal.
-        var contribution = await _inputSelector.TryContributeInputsAsync(proposal, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
-        if (contribution.ProposalWithInputs is null || contribution.ContributedCoins is null)
+        var contributionResult = await TryCreateInputContributionAsync(proposal, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
+        if (contributionResult is null)
         {
-            LogPayjoinReceiverInputContributionFailed(_logger, invoiceId, contribution.FailureMessage, null);
-            RemoveSession(invoiceId, "no receiver input available for payjoin contribution");
             return;
         }
 
+        var contribution = contributionResult.Value;
+
         try
         {
-            using var transition = contribution.ProposalWithInputs.CommitInputs();
-            using var wantsFeeRange = transition.Save(persister);
-            await _proposalFinalizer.FinalizeAsync(
-                new PayjoinReceiverProposalFinalizationContext(persister, ohttpRelayUrl, storeId),
-                wantsFeeRange,
-                contribution.ContributedCoins,
-                stoppingToken).ConfigureAwait(false);
+            await FinalizeInputContributionAsync(contribution, persister, ohttpRelayUrl, storeId, invoiceId, stoppingToken).ConfigureAwait(false);
         }
         finally
         {
-            contribution.ProposalWithInputs.Dispose();
+            contribution.ProposalWithInputs!.Dispose();
         }
+    }
+
+    private async Task<PayjoinReceiverOutputBuilder.OutputReplacement?> CreateSettlementOutputsOrRemoveSessionAsync(
+        string storeId,
+        string invoiceId,
+        byte[] receiverScript,
+        CancellationToken stoppingToken)
+    {
+        var settlementOutputs = await _outputBuilder.TryCreateSettlementOutputsAsync(storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
+        if (settlementOutputs is not null)
+        {
+            return settlementOutputs;
+        }
+
+        LogPayjoinReceiverSettlementOutputsUnavailable(_logger, invoiceId, null);
+        RemoveSession(invoiceId, "settlement outputs unavailable");
+        return null;
+    }
+
+    private static WantsInputs ApplySettlementOutputs(WantsOutputs proposal, JsonReceiverSessionPersister persister, PayjoinReceiverOutputBuilder.OutputReplacement settlementOutputs)
+    {
+        using var modified = proposal.ReplaceReceiverOutputs(settlementOutputs.ReplacementOutputs, settlementOutputs.SettlementScript);
+        using var transition = modified.CommitOutputs();
+        return transition.Save(persister);
+    }
+
+    private async Task PersistSettlementScriptAsync(string invoiceId, PayjoinReceiverOutputBuilder.OutputReplacement settlementOutputs, CancellationToken stoppingToken)
+    {
+        await _accountingBridgeService.SetSettlementScriptAsync(invoiceId, Convert.ToHexString(settlementOutputs.SettlementScript), stoppingToken).ConfigureAwait(false);
+    }
+
+    private async Task<ReceiverInputContribution?> TryCreateInputContributionAsync(
+        WantsInputs proposal,
+        string storeId,
+        string invoiceId,
+        DateTimeOffset reservationExpiresAt,
+        CancellationToken stoppingToken)
+    {
+        var contribution = await _inputSelector.TryContributeInputsAsync(proposal, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
+        if (contribution.ProposalWithInputs is not null && contribution.ContributedCoins is not null)
+        {
+            return new ReceiverInputContribution(contribution.ProposalWithInputs, contribution.ContributedCoins);
+        }
+
+        LogPayjoinReceiverInputContributionFailed(_logger, invoiceId, contribution.FailureMessage, null);
+        RemoveSession(invoiceId, "no receiver input available for payjoin contribution");
+        return null;
+    }
+
+    private readonly record struct ReceiverInputContribution(WantsInputs ProposalWithInputs, ReceivedCoin[] ContributedCoins);
+
+    private async Task FinalizeInputContributionAsync(
+        ReceiverInputContribution contribution,
+        JsonReceiverSessionPersister persister,
+        SystemUri ohttpRelayUrl,
+        string storeId,
+        string invoiceId,
+        CancellationToken stoppingToken)
+    {
+        using var transition = contribution.ProposalWithInputs!.CommitInputs();
+        using var wantsFeeRange = transition.Save(persister);
+        await _proposalFinalizer.FinalizeAsync(
+            new PayjoinReceiverProposalFinalizationContext(persister, ohttpRelayUrl, storeId, invoiceId, PayjoinConstants.BitcoinCode),
+            wantsFeeRange,
+            contribution.ContributedCoins,
+            stoppingToken).ConfigureAwait(false);
     }
 
     private async Task<ReceivedCoin[]?> TryGetRequiredPersistedContributedCoinsAsync(
@@ -305,6 +391,111 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     {
         // TODO: Revisit whether receiver-input reservations should always live until MonitoringExpiresAt or use a shorter policy-derived lifetime.
         return session.MonitoringExpiresAt;
+    }
+
+    private async Task TryAttachFallbackAsync(PayjoinReceiverSessionState session, byte[] receiverScript, ReplayResult replay, CancellationToken cancellationToken)
+    {
+        var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(session.InvoiceId, cancellationToken).ConfigureAwait(false);
+        if (bridge is null)
+        {
+            LogPayjoinAccountingBridgeUnavailable(_logger, session.InvoiceId, null);
+            return;
+        }
+
+        if (bridge.FallbackTransactionId is not null)
+        {
+            return;
+        }
+
+        using var history = replay.SessionHistory();
+        var fallbackBytes = history.FallbackTx();
+        if (fallbackBytes is null || fallbackBytes.Length == 0)
+        {
+            LogPayjoinReceiverFallbackTransactionUnavailable(_logger, session.InvoiceId, null);
+            return;
+        }
+
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(bridge.CryptoCode)?.NBitcoinNetwork;
+        if (network is null)
+        {
+            LogPayjoinReceiverFallbackNetworkUnavailable(_logger, session.InvoiceId, null);
+            return;
+        }
+
+        var fallbackTx = Transaction.Load(fallbackBytes, network);
+        var fallbackOutputMatch = ResolveFallbackReceiverOutput(fallbackTx, receiverScript);
+        if (!fallbackOutputMatch.Success)
+        {
+            if (fallbackOutputMatch.Status == FallbackReceiverOutputMatchStatus.Ambiguous)
+            {
+                LogPayjoinReceiverFallbackOutputAmbiguous(_logger, session.InvoiceId, null);
+            }
+            else
+            {
+                LogPayjoinReceiverFallbackOutputUnavailable(_logger, session.InvoiceId, null);
+            }
+
+            return;
+        }
+
+        var outputIndex = fallbackOutputMatch.OutputIndex!.Value;
+        var valueSats = fallbackOutputMatch.ValueSats!.Value;
+        var invoice = await _invoiceLookup.GetInvoiceAsync(session.InvoiceId).ConfigureAwait(false);
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        var effectiveInvoiceValueSats = invoice?.GetPaymentPrompt(paymentMethodId)?.Calculate().Due is { } due && due > 0m
+            ? Money.Coins(due).Satoshi
+            : valueSats;
+        var updatedBridge = await _accountingBridgeService.AttachFallbackAsync(
+            session.InvoiceId,
+            fallbackTx.GetHash().ToString(),
+            outputIndex,
+            valueSats,
+            effectiveInvoiceValueSats,
+            null,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static FallbackReceiverOutputMatch ResolveFallbackReceiverOutput(Transaction fallbackTransaction, byte[] receiverScript)
+    {
+        var receiverScriptPubKey = Script.FromBytesUnsafe(receiverScript);
+        var matches = fallbackTransaction.Outputs
+            .Select((output, index) => new { output, index })
+            .Where(x => x.output.ScriptPubKey == receiverScriptPubKey)
+            .ToArray();
+
+        return matches.Length switch
+        {
+            1 => FallbackReceiverOutputMatch.FoundMatch(checked((uint)matches[0].index), matches[0].output.Value.Satoshi),
+            0 => FallbackReceiverOutputMatch.NotFound(),
+            _ => FallbackReceiverOutputMatch.Ambiguous()
+        };
+    }
+
+    internal readonly record struct FallbackReceiverOutputMatch(uint? OutputIndex, long? ValueSats, FallbackReceiverOutputMatchStatus Status)
+    {
+        internal bool Success => Status == FallbackReceiverOutputMatchStatus.Found;
+
+        internal static FallbackReceiverOutputMatch FoundMatch(uint outputIndex, long valueSats)
+        {
+            return new FallbackReceiverOutputMatch(outputIndex, valueSats, FallbackReceiverOutputMatchStatus.Found);
+        }
+
+        internal static FallbackReceiverOutputMatch NotFound()
+        {
+            return new FallbackReceiverOutputMatch(null, null, FallbackReceiverOutputMatchStatus.NotFound);
+        }
+
+        internal static FallbackReceiverOutputMatch Ambiguous()
+        {
+            return new FallbackReceiverOutputMatch(null, null, FallbackReceiverOutputMatchStatus.Ambiguous);
+        }
+    }
+
+    internal enum FallbackReceiverOutputMatchStatus
+    {
+        Found,
+        NotFound,
+        Ambiguous
     }
 
     private bool RemoveSession(string invoiceId, string reason)

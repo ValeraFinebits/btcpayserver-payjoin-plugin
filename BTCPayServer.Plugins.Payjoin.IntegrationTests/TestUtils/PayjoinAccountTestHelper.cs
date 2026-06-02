@@ -1,3 +1,4 @@
+using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Wallets;
 using BTCPayServer.Tests;
 using NBitcoin;
@@ -7,7 +8,6 @@ namespace BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 
 internal static class PayjoinAccountTestHelper
 {
-    private const string BitcoinCode = "BTC";
     private static readonly Money InitialWalletFunding = Money.Coins(1.0m);
     private const int DefaultInitialFundingUtxoCount = 2;
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
@@ -32,7 +32,7 @@ internal static class PayjoinAccountTestHelper
 
         var user = tester.NewAccount();
         await user.GrantAccessAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
-        await user.RegisterDerivationSchemeAsync(BitcoinCode, ScriptPubKeyType.Segwit, true).WaitAsync(cancellationToken).ConfigureAwait(true);
+        await user.RegisterDerivationSchemeAsync(PayjoinConstants.BitcoinCode, ScriptPubKeyType.Segwit, true).WaitAsync(cancellationToken).ConfigureAwait(true);
         await FundWalletAsync(user, network, initialFundingUtxoCount, cancellationToken).ConfigureAwait(true);
         if (confirmFunding)
         {
@@ -44,7 +44,7 @@ internal static class PayjoinAccountTestHelper
 
     private static BTCPayNetwork GetBitcoinNetwork(ServerTester tester)
     {
-        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(BitcoinCode);
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         Assert.NotNull(network);
         return network;
     }

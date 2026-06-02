@@ -187,12 +187,12 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
-        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         Assert.NotNull(network);
 
         var merchant = tester.NewAccount();
         await merchant.GrantAccessAsync().WaitAsync(cts.Token).ConfigureAwait(true);
-        await merchant.RegisterDerivationSchemeAsync("BTC", ScriptPubKeyType.Segwit, true).WaitAsync(cts.Token).ConfigureAwait(true);
+        await merchant.RegisterDerivationSchemeAsync(PayjoinConstants.BitcoinCode, ScriptPubKeyType.Segwit, true).WaitAsync(cts.Token).ConfigureAwait(true);
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
@@ -222,6 +222,59 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
 
         await PayjoinIntegrationTestSupport.AssertColdWalletReceivedPayjoinChangeAsync(tester, coldDerivation, paymentResult, cts.Token).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task PayjoinAccountingDoesNotMarkInvoiceAsOverpaid()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+        var payjoinPayer = new PayjoinTestPayer(tester, payer, context.Network);
+        var paymentResult = await payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, cts.Token).ConfigureAwait(true);
+
+        await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, context.Merchant, payjoinContext, paymentResult.TransactionId, cts.Token).ConfigureAwait(true);
+        await PayjoinInvoiceTestHelper.AssertInvoiceNotOverpaidEventuallyAsync(tester, payjoinContext, cts.Token).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task PayjoinInvoiceTransitionsFromProcessingToSettledAfterConfirmation()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+        var transactionId = await PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
+            tester,
+            payer,
+            context.Network,
+            context.Merchant.StoreId,
+            payjoinContext.PaymentUrl,
+            preProposalPollDelay: null,
+            mineBlockAfterBroadcast: false,
+            cts.Token).ConfigureAwait(true);
+
+        await PayjoinInvoiceTestHelper.AssertInvoiceProcessingThenSettledAsync(
+            tester,
+            payjoinContext.InvoiceId,
+            async cancellationToken =>
+            {
+                await tester.ExplorerNode.GenerateAsync(1, cancellationToken).ConfigureAwait(true);
+            },
+            cts.Token).ConfigureAwait(true);
+
+        await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, context.Merchant, payjoinContext, transactionId, cts.Token).ConfigureAwait(true);
     }
 
     [Fact]
@@ -277,7 +330,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new Invoice
         {
             Price = 0.1m,
-            Currency = "BTC",
+            Currency = PayjoinConstants.BitcoinCode,
             FullNotifications = true
         }).WaitAsync(cts.Token).ConfigureAwait(true);
 
@@ -315,7 +368,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new Invoice
         {
             Price = 0.1m,
-            Currency = "BTC",
+            Currency = PayjoinConstants.BitcoinCode,
             FullNotifications = true
         }).WaitAsync(cts.Token).ConfigureAwait(true);
 

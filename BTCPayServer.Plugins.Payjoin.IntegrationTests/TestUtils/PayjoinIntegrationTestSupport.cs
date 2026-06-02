@@ -19,7 +19,6 @@ namespace BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 
 internal static class PayjoinIntegrationTestSupport
 {
-    private const string BitcoinCode = "BTC";
     private const decimal InvoicePrice = 0.1m;
 
     public static TimeSpan TestTimeout { get; } = TimeSpan.FromMinutes(3);
@@ -29,8 +28,17 @@ internal static class PayjoinIntegrationTestSupport
         Assert.Equal(uint256.Parse(paymentResult.TransactionId), paymentResult.PayjoinTransaction.GetHash());
         Assert.True(paymentResult.PayjoinTransaction.Inputs.Count > 1,
             $"Expected payjoin tx to contain multiple inputs. Inputs: {paymentResult.PayjoinTransaction.Inputs.Count}");
+        Assert.True(paymentResult.PayjoinTransaction.Outputs.Count == 2,
+            $"Expected unified receiver payjoin transaction to contain exactly 2 outputs, but got {paymentResult.PayjoinTransaction.Outputs.Count}. Outputs: {FormatOutputs(paymentResult.PayjoinTransaction)}");
+        Assert.DoesNotContain(paymentResult.PayjoinTransaction.Outputs, output => output.ScriptPubKey == paymentResult.InvoiceScript);
+        Assert.All(paymentResult.PayjoinTransaction.Outputs, output => Assert.True(output.Value > Money.Zero,
+            $"Expected payjoin tx outputs to have positive values. Outputs: {FormatOutputs(paymentResult.PayjoinTransaction)}"));
+    }
 
-        Assert.Single(paymentResult.PayjoinTransaction.Outputs, output => output.ScriptPubKey == paymentResult.InvoiceScript);
+    private static string FormatOutputs(Transaction transaction)
+    {
+        return string.Join(", ", transaction.Outputs.Select((output, index) =>
+            $"#{index}:value={output.Value.Satoshi}sats:script={output.ScriptPubKey}"));
     }
 
     public static async Task<(string InvoiceId, GetBip21Response Bip21Response)> CreateInvoiceAndGetBip21Async(
@@ -41,7 +49,7 @@ internal static class PayjoinIntegrationTestSupport
         var invoice = await merchant.BitPay.CreateInvoiceAsync(new Invoice
         {
             Price = InvoicePrice,
-            Currency = BitcoinCode,
+            Currency = PayjoinConstants.BitcoinCode,
             FullNotifications = true
         }).WaitAsync(cancellationToken).ConfigureAwait(true);
 
@@ -242,7 +250,7 @@ internal static class PayjoinIntegrationTestSupport
 
     private static BTCPayNetwork GetBitcoinNetwork(ServerTester tester)
     {
-        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(BitcoinCode);
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         Assert.NotNull(network);
         return network;
     }
@@ -254,7 +262,7 @@ internal static class PayjoinIntegrationTestSupport
         var store = await tester.PayTester.GetService<StoreRepository>().FindStore(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
         Assert.NotNull(store);
 
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(BitcoinCode);
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
         var handlers = tester.PayTester.GetService<PaymentMethodHandlerDictionary>();
         var derivationScheme = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, handlers, true);
         Assert.NotNull(derivationScheme);

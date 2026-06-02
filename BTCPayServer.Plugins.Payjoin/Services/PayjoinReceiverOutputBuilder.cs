@@ -16,15 +16,15 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
 {
     internal sealed class OutputReplacement
     {
-        internal OutputReplacement(PayjoinTxOut[] exactPaymentOutputs, byte[] receiverChangeScript)
+        internal OutputReplacement(PayjoinTxOut[] replacementOutputs, byte[] settlementScript)
         {
-            ExactPaymentOutputs = exactPaymentOutputs;
-            ReceiverChangeScript = receiverChangeScript;
+            ReplacementOutputs = replacementOutputs;
+            SettlementScript = settlementScript;
         }
 
-        internal PayjoinTxOut[] ExactPaymentOutputs { get; }
+        internal PayjoinTxOut[] ReplacementOutputs { get; }
 
-        internal byte[] ReceiverChangeScript { get; }
+        internal byte[] SettlementScript { get; }
     }
 
     private readonly BTCPayNetworkProvider _networkProvider;
@@ -50,17 +50,17 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
         _storeSettingsRepository = storeSettingsRepository;
     }
 
-    public async Task<OutputReplacement?> TryCreateExactPaymentOutputsAsync(
+    public async Task<OutputReplacement?> TryCreateSettlementOutputsAsync(
         string storeId,
         string invoiceId,
         byte[] receiverScript,
         CancellationToken cancellationToken)
     {
-        // TODO: Add an explicit rust-payjoin / payjoin-ffi API for reading receiver outputs or original PSBT data.
-        // TODO: Replace the invoice.Due fallback below with values read directly from the incoming payjoin proposal.
-        // TODO: Validate that the invoice amount matches the receiver amount in the incoming proposal before building replacement outputs.
-        var receiverChangeScript = await GetReceiverChangeScriptAsync(storeId, receiverScript, cancellationToken).ConfigureAwait(false);
-        if (receiverChangeScript is null)
+        // TODO: Add a rust-payjoin / payjoin-ffi API for reading the receiver amount from the proposal or original PSBT data.
+        // TODO: Stop deriving the settlement amount from live invoice accounting state; replay should use an immutable proposal/session value.
+        // TODO: Validate that the proposal-derived receiver amount matches the expected invoice amount before building replacement outputs.
+        var settlementScript = await GetSettlementScriptAsync(storeId, receiverScript, cancellationToken).ConfigureAwait(false);
+        if (settlementScript is null)
         {
             return null;
         }
@@ -71,13 +71,13 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
             return null;
         }
 
-        return CreateExactPaymentOutputs(exactPaymentAmountSats.Value, receiverScript, receiverChangeScript);
+        return CreateSettlementOutputs(exactPaymentAmountSats.Value, settlementScript);
     }
 
     internal async Task<ulong?> TryGetExactPaymentAmountSatsAsync(string invoiceId)
     {
         var invoice = await _invoiceRepository.GetInvoice(invoiceId).ConfigureAwait(false);
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
         var prompt = invoice?.GetPaymentPrompt(paymentMethodId);
         if (prompt is null)
         {
@@ -99,26 +99,24 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
         return checked((ulong)dueSats);
     }
 
-    internal static OutputReplacement CreateExactPaymentOutputs(
+    internal static OutputReplacement CreateSettlementOutputs(
         ulong exactPaymentAmountSats,
-        byte[] receiverScript,
-        byte[] receiverChangeScript)
+        byte[] settlementScript)
     {
         return new OutputReplacement(
             new[]
             {
-                new PayjoinTxOut(exactPaymentAmountSats, receiverScript),
-                new PayjoinTxOut(0, receiverChangeScript)
+                new PayjoinTxOut(exactPaymentAmountSats, settlementScript)
             },
-            receiverChangeScript);
+            settlementScript);
     }
 
-    private async Task<byte[]?> GetReceiverChangeScriptAsync(
+    private async Task<byte[]?> GetSettlementScriptAsync(
         string storeId,
         byte[] receiverScript,
         CancellationToken cancellationToken)
     {
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         if (network is null)
         {
             return null;
@@ -143,7 +141,7 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
             return null;
         }
 
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
         var derivationScheme = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, _handlers, true);
         if (derivationScheme is null)
         {

@@ -120,7 +120,7 @@ public sealed class GreenfieldPayjoinController : ControllerBase
             return null;
         }
 
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         if (network is null)
         {
             ModelState.AddModelError(nameof(PayjoinStoreSettingsData.ColdWalletDerivationScheme), "BTC network is not available.");

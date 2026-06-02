@@ -12,6 +12,7 @@ internal sealed class PayjoinCliPayer : IDisposable
     private static readonly TimeSpan TransactionDetectionTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan TransactionDetectionPollInterval = TimeSpan.FromMilliseconds(250);
     private const string DefaultFeeRateSatsPerVByte = "1";
+    private const string PayjoinCliSentTransactionIdMarker = "Payjoin sent. TXID:";
 
     private readonly PayjoinCliSenderWallet _senderWallet;
     private readonly string _workingDirectory;
@@ -119,7 +120,6 @@ internal sealed class PayjoinCliPayer : IDisposable
         var transactionId = await GetNewTransactionIdAsync(
             knownTransactionIds,
             expectedInvoiceScript,
-            expectedInvoiceAmount,
             process,
             stdoutText,
             stderrText,
@@ -168,12 +168,33 @@ internal sealed class PayjoinCliPayer : IDisposable
     private async Task<string> GetNewTransactionIdAsync(
         HashSet<string> knownTransactionIds,
         Script expectedInvoiceScript,
-        Money expectedInvoiceAmount,
         Process process,
         string stdout,
         string stderr,
         CancellationToken cancellationToken)
     {
+        var stdoutTransactionId = TryParseSentTransactionIdFromStdout(stdout);
+        if (!string.IsNullOrWhiteSpace(stdoutTransactionId))
+        {
+            await AsyncPolling.WaitUntilAsync(
+                TransactionDetectionTimeout,
+                TransactionDetectionPollInterval,
+                async ct =>
+                {
+                    var currentTransactionIds = await GetWalletTransactionIdsAsync(ct).ConfigureAwait(false);
+                    return currentTransactionIds.Contains(stdoutTransactionId);
+                },
+                BitcoindNode.IsTransientRpcException,
+                lastException => CreateFailureMessage(
+                    $"payjoin-cli reported TXID '{stdoutTransactionId}', but the dedicated sender wallet did not expose it within {TransactionDetectionTimeout.TotalSeconds:0} seconds. LastTransientError='{BitcoindNode.DescribeException(lastException)}'.",
+                    process,
+                    stdout,
+                    stderr),
+                cancellationToken).ConfigureAwait(false);
+
+            return stdoutTransactionId;
+        }
+
         string[] candidateTransactionIds = [];
         string[] matchingTransactionIds = [];
         string? detectedTransactionId = null;
@@ -189,7 +210,7 @@ internal sealed class PayjoinCliPayer : IDisposable
                     .Distinct(StringComparer.Ordinal)
                     .ToArray();
 
-                matchingTransactionIds = await GetMatchingTransactionIdsAsync(candidateTransactionIds, expectedInvoiceScript, expectedInvoiceAmount, ct).ConfigureAwait(false);
+                matchingTransactionIds = await GetMatchingTransactionIdsAsync(candidateTransactionIds, expectedInvoiceScript, ct).ConfigureAwait(false);
 
                 if (matchingTransactionIds.Length == 1)
                 {
@@ -202,7 +223,7 @@ internal sealed class PayjoinCliPayer : IDisposable
             },
             BitcoindNode.IsTransientRpcException,
             lastException => CreateFailureMessage(
-                $"payjoin-cli completed successfully but the dedicated sender wallet did not expose exactly one invoice-matching transaction within {TransactionDetectionTimeout.TotalSeconds:0} seconds. CandidateCount={candidateTransactionIds.Length}, Candidates='{string.Join(",", candidateTransactionIds)}', MatchingCount={matchingTransactionIds.Length}, MatchingCandidates='{string.Join(",", matchingTransactionIds)}', ExpectedInvoiceScript='{expectedInvoiceScript}', ExpectedInvoiceAmountSats={expectedInvoiceAmount.Satoshi}, LastTransientError='{BitcoindNode.DescribeException(lastException)}'.",
+                $"payjoin-cli completed successfully but the dedicated sender wallet did not expose exactly one unified receiver-output transaction within {TransactionDetectionTimeout.TotalSeconds:0} seconds. CandidateCount={candidateTransactionIds.Length}, Candidates='{string.Join(",", candidateTransactionIds)}', MatchingCount={matchingTransactionIds.Length}, MatchingCandidates='{string.Join(",", matchingTransactionIds)}', ExpectedInvoiceScript='{expectedInvoiceScript}', LastTransientError='{BitcoindNode.DescribeException(lastException)}'.",
                 process,
                 stdout,
                 stderr),
@@ -211,10 +232,50 @@ internal sealed class PayjoinCliPayer : IDisposable
         return detectedTransactionId!;
     }
 
+    private static string? TryParseSentTransactionIdFromStdout(string stdout)
+    {
+        if (string.IsNullOrWhiteSpace(stdout))
+        {
+            return null;
+        }
+
+        using var reader = new StringReader(stdout);
+        while (reader.ReadLine() is { } line)
+        {
+            var markerIndex = line.IndexOf(PayjoinCliSentTransactionIdMarker, StringComparison.Ordinal);
+            if (markerIndex < 0)
+            {
+                continue;
+            }
+
+            var txid = line[(markerIndex + PayjoinCliSentTransactionIdMarker.Length)..].Trim();
+            return IsValidTransactionId(txid) ? txid : null;
+        }
+
+        return null;
+    }
+
+    private static bool IsValidTransactionId(string? txid)
+    {
+        if (string.IsNullOrWhiteSpace(txid) || txid.Length != 64)
+        {
+            return false;
+        }
+
+        foreach (var ch in txid)
+        {
+            if (!Uri.IsHexDigit(ch))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private async Task<string[]> GetMatchingTransactionIdsAsync(
         string[] candidateTransactionIds,
         Script expectedInvoiceScript,
-        Money expectedInvoiceAmount,
         CancellationToken cancellationToken)
     {
         if (candidateTransactionIds.Length == 0)
@@ -226,11 +287,11 @@ internal sealed class PayjoinCliPayer : IDisposable
         foreach (var candidateTransactionId in candidateTransactionIds)
         {
             var transaction = await GetWalletTransactionAsync(candidateTransactionId, cancellationToken).ConfigureAwait(false);
-            var hasExpectedInvoiceOutput = transaction.Outputs.Any(output =>
-                output.ScriptPubKey == expectedInvoiceScript &&
-                output.Value == expectedInvoiceAmount);
+            var matchesUnifiedReceiverOutputModel = transaction.Inputs.Count > 1 &&
+                                                  transaction.Outputs.Count == 2 &&
+                                                  transaction.Outputs.All(output => output.ScriptPubKey != expectedInvoiceScript);
 
-            if (hasExpectedInvoiceOutput)
+            if (matchesUnifiedReceiverOutputModel)
             {
                 matchingTransactionIds.Add(candidateTransactionId);
             }

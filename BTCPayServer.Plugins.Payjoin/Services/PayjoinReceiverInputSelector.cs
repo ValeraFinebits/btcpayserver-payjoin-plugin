@@ -31,6 +31,8 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
         DateTimeOffset reservationExpiresAt,
         CancellationToken cancellationToken)
     {
+        // TODO: Restore `proposal.TryPreservingPrivacy(receiverInputs)` only after rust-payjoin/payjoin-ffi lets us identify which `ReceivedCoin` was actually selected.
+        // TODO: Persist only the truly contributed coin(s) into `contributedCoins`; otherwise the signing step can treat unrelated wallet inputs as receiver-owned and produce an invalid proposal.
         var (receiverInputs, receiverCoins) = await GetReceiverInputsAsync(storeId, cancellationToken).ConfigureAwait(false);
 
         var contributionFailures = new List<string>();
@@ -95,13 +97,13 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
         string storeId,
         CancellationToken cancellationToken)
     {
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         if (network is null)
         {
             return (Array.Empty<InputPair>(), Array.Empty<ReceivedCoin>());
         }
 
-        var confirmed = await _availabilityService.GetConfirmedReceiverCoinsAsync(storeId, "BTC", network, cancellationToken).ConfigureAwait(false);
+        var confirmed = await _availabilityService.GetConfirmedReceiverCoinsAsync(storeId, PayjoinConstants.BitcoinCode, network, cancellationToken).ConfigureAwait(false);
         if (confirmed.Length == 0)
         {
             return (Array.Empty<InputPair>(), Array.Empty<ReceivedCoin>());

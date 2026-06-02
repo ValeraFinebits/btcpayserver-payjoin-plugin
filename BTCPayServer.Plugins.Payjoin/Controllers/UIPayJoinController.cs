@@ -22,7 +22,6 @@ namespace BTCPayServer.Plugins.Payjoin.Controllers;
 [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanViewProfile)]
 public class UIPayJoinController : Controller
 {
-    private const string BitcoinCode = "BTC";
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinSenderBroadcasted =
         LoggerMessage.Define<string, string>(LogLevel.Information, new EventId(1, nameof(LogPayjoinSenderBroadcasted)),
             "Payjoin sender broadcasted payjoin transaction {TransactionId} for {InvoiceId}");
@@ -124,7 +123,7 @@ public class UIPayJoinController : Controller
             return RunTestPaymentFailure("OhttpRelayUrl not found");
         }
 
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>(BitcoinCode);
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         if (network is null)
         {
             return RunTestPaymentFailure("network not available");

@@ -27,7 +27,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new Invoice
         {
             Price = 0.1m,
-            Currency = "BTC",
+            Currency = PayjoinConstants.BitcoinCode,
             FullNotifications = true
         }).WaitAsync(cts.Token).ConfigureAwait(true);
 
@@ -55,7 +55,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         using var tester = CreateServerTester($"{nameof(ConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinEnabled)}-{receiverInputCount}-{concurrentInvoiceCount}", newDb: true);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
-        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         Assert.NotNull(network);
 
         var merchant = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(
@@ -89,7 +89,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         using var tester = CreateServerTester($"{nameof(ConcurrentPayjoinUriInitializationUnderBurstLoadKeepsInvoicesPayjoinEnabled)}-{concurrentInvoiceCount}-{bip21RequestsPerInvoice}", newDb: true);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
-        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         Assert.NotNull(network);
 
         var merchant = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(
@@ -117,7 +117,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         using var tester = CreateServerTester(newDb: true);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
-        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         Assert.NotNull(network);
 
         var merchant = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(
@@ -194,7 +194,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         using var tester = CreateServerTester($"{nameof(ConcurrentReceiverSessionsUnderContentionRespectAvailableReceiverInputs)}-{receiverInputCount}-{concurrentSessionCount}", newDb: true);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
-        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         Assert.NotNull(network);
 
         var merchant = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(
@@ -239,7 +239,6 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             var diagnostics = await DescribeReceiverDiagnosticsAsync(tester, invoiceContexts.Select(invoiceContext => invoiceContext.InvoiceId)).ConfigureAwait(true);
             Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{diagnostics}");
         }
-
         Assert.Equal(paymentResults.Length - expectedSuccessCount, paymentResults.Count(result => !result.Succeeded));
 
         var successfulIndexes = paymentResults
@@ -278,7 +277,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         using var tester = CreateServerTester($"{nameof(ConcurrentContentionDoesNotPoisonSubsequentPayjoinBatch)}-{receiverInputCount}-{concurrentSessionCount}", newDb: true);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
-        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>("BTC");
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         Assert.NotNull(network);
 
         var merchant = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(
@@ -386,7 +385,6 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             var diagnostics = await DescribeReceiverDiagnosticsAsync(tester, invoiceContexts.Select(invoiceContext => invoiceContext.InvoiceId)).ConfigureAwait(true);
             Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{diagnostics}");
         }
-
         Assert.Equal(paymentResults.Length - expectedSuccessCount, paymentResults.Count(result => !result.Succeeded));
 
         var successfulIndexes = paymentResults
@@ -424,11 +422,11 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
     }
 
     private static async Task AssertConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinEnabledAsync(
-            ServerTester tester,
-            TestAccount merchant,
-            int concurrentInvoiceCount,
-            int bip21RequestsPerInvoice,
-            CancellationToken cancellationToken)
+        ServerTester tester,
+        TestAccount merchant,
+        int concurrentInvoiceCount,
+        int bip21RequestsPerInvoice,
+        CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(concurrentInvoiceCount);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bip21RequestsPerInvoice);
@@ -437,7 +435,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             .Select(_ => merchant.BitPay.CreateInvoiceAsync(new Invoice
             {
                 Price = 0.1m,
-                Currency = "BTC",
+                Currency = PayjoinConstants.BitcoinCode,
                 FullNotifications = true
             }).WaitAsync(cancellationToken))).ConfigureAwait(true);
 
