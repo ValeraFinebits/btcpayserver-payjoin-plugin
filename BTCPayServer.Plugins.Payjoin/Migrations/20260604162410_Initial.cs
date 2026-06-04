@@ -1,6 +1,6 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+﻿using System;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
-using System;
 
 #nullable disable
 
@@ -46,19 +46,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_AccountingBridges", x => x.Id);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "PluginRecords",
-                schema: "BTCPayServer.Plugins.Payjoin",
-                columns: table => new
-                {
-                    Id = table.Column<string>(type: "text", nullable: false),
-                    Timestamp = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_PluginRecords", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
@@ -200,10 +187,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
             migrationBuilder.DropTable(
                 name: "AccountingBridges",
-                schema: "BTCPayServer.Plugins.Payjoin");
-
-            migrationBuilder.DropTable(
-                name: "PluginRecords",
                 schema: "BTCPayServer.Plugins.Payjoin");
 
             migrationBuilder.DropTable(
