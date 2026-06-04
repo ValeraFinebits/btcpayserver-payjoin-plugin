@@ -80,7 +80,7 @@ public class UIPayjoinOverviewController : Controller
         return new CurrentStorePayjoinStatusViewModel(
             currentStore.Id,
             currentStore.StoreName,
-            settings.EnabledByDefault,
+            settings.PayjoinV2Enabled,
             settings.DirectoryUrl,
             settings.OhttpRelayUrl,
             hasColdWallet,

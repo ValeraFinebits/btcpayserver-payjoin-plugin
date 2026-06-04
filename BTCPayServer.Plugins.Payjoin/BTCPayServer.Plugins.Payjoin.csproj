@@ -9,7 +9,7 @@
   <PropertyGroup>
     <Product>Payjoin</Product>
     <Description>Payjoin V2 plugin for BTCPay Server.</Description>
-    <Version>0.2.2</Version>
+    <Version>0.2.3</Version>
   </PropertyGroup>
 
   <!-- Plugin development properties -->
