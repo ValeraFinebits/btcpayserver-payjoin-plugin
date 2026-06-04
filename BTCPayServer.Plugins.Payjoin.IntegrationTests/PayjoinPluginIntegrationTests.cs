@@ -366,6 +366,65 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
+    public async Task StalePaidOverCorrectionClearsPersistedStalePaidOverOnSettledInvoice()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, paymentMethodId, exactDue) = await CreateSettledOverpaidInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+
+        var invoiceRepository = tester.PayTester.GetService<InvoiceRepository>();
+        var paymentService = tester.PayTester.GetService<PaymentService>();
+        var correctionService = tester.PayTester.GetService<IPayjoinStalePaidOverCorrectionService>();
+
+        var invoice = await invoiceRepository.GetInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.NotNull(invoice);
+
+        var payment = invoice!.GetPayments(false).Single(p => p.Accounted && p.PaymentMethodId == paymentMethodId);
+        payment.Value = exactDue;
+        await paymentService.UpdatePayments([payment]).ConfigureAwait(true);
+
+        var staleInvoice = await invoiceRepository.GetInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.NotNull(staleInvoice);
+        Assert.Equal(InvoiceExceptionStatus.PaidOver, staleInvoice!.GetInvoiceState().ExceptionStatus);
+        Assert.False(staleInvoice.IsOverPaid);
+
+        await correctionService.ClearStalePaidOverAsync(invoiceId).ConfigureAwait(true);
+
+        var correctedInvoice = await AssertInvoiceStateEventuallyAsync(
+            tester,
+            invoiceId,
+            InvoiceStatus.Settled,
+            InvoiceExceptionStatus.None,
+            cts.Token).ConfigureAwait(true);
+        Assert.False(correctedInvoice.IsOverPaid);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task StalePaidOverCorrectionDoesNotClearLegitimateSettledOverpay()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, _, _) = await CreateSettledOverpaidInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+        var correctionService = tester.PayTester.GetService<IPayjoinStalePaidOverCorrectionService>();
+
+        await correctionService.ClearStalePaidOverAsync(invoiceId).ConfigureAwait(true);
+
+        var invoice = await AssertInvoiceStateEventuallyAsync(
+            tester,
+            invoiceId,
+            InvoiceStatus.Settled,
+            InvoiceExceptionStatus.PaidOver,
+            cts.Token).ConfigureAwait(true);
+        Assert.True(invoice.IsOverPaid);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
     public async Task PayjoinInvoiceTransitionsFromProcessingToSettledAfterConfirmation()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
@@ -831,6 +890,72 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
     {
         tester.PayTester.Dispose();
         await tester.StartAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
+    }
+
+    private static async Task<(string InvoiceId, PaymentMethodId PaymentMethodId, decimal ExactDue)> CreateSettledOverpaidInvoiceAsync(
+        ServerTester tester,
+        TestAccount merchant,
+        BTCPayNetwork network,
+        CancellationToken cancellationToken)
+    {
+        var invoice = await merchant.BitPay.CreateInvoiceAsync(new Invoice
+        {
+            Price = 0.1m,
+            Currency = PayjoinConstants.BitcoinCode,
+            FullNotifications = true
+        }).WaitAsync(cancellationToken).ConfigureAwait(true);
+
+        var invoiceRepository = tester.PayTester.GetService<InvoiceRepository>();
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        var invoiceEntity = await invoiceRepository.GetInvoice(invoice.Id).WaitAsync(cancellationToken).ConfigureAwait(true);
+        Assert.NotNull(invoiceEntity);
+
+        var prompt = invoiceEntity!.GetPaymentPrompt(paymentMethodId);
+        Assert.NotNull(prompt);
+
+        var exactDue = prompt!.Calculate().Due;
+        var destination = BitcoinAddress.Create(prompt.Destination, network.NBitcoinNetwork);
+        await tester.ExplorerNode.SendToAddressAsync(destination, Money.Coins(exactDue) + Money.Satoshis(1_000), cancellationToken).ConfigureAwait(true);
+        await tester.ExplorerNode.GenerateAsync(1, cancellationToken).ConfigureAwait(true);
+
+        await AssertInvoiceStateEventuallyAsync(
+            tester,
+            invoice.Id,
+            InvoiceStatus.Settled,
+            InvoiceExceptionStatus.PaidOver,
+            cancellationToken).ConfigureAwait(true);
+
+        return (invoice.Id, paymentMethodId, exactDue);
+    }
+
+    private static async Task<InvoiceEntity> AssertInvoiceStateEventuallyAsync(
+        ServerTester tester,
+        string invoiceId,
+        InvoiceStatus expectedStatus,
+        InvoiceExceptionStatus expectedExceptionStatus,
+        CancellationToken cancellationToken)
+    {
+        var invoiceRepository = tester.PayTester.GetService<InvoiceRepository>();
+
+        for (var attempt = 0; attempt < 120; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var invoice = await invoiceRepository.GetInvoice(invoiceId).WaitAsync(cancellationToken).ConfigureAwait(true);
+            if (invoice is not null)
+            {
+                var state = invoice.GetInvoiceState();
+                if (state.Status == expectedStatus && state.ExceptionStatus == expectedExceptionStatus)
+                {
+                    return invoice;
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(true);
+        }
+
+        Assert.Fail($"Expected invoice '{invoiceId}' state to become '{expectedStatus}' with exception '{expectedExceptionStatus}'.");
+        return null!;
     }
 
 }
