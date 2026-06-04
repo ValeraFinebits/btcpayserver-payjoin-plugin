@@ -195,7 +195,7 @@ public class PayjoinReceiverSessionProcessorTests
 
     private sealed class NoOpOutputBuilder : IPayjoinReceiverOutputBuilder
     {
-        public Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinReceiverOutputBuilder.OutputReplacement?>(null);
+        public Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinReceiverOutputBuilder.OutputReplacement?>(null);
     }
 
     private sealed class NoOpInputSelector : IPayjoinReceiverInputSelector

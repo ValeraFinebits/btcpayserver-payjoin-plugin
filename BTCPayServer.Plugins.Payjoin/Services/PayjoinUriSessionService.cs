@@ -151,7 +151,7 @@ public sealed class PayjoinUriSessionService
 
             using var replay = PayjoinMethods.ReplayReceiverEventLog(persister);
             using var history = replay.SessionHistory();
-            await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, monitoringExpiresAt, cancellationToken).ConfigureAwait(false);
+            await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, cancellationToken).ConfigureAwait(false);
             using var pjUri = history.PjUri();
             var payjoinUri = pjUri.AsString();
             if (string.IsNullOrWhiteSpace(payjoinUri))
@@ -193,16 +193,22 @@ public sealed class PayjoinUriSessionService
         string invoiceId,
         string storeId,
         string cryptoCode,
+        decimal due,
         DateTimeOffset monitoringExpiresAt,
         CancellationToken cancellationToken)
     {
+        var effectiveInvoiceValueSats = due > 0m
+            ? Money.Coins(due).Satoshi
+            : (long?)null;
+
         return _accountingBridgeService.CreateOrGetAsync(
             new CreatePayjoinAccountingBridgeRequest(
                 invoiceId,
                 storeId,
                 cryptoCode,
                 PaymentTypes.CHAIN.GetPaymentMethodId(cryptoCode).ToString(),
-                monitoringExpiresAt),
+                monitoringExpiresAt,
+                EffectiveInvoiceValueSats: effectiveInvoiceValueSats),
             cancellationToken);
     }
 

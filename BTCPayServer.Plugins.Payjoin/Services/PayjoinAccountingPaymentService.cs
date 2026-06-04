@@ -47,6 +47,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(14, nameof(LogPayjoinAccountingTrackedPaymentUnavailable)),
             "Payjoin accounting could not find a tracked payment to reconcile for {InvoiceId}");
     private readonly IPayjoinInvoiceLookup _invoiceLookup;
+    private readonly IPayjoinStalePaidOverCorrectionService _stalePaidOverCorrectionService;
     private readonly PaymentService _paymentService;
     private readonly EventAggregator _eventAggregator;
     private readonly PaymentMethodHandlerDictionary _handlers;
@@ -56,6 +57,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
 
     public PayjoinAccountingPaymentService(
         IPayjoinInvoiceLookup invoiceLookup,
+        IPayjoinStalePaidOverCorrectionService stalePaidOverCorrectionService,
         PaymentService paymentService,
         EventAggregator eventAggregator,
         PaymentMethodHandlerDictionary handlers,
@@ -64,6 +66,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         ILogger<PayjoinAccountingPaymentService> logger)
     {
         _invoiceLookup = invoiceLookup;
+        _stalePaidOverCorrectionService = stalePaidOverCorrectionService;
         _paymentService = paymentService;
         _eventAggregator = eventAggregator;
         _handlers = handlers;
@@ -115,6 +118,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             ApplyFinalPaymentState(accountingContext, finalPayment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
 
             await _paymentService.UpdatePayments([finalPayment]).ConfigureAwait(false);
+            await _stalePaidOverCorrectionService.ClearStalePaidOverAsync(bridge.InvoiceId).ConfigureAwait(false);
             _eventAggregator.Publish(new InvoiceNeedUpdateEvent(accountingContext.Invoice.Id));
             return finalPayment;
         }
@@ -126,7 +130,12 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             payment = await _paymentService.AddPayment(paymentData, [bridge.ExpectedFinalTransactionId]).ConfigureAwait(false);
             if (payment is null)
             {
-                payment = FindPaymentByOutPoint(accountingContext, finalOutPoint);
+                var refreshedContextResult = await CreateAccountingContextAsync(bridge).ConfigureAwait(false);
+                if (refreshedContextResult.Success)
+                {
+                    accountingContext = refreshedContextResult.Context;
+                    payment = FindPaymentByOutPoint(accountingContext, finalOutPoint);
+                }
             }
 
             if (payment is null)
@@ -135,6 +144,9 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
                 return null;
             }
 
+            ApplyFinalPaymentState(accountingContext, payment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
+            await _paymentService.UpdatePayments([payment]).ConfigureAwait(false);
+            await _stalePaidOverCorrectionService.ClearStalePaidOverAsync(bridge.InvoiceId).ConfigureAwait(false);
             _eventAggregator.Publish(new InvoiceNeedUpdateEvent(accountingContext.Invoice.Id));
             return payment;
         }
@@ -142,6 +154,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         ApplyFinalPaymentState(accountingContext, payment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
 
         await _paymentService.UpdatePayments([payment]).ConfigureAwait(false);
+        await _stalePaidOverCorrectionService.ClearStalePaidOverAsync(bridge.InvoiceId).ConfigureAwait(false);
         _eventAggregator.Publish(new InvoiceNeedUpdateEvent(accountingContext.Invoice.Id));
         return payment;
     }
