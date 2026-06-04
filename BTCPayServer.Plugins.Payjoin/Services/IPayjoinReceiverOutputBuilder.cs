@@ -9,6 +9,6 @@ internal interface IPayjoinReceiverOutputBuilder
         string storeId,
         string invoiceId,
         byte[] receiverScript,
-    bool preserveReceiverScript,
+        bool preserveReceiverScript,
         CancellationToken cancellationToken);
 }
