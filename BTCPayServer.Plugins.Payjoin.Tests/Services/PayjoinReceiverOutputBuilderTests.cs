@@ -20,4 +20,17 @@ public class PayjoinReceiverOutputBuilderTests
         Assert.Equal<ulong>(50_000UL, result.ReplacementOutputs[0].valueSat);
         Assert.Equal(settlementScript, result.ReplacementOutputs[0].scriptPubkey);
     }
+
+    [Fact]
+    public void CreateSettlementOutputsSupportsPreservingReceiverScript()
+    {
+        var receiverScript = new byte[] { 0x01, 0x02, 0x03 };
+
+        var result = PayjoinReceiverOutputBuilder.CreateSettlementOutputs(75_000UL, receiverScript);
+
+        Assert.Equal(receiverScript, result.SettlementScript);
+        Assert.Single(result.ReplacementOutputs);
+        Assert.Equal<ulong>(75_000UL, result.ReplacementOutputs[0].valueSat);
+        Assert.Equal(receiverScript, result.ReplacementOutputs[0].scriptPubkey);
+    }
 }

@@ -257,7 +257,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         DateTimeOffset reservationExpiresAt,
         CancellationToken stoppingToken)
     {
-        var settlementOutputs = await CreateSettlementOutputsOrRemoveSessionAsync(storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
+        var settlementOutputs = await CreateSettlementOutputsOrRemoveSessionAsync(proposal, storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
         if (settlementOutputs is null)
         {
             return;
@@ -306,12 +306,19 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     }
 
     private async Task<PayjoinReceiverOutputBuilder.OutputReplacement?> CreateSettlementOutputsOrRemoveSessionAsync(
+        WantsOutputs proposal,
         string storeId,
         string invoiceId,
         byte[] receiverScript,
         CancellationToken stoppingToken)
     {
-        var settlementOutputs = await _outputBuilder.TryCreateSettlementOutputsAsync(storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
+        var preserveReceiverScript = proposal.OutputSubstitution() == OutputSubstitution.Disabled;
+        var settlementOutputs = await _outputBuilder.TryCreateSettlementOutputsAsync(
+            storeId,
+            invoiceId,
+            receiverScript,
+            preserveReceiverScript,
+            stoppingToken).ConfigureAwait(false);
         if (settlementOutputs is not null)
         {
             return settlementOutputs;

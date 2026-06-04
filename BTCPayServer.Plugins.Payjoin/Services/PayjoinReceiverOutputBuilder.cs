@@ -54,12 +54,15 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
         string storeId,
         string invoiceId,
         byte[] receiverScript,
+        bool preserveReceiverScript,
         CancellationToken cancellationToken)
     {
         // TODO: Add a rust-payjoin / payjoin-ffi API for reading the receiver amount from the proposal or original PSBT data.
         // TODO: Stop deriving the settlement amount from live invoice accounting state; replay should use an immutable proposal/session value.
         // TODO: Validate that the proposal-derived receiver amount matches the expected invoice amount before building replacement outputs.
-        var settlementScript = await GetSettlementScriptAsync(storeId, receiverScript, cancellationToken).ConfigureAwait(false);
+        var settlementScript = preserveReceiverScript
+            ? receiverScript
+            : await GetSettlementScriptAsync(storeId, receiverScript, cancellationToken).ConfigureAwait(false);
         if (settlementScript is null)
         {
             return null;
