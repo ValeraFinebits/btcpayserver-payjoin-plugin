@@ -6,7 +6,6 @@ using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.PayJoin.Sender;
-using BTCPayServer.Services;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Tests;
@@ -14,7 +13,6 @@ using NBitcoin;
 using NBitcoin.Payment;
 using NBitpayClient;
 using NBXplorer.Models;
-using System.Collections.Generic;
 using Xunit;
 using Xunit.Abstractions;
 
