@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace BTCPayServer.Plugins.Payjoin.Migrations
 {
     [DbContext(typeof(PayjoinPluginDbContext))]
-    [Migration("20260525125544_Initial")]
+    [Migration("20260604162410_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
