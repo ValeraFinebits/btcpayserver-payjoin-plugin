@@ -8,6 +8,6 @@
 @if (ViewData.IsCategory(WellKnownCategories.Store))
 {
     <li class="nav-item nav-item-sub" permission="@Policies.CanViewStoreSettings">
-        <a asp-area="" asp-controller="UIStorePayjoin" asp-action="Settings" asp-route-storeId="@Model.Store?.Id" layout-menu-item="Payjoin" text-translate="true">Payjoin</a>
+        <a asp-area="" asp-controller="UIStorePayjoin" asp-action="Settings" asp-route-storeId="@Model.Store?.Id" layout-menu-item="Payjoin" text-translate="true">Async Payjoin</a>
     </li>
 }

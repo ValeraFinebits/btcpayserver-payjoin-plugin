@@ -5,12 +5,12 @@
 @using Microsoft.AspNetCore.Mvc.TagHelpers
 @model BTCPayServer.Plugins.Payjoin.Models.PayjoinStoreSettingsViewModel
 @{
-    ViewData.SetLayoutModel(new LayoutModel("Payjoin", "Payjoin").SetCategory(WellKnownCategories.Store));
+    ViewData.SetLayoutModel(new LayoutModel("Payjoin", "Async Payjoin Settings").SetCategory(WellKnownCategories.Store));
 }
 
 <form method="post" permissioned="@Policies.CanModifyStoreSettings">
     <div class="sticky-header">
-        <h2 text-translate="true">Payjoin</h2>
+        <h2 text-translate="true">Async Payjoin Settings</h2>
         <button id="page-primary" type="submit" class="btn btn-primary" text-translate="true">Save</button>
     </div>
 
@@ -19,8 +19,9 @@
     <div class="row">
         <div class="col-xxl-constrain col-xl-8">
             <div class="form-group">
-                <label asp-for="PayjoinV2Enabled" class="form-label" text-translate="true">Enable Payjoin V2 (BIP77)</label>
+                <label asp-for="PayjoinV2Enabled" class="form-label" text-translate="true">Enable Async Payjoin</label>
                 <input asp-for="PayjoinV2Enabled" type="checkbox" class="form-check-input" />
+                <div class="form-text" text-translate="true">Technical protocol: Payjoin V2 (BIP 77).</div>
             </div>
 
             <div class="form-group">
@@ -39,7 +40,7 @@
                 <label asp-for="ColdWalletDerivationScheme" class="form-label" text-translate="true">Cold wallet</label>
                 <input asp-for="ColdWalletDerivationScheme" class="form-control" id="PayjoinColdWallet" placeholder="xpub... or output descriptor" />
                 <span asp-validation-for="ColdWalletDerivationScheme" class="text-danger"></span>
-                <div class="form-text" text-translate="true">Optional. Provide an extended public key or output descriptor for a cold storage wallet. Payjoin change outputs will be directed to this wallet, sweeping excess funds to cold storage.</div>
+                <div class="form-text" text-translate="true">Optional. Provide an extended public key or output descriptor for a cold storage wallet. Async Payjoin change outputs will be directed to this wallet, sweeping excess funds to cold storage.</div>
             </div>
         </div>
     </div>

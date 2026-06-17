@@ -43,7 +43,7 @@ public class UIStorePayjoinController : Controller
         var vm = PayjoinStoreSettingsViewModel.FromSettings(
             storeId,
             settings,
-            new LayoutModel("Payjoin", "Payjoin").SetCategory(WellKnownCategories.Store));
+            new LayoutModel("Payjoin", "Async Payjoin Settings").SetCategory(WellKnownCategories.Store));
         ViewData.SetLayoutModel(vm.LayoutModel);
         return View(vm);
     }
@@ -63,7 +63,7 @@ public class UIStorePayjoinController : Controller
         }
 
         model.StoreId = storeId;
-        model.LayoutModel = new LayoutModel("Payjoin", "Payjoin").SetCategory(WellKnownCategories.Store);
+        model.LayoutModel = new LayoutModel("Payjoin", "Async Payjoin Settings").SetCategory(WellKnownCategories.Store);
         if (!ModelState.IsValid)
         {
             ViewData.SetLayoutModel(model.LayoutModel);
@@ -104,7 +104,7 @@ public class UIStorePayjoinController : Controller
         var settings = model.ToSettings(validatedDerivationScheme);
 
         await _settingsRepository.SetAsync(storeId, settings).ConfigureAwait(false);
-        TempData[WellKnownTempData.SuccessMessage] = "Payjoin settings saved.";
+        TempData[WellKnownTempData.SuccessMessage] = "Async Payjoin settings saved.";
         return RedirectToAction(nameof(Settings), new { storeId });
     }
 }

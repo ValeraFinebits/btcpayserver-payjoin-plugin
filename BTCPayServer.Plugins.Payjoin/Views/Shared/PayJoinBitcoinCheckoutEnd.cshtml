@@ -272,11 +272,11 @@
             '    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>',
             '    <polyline points="9 12 11 14 15 10"></polyline>',
             '  </svg>',
-            '  <span>PayJoin</span>',
+            '  <span>Async Payjoin</span>',
             '</div>',
             '<div class="btn-group d-flex w-100 mt-3" role="tablist" aria-label="Bitcoin payment mode">',
-            '  <button type="button" class="btn" role="tab" data-payjoin-mode="payjoin">PayJoin</button>',
-            '  <button type="button" class="btn" role="tab" data-payjoin-mode="standard">Standard BTC</button>',
+            '  <button type="button" class="btn" role="tab" data-payjoin-mode="payjoin">Async Payjoin</button>',
+            '  <button type="button" class="btn" role="tab" data-payjoin-mode="standard">Standard Bitcoin</button>',
             '</div>'
         ].join('');
 
@@ -387,15 +387,15 @@
 
         const label = document.createElement('label');
         label.className = 'control-label form-label';
-        label.textContent = 'PayJoin test payment';
+        label.textContent = 'Async Payjoin test payment';
 
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn btn-secondary rounded-pill w-100';
         button.dataset.payjoinRunTest = '';
-        button.dataset.label = 'Run Payjoin test payment';
+        button.dataset.label = 'Run Async Payjoin test payment';
         button.dataset.testEndpoint = runTestEndpoint || '';
-        button.textContent = 'Run Payjoin test payment';
+        button.textContent = 'Run Async Payjoin test payment';
 
         wrapper.appendChild(label);
         wrapper.appendChild(button);

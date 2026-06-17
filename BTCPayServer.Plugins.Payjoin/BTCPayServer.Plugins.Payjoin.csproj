@@ -8,7 +8,7 @@
   <!-- Plugin specific properties -->
   <PropertyGroup>
     <Product>Payjoin</Product>
-    <Description>Payjoin V2 plugin for BTCPay Server.</Description>
+    <Description>Async Payjoin (Payjoin V2, BIP 77) plugin for BTCPay Server.</Description>
     <Version>0.2.2</Version>
   </PropertyGroup>
 
