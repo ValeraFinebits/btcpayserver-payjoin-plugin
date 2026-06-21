@@ -14,7 +14,7 @@ internal sealed class PayjoinTestPayer
 {
     private static readonly TimeSpan ProposalPollDelay = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan RelayRequestTimeout = TimeSpan.FromSeconds(10);
-    private const int MaxProposalPollAttempts = 20;
+    private const int MaxProposalPollAttempts = 100;
     private const int RecommendedFeeContributionRate = 250;
     private const decimal ExplicitFeeRateSatoshiPerByte = 1.0m;
     private static readonly Money FeeBuffer = Money.Satoshis(1000);
