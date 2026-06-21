@@ -1,4 +1,5 @@
 @inject BTCPayServer.Services.BTCPayServerEnvironment Env
+@inject Microsoft.Extensions.Localization.IStringLocalizer StringLocalizer
 
 <style>
     .payjoin-checkout-controls [data-payjoin-mode] {
@@ -14,6 +15,7 @@
     const testPaymentId = 'PayJoinCheckoutTestPayment';
     const bootstrapRetryDelayMs = 100;
     const maxBootstrapRetryCount = 100;
+    const payInWalletPayjoinTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(StringLocalizer["BIP21 payment link with Async Payjoin support"].Value));
     const runTestEnabled = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Env.CheatMode));
     const runTestEndpoint = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Url.Action("RunTestPayment", "UIPayJoin")));
     let selectedPaymentMode = null;
@@ -153,10 +155,21 @@
             });
     }
 
-    function refreshPaymentDom(paymentUrl, paymentUrlQr) {
+    function refreshPaymentDom(paymentUrl, paymentUrlQr, mode) {
         const payInWallet = getPayInWalletButton();
         if (payInWallet) {
+            if (!payInWallet.dataset.payjoinOriginalTitle) {
+                payInWallet.dataset.payjoinOriginalTitle = payInWallet.getAttribute('title') || '';
+            }
+
             payInWallet.setAttribute('href', paymentUrl);
+            if (mode === 'payjoin') {
+                payInWallet.setAttribute('title', payInWalletPayjoinTitle);
+            } else if (payInWallet.dataset.payjoinOriginalTitle) {
+                payInWallet.setAttribute('title', payInWallet.dataset.payjoinOriginalTitle);
+            } else {
+                payInWallet.removeAttribute('title');
+            }
         }
 
         const qrContainer = document.querySelector('#payment .payment-box .qr-container');
@@ -195,6 +208,8 @@
             return;
         }
 
+        const mode = selectedPaymentMode === 'standard' ? 'standard' : 'payjoin';
+
         const nextModel = Object.assign({}, model, {
             invoiceBitcoinUrl: paymentUrl,
             invoiceBitcoinUrlQR: paymentUrlQr
@@ -202,10 +217,10 @@
 
         replaceSrvModel(vm, nextModel);
 
-        refreshPaymentDom(paymentUrl, paymentUrlQr);
+        refreshPaymentDom(paymentUrl, paymentUrlQr, mode);
         if (vm.$nextTick) {
             vm.$nextTick(function () {
-                refreshPaymentDom(paymentUrl, paymentUrlQr);
+                refreshPaymentDom(paymentUrl, paymentUrlQr, mode);
                 scheduleTick();
             });
         } else {
@@ -267,7 +282,7 @@
         controls.id = controlsId;
         controls.className = 'payjoin-checkout-controls mt-3';
         controls.innerHTML = [
-            '<div class="d-flex align-items-center justify-content-center gap-1 text-muted" style="font-size: 0.8125rem;">',
+            '<div class="align-items-center justify-content-center gap-1 text-muted" style="font-size: 0.8125rem; display: flex;" data-payjoin-indicator>',
             '  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">',
             '    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>',
             '    <polyline points="9 12 11 14 15 10"></polyline>',
@@ -305,11 +320,15 @@
     function updateControlState(controls, model) {
         const payjoinButton = controls.querySelector('[data-payjoin-mode="payjoin"]');
         const standardButton = controls.querySelector('[data-payjoin-mode="standard"]');
+        const indicator = controls.querySelector('[data-payjoin-indicator]');
         const payjoinActive = model.invoiceBitcoinUrl === model.payjoinPaymentUrl;
         const standardActive = model.invoiceBitcoinUrl === model.payjoinPlainBitcoinUrl;
         const activeStyle = getActiveTabStyle();
         controls.classList.toggle('payjoin-mode-payjoin', payjoinActive);
         controls.classList.toggle('payjoin-mode-standard', standardActive);
+        if (indicator) {
+            indicator.style.setProperty('display', payjoinActive ? 'flex' : 'none', 'important');
+        }
         updateTabState(payjoinButton, payjoinActive, activeStyle);
         updateTabState(standardButton, standardActive, activeStyle);
     }
