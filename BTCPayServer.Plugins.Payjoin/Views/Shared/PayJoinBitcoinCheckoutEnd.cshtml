@@ -158,7 +158,7 @@
     function refreshPaymentDom(paymentUrl, paymentUrlQr, mode) {
         const payInWallet = getPayInWalletButton();
         if (payInWallet) {
-            if (!payInWallet.dataset.payjoinOriginalTitle) {
+            if (payInWallet.dataset.payjoinOriginalTitle === undefined) {
                 payInWallet.dataset.payjoinOriginalTitle = payInWallet.getAttribute('title') || '';
             }
 
@@ -201,14 +201,12 @@
         return model.payjoinV2Enabled === false ? 'standard' : 'payjoin';
     }
 
-    function setPaymentUrl(paymentUrl, paymentUrlQr) {
+    function setPaymentUrl(paymentUrl, paymentUrlQr, mode) {
         const vm = getCheckoutVm();
         const model = vm && vm.srvModel;
-        if (!model || !paymentUrl || !paymentUrlQr) {
+        if (!model || !paymentUrl || !paymentUrlQr || !mode) {
             return;
         }
-
-        const mode = selectedPaymentMode === 'standard' ? 'standard' : 'payjoin';
 
         const nextModel = Object.assign({}, model, {
             invoiceBitcoinUrl: paymentUrl,
@@ -240,7 +238,7 @@
         }
 
         if (model.invoiceBitcoinUrl !== paymentFields.url || model.invoiceBitcoinUrlQR !== paymentFields.qr) {
-            setPaymentUrl(paymentFields.url, paymentFields.qr);
+            setPaymentUrl(paymentFields.url, paymentFields.qr, mode);
         }
     }
 
@@ -513,7 +511,7 @@
 
         selectedPaymentMode = modeButton.dataset.payjoinMode === 'standard' ? 'standard' : 'payjoin';
         const paymentFields = getPaymentFields(model, selectedPaymentMode);
-        setPaymentUrl(paymentFields.url, paymentFields.qr);
+        setPaymentUrl(paymentFields.url, paymentFields.qr, selectedPaymentMode);
     });
 
     document.addEventListener('DOMContentLoaded', function () {
