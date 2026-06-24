@@ -56,7 +56,7 @@ public class UIPayjoinOverviewController : Controller
         }
 
         var currentStoreStatus = await BuildCurrentStoreStatusAsync(currentStore).ConfigureAwait(false);
-        ViewData.SetLayoutModel(new LayoutModel("PayjoinV2", "Payjoin V2").SetCategory(WellKnownCategories.Store));
+        ViewData.SetLayoutModel(new LayoutModel("PayjoinV2", "Async Payjoin").SetCategory(WellKnownCategories.Store));
         return View(new PayjoinOverviewViewModel(currentStoreStatus));
     }
 
@@ -95,7 +95,7 @@ public class UIPayjoinOverviewController : Controller
             return new PayjoinCurrentStoreStatus(
                 "danger",
                 StringLocalizer["Unavailable"].Value,
-                StringLocalizer["BTC network is not available on this server, so the basic Payjoin V2 prerequisites are not present for the selected store."].Value);
+                StringLocalizer["BTC network is not available on this server, so the basic Async Payjoin (Payjoin V2, BIP 77) prerequisites are not present for the selected store."].Value);
         }
 
         if (!directoryConfigured || !relayConfigured)
@@ -103,7 +103,7 @@ public class UIPayjoinOverviewController : Controller
             return new PayjoinCurrentStoreStatus(
                 "danger",
                 StringLocalizer["Needs configuration"].Value,
-                StringLocalizer["The selected store is missing the directory URL or OHTTP relay URL required for the basic Payjoin V2 prerequisites."].Value);
+                StringLocalizer["The selected store is missing the directory URL or OHTTP relay URL required for the basic Async Payjoin (Payjoin V2, BIP 77) prerequisites."].Value);
         }
 
         if (!hasConfirmedReceiverInputs)
@@ -111,13 +111,13 @@ public class UIPayjoinOverviewController : Controller
             return new PayjoinCurrentStoreStatus(
                 "warning",
                 StringLocalizer["Additional requirements pending"].Value,
-                StringLocalizer["The basic Payjoin V2 prerequisites are configured, but the selected store has no confirmed receiver inputs right now, so checkout will fall back to a plain BIP21 payment URL."].Value);
+                StringLocalizer["The basic Async Payjoin (Payjoin V2, BIP 77) prerequisites are configured, but the selected store has no confirmed receiver inputs right now, so checkout will fall back to a plain BIP21 payment URL."].Value);
         }
 
         return new PayjoinCurrentStoreStatus(
             "success",
             StringLocalizer["Basic prerequisites present"].Value,
-            StringLocalizer["The selected store has the basic Payjoin V2 prerequisites in place. Checkout may still fall back to a plain BIP21 payment URL if external OHTTP dependencies are unavailable."].Value);
+            StringLocalizer["The selected store has the basic Async Payjoin (Payjoin V2, BIP 77) prerequisites in place. Checkout may still fall back to a plain BIP21 payment URL if external OHTTP dependencies are unavailable."].Value);
     }
 }
 

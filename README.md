@@ -1,4 +1,4 @@
-# BTCPay Server # BTCPay Server Payjoin Plugin
+# BTCPay Server Async Payjoin Plugin
 
 A [BTCPay Server](https://github.com/btcpayserver) plugin that adds [Async Payjoin (BIP 77)](https://github.com/bitcoin/bips/blob/master/bip-0077.mediawiki) support to the checkout flow. The plugin uses C# bindings to the Rust [Payjoin Dev Kit](https://github.com/payjoin/rust-payjoin) generated via UniFFI.
 
@@ -63,7 +63,7 @@ dotnet ef migrations remove --project BTCPayServer.Plugins.Payjoin/BTCPayServer.
 
 ## Related Links
 
-- Payjoin Rust implementation: https://github.com/payjoin/rust-payjoin
+- Async Payjoin Rust implementation: https://github.com/payjoin/rust-payjoin
 - BTCPay Server plugin development docs: https://docs.btcpayserver.org/Development/Plugins/
 
 ## Licence

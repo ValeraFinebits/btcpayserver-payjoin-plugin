@@ -7,16 +7,14 @@
 	<AnalysisLevel>6.0-all</AnalysisLevel>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+    <!-- TODO: Remove once EF Core Sqlite no longer restores NU1903 transitively.
+         This project uses Sqlite only for relational test coverage, and the advisory is not caused by a
+         direct production package reference here. Keep the warning visible, but do not fail test builds on it.
+         Follow-up: https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/66 -->
+    <WarningsNotAsErrors>NU1903</WarningsNotAsErrors>
+    <WarningLevel>9999</WarningLevel>
   </PropertyGroup>
-
-	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
-		<TreatWarningsAsErrors>True</TreatWarningsAsErrors>
-		<WarningLevel>9999</WarningLevel>
-	</PropertyGroup>
-	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
-		<TreatWarningsAsErrors>True</TreatWarningsAsErrors>
-		<WarningLevel>9999</WarningLevel>
-    </PropertyGroup>
 	
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.8" />
