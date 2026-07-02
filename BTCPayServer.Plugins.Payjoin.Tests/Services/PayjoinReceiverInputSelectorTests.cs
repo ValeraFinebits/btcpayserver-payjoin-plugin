@@ -1,13 +1,12 @@
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Services.Wallets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using NBitcoin;
-using NBXplorer;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
-using NSubstitute;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
@@ -69,10 +68,10 @@ public class PayjoinReceiverInputSelectorTests
     }
 
     [Fact]
-    public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenNetworkUnavailable()
+    public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenCoinUnavailable()
     {
         using var context = new TestContext();
-        var selector = CreateSelector(context.CreateStore(), CreateEmptyNetworkProvider());
+        var selector = CreateSelector(context.CreateStore());
         var outPoint = new OutPoint(uint256.Parse("8888888888888888888888888888888888888888888888888888888888888888"), 2);
         var session = CreateSession(
             contributedInputTransactionId: outPoint.Hash.ToString(),
@@ -83,11 +82,12 @@ public class PayjoinReceiverInputSelectorTests
         Assert.Null(result);
     }
 
-    private static PayjoinReceiverInputSelector CreateSelector(PayjoinReceiverSessionStore sessionStore, BTCPayNetworkProvider? networkProvider = null)
+    private static PayjoinReceiverInputSelector CreateSelector(
+        PayjoinReceiverSessionStore sessionStore,
+        IPayjoinReceiverWalletAdapter? walletAdapter = null)
     {
         return new PayjoinReceiverInputSelector(
-            networkProvider ?? CreateEmptyNetworkProvider(),
-            new PayjoinAvailabilityService(null!, null!, null!),
+            walletAdapter ?? new TestReceiverWalletAdapter(),
             sessionStore);
     }
 
@@ -123,14 +123,6 @@ public class PayjoinReceiverInputSelectorTests
             contributedInputTransactionId,
             contributedInputOutputIndex,
             events);
-    }
-
-    private static BTCPayNetworkProvider CreateEmptyNetworkProvider()
-    {
-        return new BTCPayNetworkProvider(
-            Array.Empty<BTCPayNetworkBase>(),
-            Substitute.For<NBXplorerNetworkProvider>(ChainName.Regtest),
-            Substitute.For<BTCPayServer.Logging.Logs>());
     }
 
     private sealed class TestContext : IDisposable
@@ -170,6 +162,32 @@ public class PayjoinReceiverInputSelectorTests
         public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
         {
             return new PayjoinPluginDbContext(_dbContextOptions);
+        }
+    }
+
+    private sealed class TestReceiverWalletAdapter : IPayjoinReceiverWalletAdapter
+    {
+        public ReceivedCoin[] ConfirmedCoins { get; init; } = Array.Empty<ReceivedCoin>();
+
+        public Task<IReadOnlyList<PayjoinReceiverInputCandidate>> GetInputCandidatesAsync(
+            string storeId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<IReadOnlyList<PayjoinReceiverInputCandidate>>(Array.Empty<PayjoinReceiverInputCandidate>());
+        }
+
+        public PayjoinReceiverInputCandidate? ResolveSelectedCandidate(
+            IReadOnlyList<PayjoinReceiverInputCandidate> candidates,
+            global::Payjoin.OutPoint selectedOutPoint)
+        {
+            return null;
+        }
+
+        public Task<ReceivedCoin[]> GetConfirmedReceiverCoinsAsync(
+            string storeId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(ConfirmedCoins);
         }
     }
 }

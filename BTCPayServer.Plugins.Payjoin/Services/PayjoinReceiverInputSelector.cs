@@ -10,17 +10,14 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelector
 {
-    private readonly BTCPayNetworkProvider _networkProvider;
-    private readonly PayjoinAvailabilityService _availabilityService;
+    private readonly IPayjoinReceiverWalletAdapter _walletAdapter;
     private readonly PayjoinReceiverSessionStore _sessionStore;
 
     public PayjoinReceiverInputSelector(
-        BTCPayNetworkProvider networkProvider,
-        PayjoinAvailabilityService availabilityService,
+        IPayjoinReceiverWalletAdapter walletAdapter,
         PayjoinReceiverSessionStore sessionStore)
     {
-        _networkProvider = networkProvider;
-        _availabilityService = availabilityService;
+        _walletAdapter = walletAdapter;
         _sessionStore = sessionStore;
     }
 
@@ -31,35 +28,56 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
         DateTimeOffset reservationExpiresAt,
         CancellationToken cancellationToken)
     {
-        // TODO: Restore `proposal.TryPreservingPrivacy(receiverInputs)` only after rust-payjoin/payjoin-ffi lets us identify which `ReceivedCoin` was actually selected.
-        // TODO: Persist only the truly contributed coin(s) into `contributedCoins`; otherwise the signing step can treat unrelated wallet inputs as receiver-owned and produce an invalid proposal.
-        var (receiverInputs, receiverCoins) = await GetReceiverInputsAsync(storeId, cancellationToken).ConfigureAwait(false);
+        var candidates = (await _walletAdapter.GetInputCandidatesAsync(storeId, cancellationToken).ConfigureAwait(false)).ToList();
 
         var contributionFailures = new List<string>();
-        var orderedCandidates = receiverCoins
-            .Select((coin, index) => new { coin, index })
-            .OrderBy(x => x.coin.Coin.Amount.Satoshi)
-            .Select(x => x.index);
-
-        foreach (var index in orderedCandidates)
+        if (candidates.Count == 0)
         {
+            return ReceiverInputContributionResult.Failure("no confirmed receiver coins available");
+        }
+
+        while (candidates.Count > 0)
+        {
+            PayjoinReceiverInputCandidate? selected = null;
+            try
+            {
+                using var selectedInput = proposal.TryPreservingPrivacy(candidates.Select(candidate => candidate.Input).ToArray());
+                selected = _walletAdapter.ResolveSelectedCandidate(candidates, selectedInput.Outpoint());
+            }
+            catch (CoinSelectionException ex)
+            {
+                contributionFailures.Add($"receiver input selection failed: {ex.Message}");
+                break;
+            }
+
+            if (selected is null)
+            {
+                contributionFailures.Add("selected receiver input could not be mapped back to a wallet coin");
+                break;
+            }
+
+            var selectedOutPoint = selected.Coin.OutPoint.ToString();
             WantsInputs? withInputs = null;
             try
             {
-                withInputs = proposal.ContributeInputs(new[] { receiverInputs[index] });
-                var contributedCoins = new[] { receiverCoins[index] };
+                withInputs = proposal.ContributeInputs(new[] { selected.Input });
+                var contributedCoins = new[] { selected.Coin };
                 if (_sessionStore.TryReserveContributedInput(storeId, invoiceId, contributedCoins[0].OutPoint, reservationExpiresAt))
                 {
                     return ReceiverInputContributionResult.Success(withInputs, contributedCoins);
                 }
 
-                contributionFailures.Add($"candidate '{receiverCoins[index].OutPoint}' reservation conflict");
+                // Cross-session reservations can make the privacy-selected coin unavailable. Remove
+                // that candidate and ask rust-payjoin to choose again from the remaining wallet inputs.
+                contributionFailures.Add($"candidate '{selectedOutPoint}' reservation conflict");
+                candidates.Remove(selected);
                 withInputs.Dispose();
                 withInputs = null;
             }
             catch (InputContributionException ex)
             {
-                contributionFailures.Add($"candidate '{receiverCoins[index].OutPoint}' rejected: {ex.Message}");
+                contributionFailures.Add($"candidate '{selectedOutPoint}' rejected: {ex.Message}");
+                candidates.Remove(selected);
             }
             catch
             {
@@ -86,43 +104,10 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
             return null;
         }
 
-        var (_, receiverCoins) = await GetReceiverInputsAsync(session.StoreId, cancellationToken).ConfigureAwait(false);
+        var receiverCoins = await _walletAdapter.GetConfirmedReceiverCoinsAsync(session.StoreId, cancellationToken).ConfigureAwait(false);
         var contributedCoins = receiverCoins
             .Where(coin => coin.OutPoint.Hash == contributedOutPoint.Hash && coin.OutPoint.N == contributedOutPoint.N)
             .ToArray();
         return contributedCoins.Length > 0 ? contributedCoins : null;
-    }
-
-    private async Task<(InputPair[] Inputs, ReceivedCoin[] Coins)> GetReceiverInputsAsync(
-        string storeId,
-        CancellationToken cancellationToken)
-    {
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
-        if (network is null)
-        {
-            return (Array.Empty<InputPair>(), Array.Empty<ReceivedCoin>());
-        }
-
-        var confirmed = await _availabilityService.GetConfirmedReceiverCoinsAsync(storeId, PayjoinConstants.BitcoinCode, network, cancellationToken).ConfigureAwait(false);
-        if (confirmed.Length == 0)
-        {
-            return (Array.Empty<InputPair>(), Array.Empty<ReceivedCoin>());
-        }
-
-        var inputs = confirmed
-            .Select(c =>
-            {
-                var txin = new TxIn(
-                    new OutPoint(c.OutPoint.Hash.ToString(), (uint)c.OutPoint.N),
-                    Array.Empty<byte>(),
-                    uint.MaxValue,
-                    Array.Empty<byte[]>());
-                var txout = new TxOut(checked((ulong)c.Coin.Amount.Satoshi), c.ScriptPubKey.ToBytes());
-                var psbtIn = new PsbtInput(txout, null, null);
-                return new InputPair(txin, psbtIn, null);
-            })
-            .ToArray();
-
-        return (inputs, confirmed);
     }
 }
