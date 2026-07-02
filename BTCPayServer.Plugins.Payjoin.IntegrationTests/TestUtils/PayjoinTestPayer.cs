@@ -193,8 +193,8 @@ internal sealed class PayjoinTestPayer
         using var withReplyKey = initial.Save(senderPersister);
 
         using var postContext = withReplyKey.CreateV2PostRequest(ohttpRelayUrl.ToString());
-        var postResponse = await SendRequestAsync(postContext.request, cancellationToken).ConfigureAwait(false);
-        using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.ohttpCtx);
+        var postResponse = await SendRequestAsync(postContext.Request, cancellationToken).ConfigureAwait(false);
+        using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.OhttpCtx);
 
         try
         {
@@ -242,8 +242,8 @@ internal sealed class PayjoinTestPayer
             for (var attempt = 0; attempt < MaxProposalPollAttempts; attempt++)
             {
                 using var pollRequest = current.CreatePollRequest(ohttpRelayUrl.ToString());
-                var pollResponse = await SendRequestAsync(pollRequest.request, cancellationToken).ConfigureAwait(false);
-                using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.ohttpCtx);
+                var pollResponse = await SendRequestAsync(pollRequest.Request, cancellationToken).ConfigureAwait(false);
+                using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.OhttpCtx);
 
                 var outcome = pollTransition.Save(senderPersister);
 
@@ -252,11 +252,11 @@ internal sealed class PayjoinTestPayer
                     switch (outcome)
                     {
                         case PollingForProposalTransitionOutcome.Progress progress:
-                            proposalPsbtBase64 = progress.psbtBase64;
+                            proposalPsbtBase64 = progress.PsbtBase64;
                             break;
                         case PollingForProposalTransitionOutcome.Stasis stasis:
                             current.Dispose();
-                            current = stasis.inner;
+                            current = stasis.Inner;
                             outcome = null;
                             break;
                     }
@@ -302,11 +302,11 @@ internal sealed class PayjoinTestPayer
 
     private async Task<byte[]> SendRequestAsync(Request request, CancellationToken cancellationToken)
     {
-        using var message = new HttpRequestMessage(HttpMethod.Post, request.url)
+        using var message = new HttpRequestMessage(HttpMethod.Post, request.Url)
         {
-            Content = new ByteArrayContent(request.body)
+            Content = new ByteArrayContent(request.Body)
         };
-        message.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(request.contentType);
+        message.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(request.ContentType);
 
         var client = _httpClientFactory.CreateClient(nameof(PayjoinTestPayer));
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -321,7 +321,7 @@ internal sealed class PayjoinTestPayer
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new InvalidOperationException($"Payjoin HTTP request timed out after {RelayRequestTimeout.TotalSeconds:0} seconds. RequestUrl='{request.url}', RequestContentType='{request.contentType}'.", ex);
+            throw new InvalidOperationException($"Payjoin HTTP request timed out after {RelayRequestTimeout.TotalSeconds:0} seconds. RequestUrl='{request.Url}', RequestContentType='{request.ContentType}'.", ex);
         }
 
         using (response)
@@ -341,7 +341,7 @@ internal sealed class PayjoinTestPayer
         var diagnosticBody = FormatResponseBody(responseBody, responseContentType);
 
         return new InvalidOperationException(
-            $"Payjoin HTTP request failed. RequestUrl='{request.url}', RequestContentType='{request.contentType}', ResponseStatusCode={(int)response.StatusCode} ({response.StatusCode}), ResponseContentType='{responseContentType}', ResponseBody='{diagnosticBody}'.");
+            $"Payjoin HTTP request failed. RequestUrl='{request.Url}', RequestContentType='{request.ContentType}', ResponseStatusCode={(int)response.StatusCode} ({response.StatusCode}), ResponseContentType='{responseContentType}', ResponseBody='{diagnosticBody}'.");
     }
 
     private static string FormatResponseBody(byte[] responseBody, string responseContentType)

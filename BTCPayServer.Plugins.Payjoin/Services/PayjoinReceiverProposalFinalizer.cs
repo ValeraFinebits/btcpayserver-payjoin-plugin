@@ -91,12 +91,12 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
     {
         using var requestResponse = proposal.CreatePostRequest(context.OhttpRelayUrl.ToString());
         var responseBody = await _relayClient.SendAsync(
-            new SystemUri(requestResponse.request.url, UriKind.Absolute),
-            requestResponse.request.contentType,
-            requestResponse.request.body,
+            new SystemUri(requestResponse.Request.Url, UriKind.Absolute),
+            requestResponse.Request.ContentType,
+            requestResponse.Request.Body,
             cancellationToken).ConfigureAwait(false);
 
-        using var transition = proposal.ProcessResponse(responseBody, requestResponse.clientResponse);
+        using var transition = proposal.ProcessResponse(responseBody, requestResponse.ClientResponse);
         using var _ = transition.Save(context.Persister);
     }
 
