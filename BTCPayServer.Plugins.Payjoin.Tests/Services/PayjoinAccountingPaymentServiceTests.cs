@@ -45,6 +45,23 @@ public class PayjoinAccountingPaymentServiceTests
         Assert.Null(outputIndex);
     }
 
+    [Theory]
+    [InlineData(false, true, 0L, true)]
+    [InlineData(false, true, 1L, false)]
+    [InlineData(false, false, 0L, false)]
+    [InlineData(true, true, 0L, false)]
+    [InlineData(true, false, 5L, false)]
+    public void ShouldWaitForFinalTransactionConfirmationDefersOnlyWhileAnUnconfirmedFallbackPaymentIsAccounted(
+        bool finalPaymentExists,
+        bool trackedPaymentExists,
+        long confirmations,
+        bool expected)
+    {
+        var shouldWait = PayjoinAccountingPaymentService.ShouldWaitForFinalTransactionConfirmation(finalPaymentExists, trackedPaymentExists, confirmations);
+
+        Assert.Equal(expected, shouldWait);
+    }
+
     [Fact]
     public void ResolveTrackedPaymentIdReturnsNullWhenFallbackOutPointIsMissing()
     {
