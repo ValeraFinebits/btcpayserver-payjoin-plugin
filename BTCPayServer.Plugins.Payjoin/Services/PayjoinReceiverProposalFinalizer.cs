@@ -48,37 +48,42 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         ReceivedCoin[] receiverCoins,
         CancellationToken cancellationToken)
     {
-        var btcPayNetwork = _networkProvider.GetNetwork<BTCPayNetwork>(context.CryptoCode)
-            ?? throw new InvalidOperationException($"Network '{context.CryptoCode}' is not available.");
-        var network = btcPayNetwork.NBitcoinNetwork;
-
         var signer = await _proposalSigner.CreateContributedInputSignerAsync(context.StoreId, receiverCoins, cancellationToken).ConfigureAwait(false);
         using var transition = proposal.FinalizeProposal(signer);
         using var payjoinProposal = transition.Save(context.Persister);
 
-        await RecordExpectedFinalTransactionAsync(context, payjoinProposal, network, cancellationToken).ConfigureAwait(false);
+        await EnsureExpectedFinalTransactionAsync(context, payjoinProposal, cancellationToken).ConfigureAwait(false);
         await PostAsync(context, payjoinProposal, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task RecordExpectedFinalTransactionAsync(
+    public async Task EnsureExpectedFinalTransactionAsync(
         PayjoinReceiverProposalFinalizationContext context,
         PayjoinProposal payjoinProposal,
-        Network network,
         CancellationToken cancellationToken)
     {
         // The signed PSBT only exists after finalize_proposal runs the signing callback, so the expected
         // settlement transaction is recorded here (after Save) from the resulting proposal rather than before.
+        // The event-log save and this bridge write are separate transactions, so the proposal replay path
+        // also calls this to bring the bridge up to date whenever the earlier attempt did not complete.
         var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false);
         if (bridge is null)
         {
             return;
         }
 
-        var finalTransaction = PSBT.Parse(payjoinProposal.Psbt(), network).GetGlobalTransaction();
+        var btcPayNetwork = _networkProvider.GetNetwork<BTCPayNetwork>(context.CryptoCode)
+            ?? throw new InvalidOperationException($"Network '{context.CryptoCode}' is not available.");
+        var finalTransaction = PSBT.Parse(payjoinProposal.Psbt(), btcPayNetwork.NBitcoinNetwork).GetGlobalTransaction();
+        var finalTransactionId = finalTransaction.GetHash().ToString();
+        if (string.Equals(bridge.ExpectedFinalTransactionId, finalTransactionId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         var expectedFinalOutput = TryGetSettlementOutput(bridge, finalTransaction);
         await _accountingBridgeService.SetExpectedFinalTransactionAsync(
             context.InvoiceId,
-            finalTransaction.GetHash().ToString(),
+            finalTransactionId,
             expectedFinalOutput?.Index,
             bridge.EffectiveInvoiceValueSats ?? expectedFinalOutput?.ValueSats ?? bridge.FallbackValueSats,
             cancellationToken).ConfigureAwait(false);

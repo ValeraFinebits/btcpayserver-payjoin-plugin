@@ -20,6 +20,11 @@ internal interface IPayjoinReceiverProposalFinalizer
         ReceivedCoin[] receiverCoins,
         CancellationToken cancellationToken);
 
+    Task EnsureExpectedFinalTransactionAsync(
+        PayjoinReceiverProposalFinalizationContext context,
+        PayjoinProposal proposal,
+        CancellationToken cancellationToken);
+
     Task PostAsync(
         PayjoinReceiverProposalFinalizationContext context,
         PayjoinProposal proposal,

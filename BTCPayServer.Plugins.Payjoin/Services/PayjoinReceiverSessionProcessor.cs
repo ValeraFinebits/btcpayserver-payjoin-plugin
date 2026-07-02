@@ -218,11 +218,15 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     break;
                 }
             case ReceiveSession.PayjoinProposal payjoinProposal:
-                await _proposalFinalizer.PostAsync(
-                    new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
-                    payjoinProposal.Inner,
-                    stoppingToken).ConfigureAwait(false);
-                break;
+                {
+                    // A replay can land here when the previous attempt stopped between finalizing the
+                    // proposal and recording its expected transaction on the accounting bridge, so the
+                    // recording is completed before the proposal is handed to the sender again.
+                    var finalizationContext = new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode);
+                    await _proposalFinalizer.EnsureExpectedFinalTransactionAsync(finalizationContext, payjoinProposal.Inner, stoppingToken).ConfigureAwait(false);
+                    await _proposalFinalizer.PostAsync(finalizationContext, payjoinProposal.Inner, stoppingToken).ConfigureAwait(false);
+                    break;
+                }
             case ReceiveSession.Monitor:
                 break;
             case ReceiveSession.Closed:
