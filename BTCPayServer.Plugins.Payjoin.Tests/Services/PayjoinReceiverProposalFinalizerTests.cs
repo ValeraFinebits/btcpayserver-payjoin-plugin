@@ -211,6 +211,8 @@ public class PayjoinReceiverProposalFinalizerTests
         public Task<PayjoinAccountingBridgeState?> SetSettlementScriptAsync(string invoiceId, string settlementScript, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<int> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

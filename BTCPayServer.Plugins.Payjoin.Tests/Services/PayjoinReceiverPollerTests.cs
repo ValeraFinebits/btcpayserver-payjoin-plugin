@@ -295,7 +295,9 @@ public class PayjoinReceiverPollerTests
         public Task<PayjoinAccountingBridgeState?> SetExpectedFinalTransactionAsync(string invoiceId, string expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        public Task<int> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult(0);
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
+        public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
     }
 
     private sealed class NoOpAccountingPaymentService : IPayjoinAccountingPaymentService
@@ -335,11 +337,13 @@ public class PayjoinReceiverPollerTests
             LastMarkedFailedMessage = failureMessage;
             return Task.FromResult<PayjoinAccountingBridgeState?>(null);
         }
-        public Task<int> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken)
         {
             ExpirePendingInvocationCount++;
-            return Task.FromResult(0);
+            return Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
         }
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
+        public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
     }
 
     private sealed class RecordingAccountingPaymentService : IPayjoinAccountingPaymentService
