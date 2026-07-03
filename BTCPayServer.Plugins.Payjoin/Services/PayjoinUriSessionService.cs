@@ -140,7 +140,7 @@ public sealed class PayjoinUriSessionService
                     return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP keys are unavailable from all configured relays");
                 }
 
-                var bootstrapPersister = new BufferedReceiverSessionPersister();
+                var bootstrapPersister = new CapturingReceiverSessionPersister();
                 InitializeSession(destination, due, selectedRelay.DirectoryUrl.AbsoluteUri, selectedRelay.OhttpKeys, monitoringExpiresAt, bootstrapPersister);
                 session = _receiverSessionStore.CreateSession(
                     invoiceId,
@@ -248,21 +248,5 @@ public sealed class PayjoinUriSessionService
     {
         LogUnexpectedPayjoinFallback(_logger, invoiceId, reason, null);
         return bip21;
-    }
-
-    private sealed class BufferedReceiverSessionPersister : JsonReceiverSessionPersister
-    {
-        private readonly List<string> _events = [];
-
-        public void Save(string @event)
-        {
-            _events.Add(@event);
-        }
-
-        public string[] Load() => _events.ToArray();
-
-        public void Close()
-        {
-        }
     }
 }

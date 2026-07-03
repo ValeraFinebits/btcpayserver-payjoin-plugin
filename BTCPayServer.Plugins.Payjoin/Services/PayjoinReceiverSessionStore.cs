@@ -295,6 +295,21 @@ public sealed class PayjoinReceiverSessionStore
 
     private void AppendEvent(string invoiceId, string @event)
     {
+        AppendEventsWithAccountingUpdate(invoiceId, [@event], updateBridge: null);
+    }
+
+    /// <summary>
+    /// Appends session events and applies an accounting-bridge update in one database transaction, so a
+    /// restart cannot observe the session state advanced while the accounting record lags behind.
+    /// </summary>
+    internal void AppendEventsWithAccountingUpdate(string invoiceId, IReadOnlyList<string> events, Action<PayjoinAccountingBridgeData>? updateBridge)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        if (events.Count == 0 && updateBridge is null)
+        {
+            return;
+        }
+
         const int maxAttempts = 3;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -310,17 +325,31 @@ public sealed class PayjoinReceiverSessionStore
                 .Where(x => x.InvoiceId == invoiceId)
                 .Select(x => (int?)x.Sequence)
                 .Max() ?? 0;
-            var sequence = checked(lastSequence + 1);
 
             // TODO: Revisit receiver-session event retention before the log grows without bound.
             sessionData.UpdatedAt = createdAt;
-            context.ReceiverSessionEvents.Add(new PayjoinReceiverSessionEventData
+            foreach (var @event in events)
             {
-                InvoiceId = invoiceId,
-                Sequence = sequence,
-                Event = @event,
-                CreatedAt = createdAt
-            });
+                lastSequence = checked(lastSequence + 1);
+                context.ReceiverSessionEvents.Add(new PayjoinReceiverSessionEventData
+                {
+                    InvoiceId = invoiceId,
+                    Sequence = lastSequence,
+                    Event = @event,
+                    CreatedAt = createdAt
+                });
+            }
+
+            if (updateBridge is not null)
+            {
+                var bridge = context.AccountingBridges.SingleOrDefault(x => x.InvoiceId == invoiceId);
+                if (bridge is not null)
+                {
+                    updateBridge(bridge);
+                    bridge.UpdatedAt = createdAt;
+                }
+            }
+
             try
             {
                 context.SaveChanges();
