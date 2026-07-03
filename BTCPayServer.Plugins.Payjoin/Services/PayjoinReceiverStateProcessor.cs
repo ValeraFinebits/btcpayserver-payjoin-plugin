@@ -89,6 +89,12 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             return;
         }
 
+        // BTCPay generates a unique payjoin URI per invoice for a shopper who is actively checking
+        // out, which is the interactive-receiver case where rust-payjoin documents that the
+        // broadcast-suitability check may be skipped: the original transaction is not accepted from
+        // an unsolicited party, and the sender is expected to be able to broadcast it themselves.
+        // The anti-probing protections this does NOT excuse (whole-wallet input ownership and the
+        // persistent seen-inputs check) are enforced separately in this processor.
         using var transition = proposal.AssumeInteractiveReceiver();
         using var maybeInputsOwned = transition.Save(context.Persister);
         await ProcessMaybeInputsOwnedAsync(context, maybeInputsOwned, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);

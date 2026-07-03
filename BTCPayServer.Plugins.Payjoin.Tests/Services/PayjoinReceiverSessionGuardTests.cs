@@ -18,7 +18,7 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 public class PayjoinReceiverSessionGuardTests
 {
     [Fact]
-    public void TryExpireSessionRemovesExpiredSession()
+    public async Task TryExpireSessionRemovesExpiredSession()
     {
         using var context = new TestContext();
         var sessionStore = context.CreateStore();
@@ -30,14 +30,14 @@ public class PayjoinReceiverSessionGuardTests
             DateTimeOffset.UtcNow.AddMinutes(-1),
             ["bootstrap-event"]);
 
-        var expired = guard.TryExpireSession(session);
+        var expired = await guard.TryExpireSessionAsync(session, CancellationToken.None);
 
         Assert.True(expired);
         Assert.False(sessionStore.TryGetSession(session.InvoiceId, out _));
     }
 
     [Fact]
-    public void TryExpireSessionKeepsActiveSession()
+    public async Task TryExpireSessionKeepsActiveSession()
     {
         using var context = new TestContext();
         var sessionStore = context.CreateStore();
@@ -49,7 +49,7 @@ public class PayjoinReceiverSessionGuardTests
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
 
-        var expired = guard.TryExpireSession(session);
+        var expired = await guard.TryExpireSessionAsync(session, CancellationToken.None);
 
         Assert.False(expired);
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out _));
@@ -253,7 +253,13 @@ public class PayjoinReceiverSessionGuardTests
             sessionStore,
             networkProvider ?? CreateEmptyNetworkProvider(),
             null!,
+            new NoOpFallbackBroadcaster(),
             NullLogger<PayjoinReceiverSessionGuard>.Instance);
+    }
+
+    private sealed class NoOpFallbackBroadcaster : IPayjoinFallbackBroadcaster
+    {
+        public Task TryBroadcastFallbackSafetyNetAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private static ReceiveSession.Initialized CreateInitializedState()

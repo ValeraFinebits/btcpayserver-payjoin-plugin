@@ -28,17 +28,20 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly InvoiceRepository _invoiceRepository;
+    private readonly IPayjoinFallbackBroadcaster _fallbackBroadcaster;
     private readonly ILogger<PayjoinReceiverSessionGuard> _logger;
 
     public PayjoinReceiverSessionGuard(
         PayjoinReceiverSessionStore sessionStore,
         BTCPayNetworkProvider networkProvider,
         InvoiceRepository invoiceRepository,
+        IPayjoinFallbackBroadcaster fallbackBroadcaster,
         ILogger<PayjoinReceiverSessionGuard> logger)
     {
         _sessionStore = sessionStore;
         _networkProvider = networkProvider;
         _invoiceRepository = invoiceRepository;
+        _fallbackBroadcaster = fallbackBroadcaster;
         _logger = logger;
     }
 
@@ -56,7 +59,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
         session = refreshedSession;
 
-        if (TryExpireSession(session))
+        if (await TryExpireSessionAsync(session, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
@@ -143,12 +146,16 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
         return session;
     }
 
-    internal bool TryExpireSession(PayjoinReceiverSessionState session)
+    internal async Task<bool> TryExpireSessionAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
         var deadline = GetCleanupDeadline(session);
         if (now >= deadline)
         {
+            // BIP 78 safety net: the session held the sender's signed original as the fallback; if the
+            // payjoin never completed and the invoice is still unpaid, broadcast it before the session
+            // (and its event log, which holds the raw transaction) is deleted.
+            await _fallbackBroadcaster.TryBroadcastFallbackSafetyNetAsync(session, cancellationToken).ConfigureAwait(false);
             return RemoveSession(session.InvoiceId, $"cleanup deadline reached at {deadline:O}");
         }
 
