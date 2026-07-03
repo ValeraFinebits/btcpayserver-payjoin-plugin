@@ -59,8 +59,6 @@ internal interface IPayjoinAccountingBridgeService
 
     Task<PayjoinAccountingBridgeState?> AttachFallbackAsync(string invoiceId, string fallbackTransactionId, long fallbackOutputIndex, long fallbackValueSats, long effectiveInvoiceValueSats, string? settlementScript, CancellationToken cancellationToken);
 
-    Task<PayjoinAccountingBridgeState?> SetSettlementScriptAsync(string invoiceId, string settlementScript, CancellationToken cancellationToken);
-
     Task<PayjoinAccountingBridgeState?> SetExpectedFinalTransactionAsync(string invoiceId, string expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, CancellationToken cancellationToken);
 
     Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken);
@@ -174,17 +172,6 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
                 {
                     bridge.Status = PayjoinAccountingBridgeStatus.PendingFinalTransaction;
                 }
-            },
-            cancellationToken);
-    }
-
-    public Task<PayjoinAccountingBridgeState?> SetSettlementScriptAsync(string invoiceId, string settlementScript, CancellationToken cancellationToken)
-    {
-        return UpdateAsync(
-            invoiceId,
-            bridge =>
-            {
-                bridge.SettlementScript = settlementScript;
             },
             cancellationToken);
     }

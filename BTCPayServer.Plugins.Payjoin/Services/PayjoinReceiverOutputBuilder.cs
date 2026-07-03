@@ -16,15 +16,18 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
 {
     internal sealed class OutputReplacement
     {
-        internal OutputReplacement(PayjoinTxOut[] replacementOutputs, byte[] settlementScript)
+        internal OutputReplacement(PayjoinTxOut[] replacementOutputs, byte[] settlementScript, ulong settlementAmountSats)
         {
             ReplacementOutputs = replacementOutputs;
             SettlementScript = settlementScript;
+            SettlementAmountSats = settlementAmountSats;
         }
 
         internal PayjoinTxOut[] ReplacementOutputs { get; }
 
         internal byte[] SettlementScript { get; }
+
+        internal ulong SettlementAmountSats { get; }
     }
 
     private readonly BTCPayNetworkProvider _networkProvider;
@@ -55,11 +58,12 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
         string invoiceId,
         byte[] receiverScript,
         bool preserveReceiverScript,
+        long? pinnedSettlementAmountSats,
         CancellationToken cancellationToken)
     {
-        // TODO: Add a rust-payjoin / payjoin-ffi API for reading the receiver amount from the proposal or original PSBT data.
-        // TODO: Stop deriving the settlement amount from live invoice accounting state; replay should use an immutable proposal/session value.
-        // TODO: Validate that the proposal-derived receiver amount matches the expected invoice amount before building replacement outputs.
+        // TODO: Add a rust-payjoin / payjoin-ffi API for reading the receiver amount from the proposal or
+        // original PSBT data, so the settlement amount can be validated against what the sender actually
+        // proposed instead of being derived on the receiver side.
         var settlementScript = preserveReceiverScript
             ? receiverScript
             : await GetSettlementScriptAsync(storeId, receiverScript, cancellationToken).ConfigureAwait(false);
@@ -68,7 +72,12 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
             return null;
         }
 
-        var exactPaymentAmountSats = await TryGetExactPaymentAmountSatsAsync(invoiceId).ConfigureAwait(false);
+        // The amount recorded on the accounting bridge when the sender's original arrived is preferred
+        // over the live invoice accounting state: the latter can drift between replays (partial payments,
+        // re-quotes), and whichever value ends up committed with the outputs is what crediting later uses.
+        var exactPaymentAmountSats = pinnedSettlementAmountSats is > 0
+            ? checked((ulong)pinnedSettlementAmountSats.Value)
+            : await TryGetExactPaymentAmountSatsAsync(invoiceId).ConfigureAwait(false);
         if (exactPaymentAmountSats is null)
         {
             return null;
@@ -111,7 +120,8 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
             {
                 new PayjoinTxOut(exactPaymentAmountSats, settlementScript)
             },
-            settlementScript);
+            settlementScript,
+            exactPaymentAmountSats);
     }
 
     private async Task<byte[]?> GetSettlementScriptAsync(

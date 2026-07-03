@@ -10,5 +10,6 @@ internal interface IPayjoinReceiverOutputBuilder
         string invoiceId,
         byte[] receiverScript,
         bool preserveReceiverScript,
+        long? pinnedSettlementAmountSats,
         CancellationToken cancellationToken);
 }

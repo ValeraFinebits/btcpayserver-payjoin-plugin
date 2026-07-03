@@ -93,6 +93,67 @@ public class PayjoinReceiverSessionStoreRelationalTests
         Assert.Contains(reservation.InvoiceId, new[] { firstSession.InvoiceId, secondSession.InvoiceId });
     }
 
+    [Fact]
+    public void AppendEventsWithAccountingUpdateWritesEventsAndBridgeTogether()
+    {
+        using var testContext = new RelationalTestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-atomic-append");
+        using (var seed = testContext.CreateDbContext())
+        {
+            seed.AccountingBridges.Add(new Data.PayjoinAccountingBridgeData
+            {
+                InvoiceId = session.InvoiceId,
+                StoreId = session.StoreId,
+                CryptoCode = PayjoinConstants.BitcoinCode,
+                PaymentMethodId = "BTC-BTC",
+                Status = Data.PayjoinAccountingBridgeStatus.PendingFallback,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+            seed.SaveChanges();
+        }
+
+        store.AppendEventsWithAccountingUpdate(
+            session.InvoiceId,
+            ["event-a", "event-b"],
+            bridge =>
+            {
+                bridge.SettlementScript = "AABB";
+                bridge.EffectiveInvoiceValueSats = 1234;
+            });
+
+        using var context = testContext.CreateDbContext();
+        var events = context.ReceiverSessionEvents
+            .Where(x => x.InvoiceId == session.InvoiceId)
+            .OrderBy(x => x.Sequence)
+            .ToArray();
+        Assert.Equal(new[] { "bootstrap-event", "event-a", "event-b" }, events.Select(x => x.Event).ToArray());
+        Assert.Equal(new[] { 1, 2, 3 }, events.Select(x => x.Sequence).ToArray());
+        var bridge = Assert.Single(context.AccountingBridges.Where(x => x.InvoiceId == session.InvoiceId));
+        Assert.Equal("AABB", bridge.SettlementScript);
+        Assert.Equal(1234, bridge.EffectiveInvoiceValueSats);
+    }
+
+    [Fact]
+    public void AppendEventsWithAccountingUpdateAppendsEventsWhenNoBridgeExists()
+    {
+        using var testContext = new RelationalTestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-atomic-no-bridge");
+
+        store.AppendEventsWithAccountingUpdate(session.InvoiceId, ["event-a"], bridge => bridge.SettlementScript = "AABB");
+
+        using var context = testContext.CreateDbContext();
+        var events = context.ReceiverSessionEvents
+            .Where(x => x.InvoiceId == session.InvoiceId)
+            .OrderBy(x => x.Sequence)
+            .Select(x => x.Event)
+            .ToArray();
+        Assert.Equal(new[] { "bootstrap-event", "event-a" }, events);
+        Assert.Empty(context.AccountingBridges.Where(x => x.InvoiceId == session.InvoiceId));
+    }
+
     private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
         return store.CreateSession(

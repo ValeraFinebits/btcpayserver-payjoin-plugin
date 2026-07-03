@@ -218,7 +218,7 @@ public class PayjoinReceiverSessionProcessorTests
 
     private sealed class NoOpOutputBuilder : IPayjoinReceiverOutputBuilder
     {
-        public Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinReceiverOutputBuilder.OutputReplacement?>(null);
+        public Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken) => Task.FromResult<PayjoinReceiverOutputBuilder.OutputReplacement?>(null);
     }
 
     private sealed class NoOpInputSelector : IPayjoinReceiverInputSelector
@@ -284,7 +284,6 @@ public class PayjoinReceiverSessionProcessorTests
         public Task<PayjoinAccountingBridgeState?> TryGetByInvoiceIdAsync(string invoiceId, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
         public Task<PayjoinAccountingBridgeState?> AttachFallbackAsync(string invoiceId, string fallbackTransactionId, long fallbackOutputIndex, long fallbackValueSats, long effectiveInvoiceValueSats, string? settlementScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        public Task<PayjoinAccountingBridgeState?> SetSettlementScriptAsync(string invoiceId, string settlementScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<PayjoinAccountingBridgeState?> SetExpectedFinalTransactionAsync(string invoiceId, string expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
