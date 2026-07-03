@@ -56,6 +56,9 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverFallbackOutputAmbiguous =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(17, nameof(LogPayjoinReceiverFallbackOutputAmbiguous)),
             "Payjoin receiver found multiple fallback outputs matching the receiver script for {InvoiceId}");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverNonWitnessSenderInput =
+        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(18, nameof(LogPayjoinReceiverNonWitnessSenderInput)),
+            "Payjoin receiver session for {InvoiceId} was closed because the sender's proposal spends inputs without witness data, which the settlement tracking cannot follow.");
 
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IPayjoinReceiverSessionGuard _sessionGuard;
@@ -468,6 +471,18 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         }
 
         var fallbackTx = Transaction.Load(fallbackBytes, network);
+        if (HasNonWitnessInput(fallbackTx))
+        {
+            // A sender input without witness data re-signs through its scriptSig, so the final
+            // transaction id differs from anything derived on the receiver side and settlement
+            // reconciliation could never match it. The session ends here, before anything is
+            // contributed; if the sender broadcasts the original, the invoice is still credited
+            // through the platform's own address tracking.
+            LogPayjoinReceiverNonWitnessSenderInput(_logger, session.InvoiceId, null);
+            RemoveSession(session.InvoiceId, "sender inputs without witness data are not supported");
+            return;
+        }
+
         var fallbackOutputMatch = ResolveFallbackReceiverOutput(fallbackTx, receiverScript);
         if (!fallbackOutputMatch.Success)
         {
@@ -498,6 +513,11 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             effectiveInvoiceValueSats,
             null,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static bool HasNonWitnessInput(Transaction transaction)
+    {
+        return transaction.Inputs.Any(input => input.WitScript is null || input.WitScript == WitScript.Empty);
     }
 
     internal static FallbackReceiverOutputMatch ResolveFallbackReceiverOutput(Transaction fallbackTransaction, byte[] receiverScript)
