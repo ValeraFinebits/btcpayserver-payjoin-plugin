@@ -1,0 +1,156 @@
+using BTCPayServer.Abstractions.Models;
+using BTCPayServer.Plugins.Payjoin.Data;
+using BTCPayServer.Plugins.Payjoin.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Options;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
+using System.Linq;
+using Xunit;
+
+namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
+
+public class PayjoinAccountingBridgeResetTests
+{
+    private const string ExpectedTransactionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string FallbackTransactionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    [Fact]
+    public async Task ResetForNewSessionAsyncClearsPriorSessionTrackingOnPendingBridges()
+    {
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        await CreateBridgeAsync(service, "invoice-1", now.AddHours(1));
+        await service.AttachFallbackAsync("invoice-1", FallbackTransactionId, 0, 900, 900, "CCDD", CancellationToken.None);
+        await service.SetExpectedFinalTransactionAsync("invoice-1", ExpectedTransactionId, 1, 950, CancellationToken.None);
+
+        var reset = await service.ResetForNewSessionAsync("invoice-1", 1200, now.AddHours(2), CancellationToken.None);
+
+        Assert.NotNull(reset);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, reset!.Status);
+        Assert.Null(reset.FallbackTransactionId);
+        Assert.Null(reset.SettlementScript);
+        Assert.Null(reset.ExpectedFinalTransactionId);
+        Assert.Null(reset.ExpectedFinalOutputIndex);
+        Assert.Null(reset.ExpectedFinalValueSats);
+        Assert.Equal(1200, reset.EffectiveInvoiceValueSats);
+        Assert.Equal(now.AddHours(2), reset.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task ResetForNewSessionAsyncRevivesUnarmedExpiredBridges()
+    {
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        await CreateBridgeAsync(service, "invoice-1", now.AddMinutes(-5));
+        await service.ExpirePendingAsync(now, CancellationToken.None);
+
+        var reset = await service.ResetForNewSessionAsync("invoice-1", 1000, now.AddHours(1), CancellationToken.None);
+
+        Assert.NotNull(reset);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, reset!.Status);
+        Assert.Equal(now.AddHours(1), reset.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task ResetForNewSessionAsyncLeavesArmedExpiredAndFailedBridgesForReview()
+    {
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        await CreateBridgeAsync(service, "invoice-armed", now.AddHours(1), ExpectedTransactionId);
+        await CreateBridgeAsync(service, "invoice-failed", now.AddHours(1));
+        await service.MarkFailedAsync("invoice-failed", "problem", CancellationToken.None);
+        using (var db = context.CreateDbContext())
+        {
+            var armed = db.AccountingBridges.Single(x => x.InvoiceId == "invoice-armed");
+            armed.Status = PayjoinAccountingBridgeStatus.Expired;
+            db.SaveChanges();
+        }
+
+        var armedResult = await service.ResetForNewSessionAsync("invoice-armed", 1000, now.AddHours(2), CancellationToken.None);
+        var failedResult = await service.ResetForNewSessionAsync("invoice-failed", 1000, now.AddHours(2), CancellationToken.None);
+
+        Assert.Equal(PayjoinAccountingBridgeStatus.Expired, armedResult!.Status);
+        Assert.Equal(ExpectedTransactionId, armedResult.ExpectedFinalTransactionId);
+        Assert.Equal(PayjoinAccountingBridgeStatus.Failed, failedResult!.Status);
+        Assert.Equal("problem", failedResult.FailureMessage);
+    }
+
+    [Fact]
+    public async Task ResetForNewSessionAsyncLeavesFreshPendingBridgesUntouched()
+    {
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        var created = await CreateBridgeAsync(service, "invoice-1", now.AddHours(1));
+
+        var reset = await service.ResetForNewSessionAsync("invoice-1", 5000, now.AddHours(3), CancellationToken.None);
+
+        Assert.NotNull(reset);
+        Assert.Equal(created.EffectiveInvoiceValueSats, reset!.EffectiveInvoiceValueSats);
+        Assert.Equal(created.ExpiresAt, reset.ExpiresAt);
+    }
+
+    private static Task<PayjoinAccountingBridgeState> CreateBridgeAsync(
+        PayjoinAccountingBridgeService service,
+        string invoiceId,
+        DateTimeOffset? expiresAt,
+        string? expectedFinalTransactionId = null)
+    {
+        return service.CreateOrGetAsync(
+            new CreatePayjoinAccountingBridgeRequest(
+                invoiceId,
+                "store-1",
+                PayjoinConstants.BitcoinCode,
+                "BTC-BTC",
+                expiresAt,
+                EffectiveInvoiceValueSats: 1000,
+                ExpectedFinalTransactionId: expectedFinalTransactionId),
+            CancellationToken.None);
+    }
+
+    private sealed class TestContext : IDisposable
+    {
+        private readonly TestDbContextFactory _dbContextFactory = new();
+        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
+
+        public PayjoinAccountingBridgeService CreateService() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+
+        public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
+
+        public void Dispose()
+        {
+            using var db = _dbContextFactory.CreateContext();
+            db.Database.EnsureDeleted();
+        }
+    }
+
+    private sealed class TestDbContextFactory : PayjoinPluginDbContextFactory
+    {
+        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
+        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
+
+        public TestDbContextFactory()
+            : base(Options.Create(new DatabaseOptions
+            {
+                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
+            }))
+        {
+            var databaseName = $"payjoin-bridge-reset-tests-{Guid.NewGuid():N}";
+            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
+                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
+                .Options;
+
+            using var db = CreateContext();
+            db.Database.EnsureCreated();
+        }
+
+        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
+        {
+            return new PayjoinPluginDbContext(_dbContextOptions);
+        }
+    }
+}

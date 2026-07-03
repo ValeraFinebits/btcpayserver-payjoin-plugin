@@ -127,6 +127,7 @@ public sealed class PayjoinUriSessionService
                 }
             }
 
+            var createdFreshSession = false;
             if (session is null)
             {
                 var selectedRelay = await _mailroomManager.SelectBootstrapRouteAsync(
@@ -148,13 +149,14 @@ public sealed class PayjoinUriSessionService
                     storeId,
                     monitoringExpiresAt,
                     bootstrapPersister.Load());
+                createdFreshSession = true;
             }
 
             var persister = _receiverSessionStore.CreatePersister(session);
 
             using var replay = PayjoinMethods.ReplayReceiverEventLog(persister);
             using var history = replay.SessionHistory();
-            await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, cancellationToken).ConfigureAwait(false);
+            await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, createdFreshSession, cancellationToken).ConfigureAwait(false);
             using var pjUri = history.PjUri();
             var payjoinUri = pjUri.AsString();
             if (string.IsNullOrWhiteSpace(payjoinUri))
@@ -215,19 +217,20 @@ public sealed class PayjoinUriSessionService
         return (ulong)Math.Min(remainingSeconds, uint.MaxValue);
     }
 
-    private Task EnsureAccountingBridgeAsync(
+    private async Task EnsureAccountingBridgeAsync(
         string invoiceId,
         string storeId,
         string cryptoCode,
         decimal due,
         DateTimeOffset monitoringExpiresAt,
+        bool createdFreshSession,
         CancellationToken cancellationToken)
     {
         var effectiveInvoiceValueSats = due > 0m
             ? Money.Coins(due).Satoshi
             : (long?)null;
 
-        return _accountingBridgeService.CreateOrGetAsync(
+        await _accountingBridgeService.CreateOrGetAsync(
             new CreatePayjoinAccountingBridgeRequest(
                 invoiceId,
                 storeId,
@@ -235,7 +238,12 @@ public sealed class PayjoinUriSessionService
                 PaymentTypes.CHAIN.GetPaymentMethodId(cryptoCode).ToString(),
                 monitoringExpiresAt,
                 EffectiveInvoiceValueSats: effectiveInvoiceValueSats),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+
+        if (createdFreshSession)
+        {
+            await _accountingBridgeService.ResetForNewSessionAsync(invoiceId, effectiveInvoiceValueSats, monitoringExpiresAt, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private string LogExpectedFallbackAndReturnBip21(string bip21, string invoiceId, string reason)

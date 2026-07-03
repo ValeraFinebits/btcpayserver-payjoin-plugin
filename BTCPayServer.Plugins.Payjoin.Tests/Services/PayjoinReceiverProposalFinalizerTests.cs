@@ -219,5 +219,6 @@ public class PayjoinReceiverProposalFinalizerTests
         public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }
