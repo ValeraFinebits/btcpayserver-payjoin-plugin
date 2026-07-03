@@ -100,6 +100,15 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             return null;
         }
 
+        // The raw settlement output value is not the amount the sender paid - in a payjoin it also
+        // carries the receiver's contributed input (minus the receiver's fee share) - so the credited
+        // amount is the value pinned when the outputs were committed. What the chain must agree on is
+        // the exact output value recorded from the finalized proposal: any divergence means the
+        // transaction that confirmed is not the proposal this record described, and crediting stops
+        // in a reviewable state instead of proceeding on assumption.
+        var observedValueSats = finalTx.Transaction.Outputs[(int)outputIndex.Value].Value.Satoshi;
+        EnsureObservedSettlementValueMatchesExpected(bridge, observedValueSats);
+
         var accountedValueSats = ResolveAccountedValueSats(bridge);
         if (!accountedValueSats.HasValue)
         {
@@ -120,10 +129,12 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             return null;
         }
 
+        var finalPaymentIsNew = false;
         if (finalPayment is null)
         {
             var paymentData = CreateObservedPaymentData(accountingContext, accountedValueSats.Value, finalTransactionId, outputIndex.Value, finalTx.Confirmations, finalTransactionRbf);
             finalPayment = await _paymentRecorder.AddPaymentAsync(paymentData, [bridge.ExpectedFinalTransactionId]).ConfigureAwait(false);
+            finalPaymentIsNew = finalPayment is not null;
             if (finalPayment is null)
             {
                 var refreshedContextResult = await CreateAccountingContextAsync(bridge).ConfigureAwait(false);
@@ -142,7 +153,14 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             }
         }
 
+        var previousStatus = finalPayment.Status;
+        var previousValue = finalPayment.Value;
+        var previousDetails = finalPayment.Details?.ToString(Newtonsoft.Json.Formatting.None);
         ApplyFinalPaymentState(accountingContext, finalPayment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
+        var finalPaymentChanged = finalPaymentIsNew ||
+                                  finalPayment.Status != previousStatus ||
+                                  finalPayment.Value != previousValue ||
+                                  !string.Equals(finalPayment.Details?.ToString(Newtonsoft.Json.Formatting.None), previousDetails, StringComparison.Ordinal);
 
         var updatedPayments = new List<PaymentEntity> { finalPayment };
         if (trackedPayment is not null &&
@@ -158,10 +176,26 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             updatedPayments.Add(trackedPayment);
         }
 
+        // The bridge stays pending until the payment settles, so this method re-runs every poll tick.
+        // Skip the payment writes and invoice events when the tick observed nothing new.
+        if (!finalPaymentChanged && updatedPayments.Count == 1)
+        {
+            return finalPayment;
+        }
+
         await _paymentRecorder.UpdatePaymentsAsync(updatedPayments).ConfigureAwait(false);
         await _stalePaidOverCorrectionService.ClearStalePaidOverAsync(bridge.InvoiceId).ConfigureAwait(false);
         _eventAggregator.Publish(new InvoiceNeedUpdateEvent(accountingContext.Invoice.Id));
         return finalPayment;
+    }
+
+    internal static void EnsureObservedSettlementValueMatchesExpected(PayjoinAccountingBridgeState bridge, long observedValueSats)
+    {
+        if (bridge.ExpectedFinalValueSats is { } expectedValueSats && expectedValueSats != observedValueSats)
+        {
+            throw new PayjoinAccountingReconciliationDataException(
+                $"Settlement output value for invoice '{bridge.InvoiceId}' does not match the recorded expectation: observed {observedValueSats} sats, expected {expectedValueSats} sats.");
+        }
     }
 
     internal static bool ShouldWaitForFinalTransactionConfirmation(bool finalPaymentExists, bool trackedPaymentExists, long confirmations)

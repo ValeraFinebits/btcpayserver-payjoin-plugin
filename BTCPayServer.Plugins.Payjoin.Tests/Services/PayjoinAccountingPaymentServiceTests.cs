@@ -244,6 +244,33 @@ public class PayjoinAccountingPaymentServiceTests
         Assert.Equal(PaymentStatus.Unaccounted, fallbackPayment.Status);
     }
 
+    [Fact]
+    public void EnsureObservedSettlementValueMatchesExpectedAcceptsAMatchingValue()
+    {
+        var bridge = CreateBridge(settlementScript: null, expectedFinalOutputIndex: null);
+
+        PayjoinAccountingPaymentService.EnsureObservedSettlementValueMatchesExpected(bridge, 1000);
+    }
+
+    [Fact]
+    public void EnsureObservedSettlementValueMatchesExpectedThrowsOnMismatch()
+    {
+        var bridge = CreateBridge(settlementScript: null, expectedFinalOutputIndex: null);
+
+        var ex = Assert.Throws<PayjoinAccountingReconciliationDataException>(() =>
+            PayjoinAccountingPaymentService.EnsureObservedSettlementValueMatchesExpected(bridge, 999));
+        Assert.Contains("observed 999", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("expected 1000", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnsureObservedSettlementValueMatchesExpectedAcceptsAnyValueWithoutARecordedExpectation()
+    {
+        var bridge = CreateBridge(settlementScript: null, expectedFinalOutputIndex: null, expectedFinalValueSats: null);
+
+        PayjoinAccountingPaymentService.EnsureObservedSettlementValueMatchesExpected(bridge, 999);
+    }
+
     private static uint? InvokeResolveFinalOutputIndex(Transaction finalTransaction, PayjoinAccountingBridgeState bridge)
     {
         return PayjoinAccountingPaymentService.ResolveFinalOutputIndex(finalTransaction, bridge);
@@ -253,7 +280,8 @@ public class PayjoinAccountingPaymentServiceTests
         string? settlementScript,
         long? expectedFinalOutputIndex,
         string? fallbackTransactionId = null,
-        long? fallbackOutputIndex = null)
+        long? fallbackOutputIndex = null,
+        long? expectedFinalValueSats = 1000)
     {
         return new PayjoinAccountingBridgeState(
             Id: 1,
@@ -268,7 +296,7 @@ public class PayjoinAccountingPaymentServiceTests
             SettlementScript: settlementScript,
             ExpectedFinalTransactionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ExpectedFinalOutputIndex: expectedFinalOutputIndex,
-            ExpectedFinalValueSats: 1000,
+            ExpectedFinalValueSats: expectedFinalValueSats,
             FailureMessage: null,
             Status: Data.PayjoinAccountingBridgeStatus.PendingFinalTransaction,
             CreatedAt: DateTimeOffset.UtcNow,
