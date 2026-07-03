@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Linq;
 
 namespace BTCPayServer.Plugins.Payjoin.Models;
@@ -13,6 +14,12 @@ public sealed class PayjoinStoreSettingsData
     public IReadOnlyList<Uri>? OhttpRelayUrls { get; set; }
 
     public string? ColdWalletDerivationScheme { get; set; }
+
+    // The same bound the settings form applies. Without it an API client could store a cap the
+    // UI would reject, and the two surfaces would disagree about a valid fee rate.
+    [Range(PayjoinStoreSettings.MinFeeRateSatPerVb, PayjoinStoreSettings.MaxFeeRateSatPerVbLimit,
+        ErrorMessage = "The maximum fee rate must be between 1 and 100000 sat/vB.")]
+    public long? MaxFeeRateSatPerVb { get; set; }
 
     internal IReadOnlyList<Uri?> GetInvalidDirectoryUrls()
     {
@@ -31,7 +38,8 @@ public sealed class PayjoinStoreSettingsData
             PayjoinV2Enabled = PayjoinV2Enabled,
             DirectoryUrls = PayjoinStoreSettings.NormalizeDirectoryUrls(DirectoryUrls),
             OhttpRelayUrls = PayjoinStoreSettings.NormalizeOhttpRelayUrls(OhttpRelayUrls),
-            ColdWalletDerivationScheme = coldWalletDerivationScheme ?? ColdWalletDerivationScheme
+            ColdWalletDerivationScheme = coldWalletDerivationScheme ?? ColdWalletDerivationScheme,
+            MaxFeeRateSatPerVb = MaxFeeRateSatPerVb
         };
         settings.NormalizeUrlSettings();
         return settings;
@@ -46,7 +54,8 @@ public sealed class PayjoinStoreSettingsData
             PayjoinV2Enabled = settings.PayjoinV2Enabled,
             DirectoryUrls = settings.GetEffectiveDirectoryUrls(),
             OhttpRelayUrls = settings.GetEffectiveOhttpRelayUrls(),
-            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme
+            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme,
+            MaxFeeRateSatPerVb = settings.MaxFeeRateSatPerVb
         };
     }
 

@@ -44,6 +44,13 @@
                 <span asp-validation-for="ColdWalletDerivationScheme" class="text-danger"></span>
                 <div class="form-text" text-translate="true">Optional. Provide an extended public key or output descriptor for a cold storage wallet. Async Payjoin change outputs will be directed to this wallet, sweeping excess funds to cold storage.</div>
             </div>
+
+            <div class="form-group">
+                <label asp-for="MaxFeeRateSatPerVb" class="form-label" text-translate="true">Maximum fee rate (sat/vB)</label>
+                <input asp-for="MaxFeeRateSatPerVb" class="form-control" id="PayjoinMaxFeeRate" type="number" min="1" placeholder="automatic" />
+                <div class="form-text" text-translate="true">Upper bound for the fee rate a payjoin may reach. Leave empty to follow the network fee estimate.</div>
+                <span asp-validation-for="MaxFeeRateSatPerVb" class="text-danger"></span>
+            </div>
         </div>
     </div>
 </form>
