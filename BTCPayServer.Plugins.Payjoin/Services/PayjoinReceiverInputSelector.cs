@@ -11,13 +11,16 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelector
 {
     private readonly IPayjoinReceiverWalletAdapter _walletAdapter;
+    private readonly IPayjoinReceiverInputProposalOperations _proposalOperations;
     private readonly PayjoinReceiverSessionStore _sessionStore;
 
     public PayjoinReceiverInputSelector(
         IPayjoinReceiverWalletAdapter walletAdapter,
+        IPayjoinReceiverInputProposalOperations proposalOperations,
         PayjoinReceiverSessionStore sessionStore)
     {
         _walletAdapter = walletAdapter;
+        _proposalOperations = proposalOperations;
         _sessionStore = sessionStore;
     }
 
@@ -28,6 +31,13 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
         DateTimeOffset reservationExpiresAt,
         CancellationToken cancellationToken)
     {
+        // Retry model: the candidate set is snapshotted once per attempt and failed entries are
+        // removed locally. The wallet view does not exclude coins reserved by concurrent sessions,
+        // so rebuilding the set mid-attempt would re-offer the very input whose reservation just
+        // failed and the deterministic library selection would pick it again. Each iteration
+        // strictly shrinks the set, which bounds the loop. Freshness comes from the tier above:
+        // when this attempt returns a failure, the next poll tick re-enters with a newly built
+        // candidate set.
         var candidates = (await _walletAdapter.GetInputCandidatesAsync(storeId, cancellationToken).ConfigureAwait(false)).ToList();
 
         var contributionFailures = new List<string>();
@@ -38,13 +48,13 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
 
         while (candidates.Count > 0)
         {
-            PayjoinReceiverInputCandidate? selected = null;
+            PayjoinReceiverInputCandidate? selected;
             try
             {
-                using var selectedInput = proposal.TryPreservingPrivacy(candidates.Select(candidate => candidate.Input).ToArray());
-                selected = _walletAdapter.ResolveSelectedCandidate(candidates, selectedInput.Outpoint());
+                var selectedOutPoint = _proposalOperations.SelectPreservingPrivacy(proposal, candidates);
+                selected = _walletAdapter.ResolveSelectedCandidate(candidates, selectedOutPoint);
             }
-            catch (CoinSelectionException ex)
+            catch (PayjoinReceiverInputSelectionException ex)
             {
                 contributionFailures.Add($"receiver input selection failed: {ex.Message}");
                 break;
@@ -56,11 +66,11 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
                 break;
             }
 
-            var selectedOutPoint = selected.Coin.OutPoint.ToString();
+            var selectedCoinOutPoint = selected.Coin.OutPoint.ToString();
             WantsInputs? withInputs = null;
             try
             {
-                withInputs = proposal.ContributeInputs(new[] { selected.Input });
+                withInputs = _proposalOperations.ContributeInputs(proposal, selected);
                 var contributedCoins = new[] { selected.Coin };
                 if (_sessionStore.TryReserveContributedInput(storeId, invoiceId, contributedCoins[0].OutPoint, reservationExpiresAt))
                 {
@@ -69,14 +79,14 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
 
                 // Cross-session reservations can make the privacy-selected coin unavailable. Remove
                 // that candidate and ask rust-payjoin to choose again from the remaining wallet inputs.
-                contributionFailures.Add($"candidate '{selectedOutPoint}' reservation conflict");
+                contributionFailures.Add($"candidate '{selectedCoinOutPoint}' reservation conflict");
                 candidates.Remove(selected);
-                withInputs.Dispose();
+                withInputs?.Dispose();
                 withInputs = null;
             }
-            catch (InputContributionException ex)
+            catch (PayjoinReceiverInputContributionException ex)
             {
-                contributionFailures.Add($"candidate '{selectedOutPoint}' rejected: {ex.Message}");
+                contributionFailures.Add($"candidate '{selectedCoinOutPoint}' rejected: {ex.Message}");
                 candidates.Remove(selected);
             }
             catch

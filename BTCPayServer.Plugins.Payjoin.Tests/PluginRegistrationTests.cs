@@ -45,6 +45,9 @@ public class PluginRegistrationTests
         Assert.Contains(services, descriptor =>
             descriptor.ServiceType == typeof(IPayjoinReceiverWalletAdapter) &&
             descriptor.ImplementationType == typeof(PayjoinReceiverWalletAdapter));
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(IPayjoinReceiverInputProposalOperations) &&
+            descriptor.ImplementationType == typeof(PayjoinReceiverInputProposalOperations));
     }
 
     [Fact]
