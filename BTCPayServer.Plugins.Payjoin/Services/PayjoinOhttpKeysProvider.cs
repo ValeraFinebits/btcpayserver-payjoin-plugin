@@ -13,8 +13,10 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinOhttpKeysProvider
 {
-    // TODO: Consider making this configurable if 12 hours is not a good duration for caching OHTTP keys.
-    private static readonly TimeSpan OhttpKeysCacheDuration = TimeSpan.FromHours(12);
+    // Directory OHTTP keys can rotate; a shorter lifetime bounds how long stale keys are served, and
+    // Invalidate lets a failed session build drop them immediately instead of waiting out the window.
+    // TODO: Consider making this configurable if one hour is not a good duration for caching OHTTP keys.
+    private static readonly TimeSpan OhttpKeysCacheDuration = TimeSpan.FromHours(1);
 
     // TODO: Consider making this configurable if 10 seconds is not a good timeout for fetching OHTTP keys.
     private static readonly TimeSpan OhttpKeysFetchTimeout = TimeSpan.FromSeconds(10);
@@ -119,6 +121,13 @@ public sealed class PayjoinOhttpKeysProvider
                 semaphore.Release();
             }
         }
+    }
+
+    // Stale directory OHTTP keys are one way session construction fails; dropping the cached
+    // keys costs at most one refetch and lets the next attempt start from fresh material.
+    internal void Invalidate(string storeId, SystemUri ohttpRelayUrl, string directoryUrl)
+    {
+        _memoryCache.Remove(CreateCacheKey(storeId, ohttpRelayUrl, directoryUrl));
     }
 
     internal static string CreateCacheKey(string storeId, SystemUri ohttpRelayUrl, string directoryUrl)

@@ -35,6 +35,7 @@ public sealed class PayjoinUriSessionService
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly PayjoinReceiverSessionStore _receiverSessionStore;
     private readonly PayjoinMailroomManager _mailroomManager;
+    private readonly PayjoinOhttpKeysProvider _ohttpKeysProvider;
     private readonly PayjoinAvailabilityService _availabilityService;
     private readonly PayjoinSessionBuildLock _sessionBuildLock;
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
@@ -44,6 +45,7 @@ public sealed class PayjoinUriSessionService
         BTCPayNetworkProvider networkProvider,
         PayjoinReceiverSessionStore receiverSessionStore,
         PayjoinMailroomManager mailroomManager,
+        PayjoinOhttpKeysProvider ohttpKeysProvider,
         PayjoinAvailabilityService availabilityService,
         PayjoinSessionBuildLock sessionBuildLock,
         IPayjoinAccountingBridgeService accountingBridgeService,
@@ -52,6 +54,7 @@ public sealed class PayjoinUriSessionService
         _networkProvider = networkProvider;
         _receiverSessionStore = receiverSessionStore;
         _mailroomManager = mailroomManager;
+        _ohttpKeysProvider = ohttpKeysProvider;
         _availabilityService = availabilityService;
         _sessionBuildLock = sessionBuildLock;
         _accountingBridgeService = accountingBridgeService;
@@ -129,19 +132,31 @@ public sealed class PayjoinUriSessionService
 
             if (session is null)
             {
-                var selectedRelay = await _mailroomManager.SelectBootstrapRouteAsync(
+                var bootstrapRoute = await _mailroomManager.SelectBootstrapRouteAsync(
                     storeSettings,
                     storeId,
                     invoiceId,
                     cancellationToken).ConfigureAwait(false);
 
-                if (selectedRelay is null)
+                if (bootstrapRoute is null)
                 {
                     return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP keys are unavailable from all configured relays");
                 }
 
                 var bootstrapPersister = new CapturingReceiverSessionPersister();
-                InitializeSession(destination, due, selectedRelay.DirectoryUrl.AbsoluteUri, selectedRelay.OhttpKeys, monitoringExpiresAt, bootstrapPersister);
+                try
+                {
+                    InitializeSession(destination, due, bootstrapRoute.DirectoryUrl.AbsoluteUri, bootstrapRoute.OhttpKeys, monitoringExpiresAt, bootstrapPersister);
+                }
+                catch (UniffiException)
+                {
+                    // Stale directory OHTTP keys are one way session construction fails; dropping the
+                    // cached keys costs at most one refetch and lets the next attempt start from fresh
+                    // material. Replayed sessions never reach here, so their failures keep the cache.
+                    _ohttpKeysProvider.Invalidate(storeId, bootstrapRoute.RelayUrl, bootstrapRoute.DirectoryUrl.AbsoluteUri);
+                    throw;
+                }
+
                 session = _receiverSessionStore.CreateSession(
                     invoiceId,
                     destination,

@@ -60,6 +60,7 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<BTCPayNetworkProvider>(),
             provider.GetRequiredService<PayjoinReceiverSessionStore>(),
             provider.GetRequiredService<PayjoinMailroomManager>(),
+            provider.GetRequiredService<PayjoinOhttpKeysProvider>(),
             provider.GetRequiredService<PayjoinAvailabilityService>(),
             provider.GetRequiredService<PayjoinSessionBuildLock>(),
             provider.GetRequiredService<IPayjoinAccountingBridgeService>(),
