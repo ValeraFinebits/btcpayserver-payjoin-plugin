@@ -76,7 +76,7 @@ internal sealed class PayjoinReceiverWalletAdapter : IPayjoinReceiverWalletAdapt
             cancellationToken).ConfigureAwait(false);
     }
 
-    private static PayjoinInputPair CreateInputPair(ReceivedCoin coin)
+    internal static PayjoinInputPair CreateInputPair(ReceivedCoin coin)
     {
         var txin = new PayjoinTxIn(
             new PayjoinOutPoint(coin.OutPoint.Hash.ToString(), coin.OutPoint.N),

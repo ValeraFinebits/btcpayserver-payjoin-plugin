@@ -35,11 +35,34 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
         // removed locally. The wallet view does not exclude coins reserved by concurrent sessions,
         // so rebuilding the set mid-attempt would re-offer the very input whose reservation just
         // failed and the deterministic library selection would pick it again. Each iteration
-        // strictly shrinks the set, which bounds the loop. Freshness comes from the tier above:
-        // when this attempt returns a failure, the next poll tick re-enters with a newly built
-        // candidate set.
-        var candidates = (await _walletAdapter.GetInputCandidatesAsync(storeId, cancellationToken).ConfigureAwait(false)).ToList();
+        // strictly shrinks the set, which bounds the loop. A failed attempt currently ends the
+        // receiver session in PayjoinReceiverSessionProcessor; letting the session retry on a later
+        // poll tick with a freshly built candidate set is proposed separately.
+        var allCandidates = (await _walletAdapter.GetInputCandidatesAsync(storeId, cancellationToken).ConfigureAwait(false)).ToList();
+        try
+        {
+            return TryContributeFromCandidates(proposal, allCandidates, storeId, invoiceId, reservationExpiresAt);
+        }
+        finally
+        {
+            // The FFI input pairs hold native state; the library clones what it keeps when an input
+            // is contributed, so every candidate can be released deterministically once the attempt
+            // is over instead of waiting for finalizers.
+            foreach (var candidate in allCandidates)
+            {
+                candidate.Input?.Dispose();
+            }
+        }
+    }
 
+    private ReceiverInputContributionResult TryContributeFromCandidates(
+        WantsInputs proposal,
+        List<PayjoinReceiverInputCandidate> allCandidates,
+        string storeId,
+        string invoiceId,
+        DateTimeOffset reservationExpiresAt)
+    {
+        var candidates = new List<PayjoinReceiverInputCandidate>(allCandidates);
         var contributionFailures = new List<string>();
         if (candidates.Count == 0)
         {
