@@ -9,6 +9,14 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 /// Persistent record of input outpoints the receiver has already seen across payjoin sessions.
 /// Backs <c>check_no_inputs_seen_before</c> so the receiver can reject probing attempts and
 /// re-entrant payjoins that replay a prior proposal's inputs.
+///
+/// Retention policy: seen inputs are persisted forever and rejected forever, deliberately including
+/// inputs from sessions that never completed - a failed attempt is exactly what a probing adversary
+/// produces, and forgetting it would let the same inputs probe again. This mirrors payjoin-cli's
+/// seen-inputs database. The cost is one small row per inspected input and permanent rejection of
+/// an input that once appeared in any original proposal; senders retrying a failed payjoin are
+/// expected to do so with a fresh original (their wallet re-selects or the previous original was
+/// broadcast, spending those inputs).
 /// </summary>
 public sealed class PayjoinSeenInputStore
 {

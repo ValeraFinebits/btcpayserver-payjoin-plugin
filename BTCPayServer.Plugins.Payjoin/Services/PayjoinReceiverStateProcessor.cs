@@ -1,5 +1,6 @@
 using Payjoin;
 using System;
+using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -96,7 +97,15 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken)
     {
-        var ownershipResolver = await _walletOwnershipService.CreateResolverAsync(context.StoreId, context.ReceiverScript, cancellationToken).ConfigureAwait(false);
+        // A payload that arrived within this tick is not in the replayed history yet, so the original
+        // transaction's output scripts are taken from the proposal itself and shared with the rest of
+        // the chain through the context.
+        if (context.OriginalOutputScripts.Count == 0)
+        {
+            context.OriginalOutputScripts = ExtractOutputScripts(proposal.ExtractTxToScheduleBroadcast());
+        }
+
+        var ownershipResolver = await GetOrCreateOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
         using var transition = proposal.CheckInputsNotOwned(new WalletScriptOwnedCallback(ownershipResolver));
         using var maybeInputsSeen = transition.Save(context.Persister);
         await ProcessMaybeInputsSeenAsync(context, maybeInputsSeen, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
@@ -119,10 +128,39 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken)
     {
-        var ownershipResolver = await _walletOwnershipService.CreateResolverAsync(context.StoreId, context.ReceiverScript, cancellationToken).ConfigureAwait(false);
+        var ownershipResolver = await GetOrCreateOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
         using var transition = proposal.IdentifyReceiverOutputs(new WalletScriptOwnedCallback(ownershipResolver));
         using var wantsOutputs = transition.Save(context.Persister);
         await continueWithOutputsAsync(wantsOutputs, context, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<PayjoinScriptOwnershipResolver> GetOrCreateOwnershipResolverAsync(
+        PayjoinReceiverStateContext context,
+        CancellationToken cancellationToken)
+    {
+        context.OwnershipResolver ??= await _walletOwnershipService.CreateResolverAsync(
+            context.StoreId,
+            context.ReceiverScript,
+            context.OriginalOutputScripts,
+            cancellationToken).ConfigureAwait(false);
+        return context.OwnershipResolver;
+    }
+
+    internal static IReadOnlyList<byte[]> ExtractOutputScripts(byte[] transactionBytes)
+    {
+        if (transactionBytes.Length == 0)
+        {
+            return Array.Empty<byte[]>();
+        }
+
+        var transaction = NBitcoin.Transaction.Load(transactionBytes, NBitcoin.Network.Main);
+        var scripts = new List<byte[]>(transaction.Outputs.Count);
+        foreach (var output in transaction.Outputs)
+        {
+            scripts.Add(output.ScriptPubKey.ToBytes());
+        }
+
+        return scripts;
     }
 
     private async Task<bool> TryRejectCloseRequestedOriginalPayloadAsync(
