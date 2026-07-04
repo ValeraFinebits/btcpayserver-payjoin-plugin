@@ -15,6 +15,8 @@ internal static class PayjoinPluginDbSchema
     internal const string ReceiverInputReservationsSessionForeignKey = "FK_ReceiverInputReservations_ReceiverSessions_InvoiceId";
     internal const string AccountingBridgesTable = "AccountingBridges";
     internal const string AccountingBridgesPrimaryKey = "PK_AccountingBridges";
+    internal const string ReceiverSeenInputsTable = "ReceiverSeenInputs";
+    internal const string ReceiverSeenInputsPrimaryKey = "PK_ReceiverSeenInputs";
 
     internal const string ReceiverSessionEventsInvoiceSequenceIndex = "IX_ReceiverSessionEvents_InvoiceId_Sequence";
 
@@ -26,6 +28,7 @@ internal static class PayjoinPluginDbSchema
     internal const string AccountingBridgesStatusCreatedAtIndex = "IX_AccountingBridges_Status_CreatedAt";
     internal const string AccountingBridgesFallbackOutPointIndex = "IX_AccountingBridges_FallbackTransactionId_FallbackOutputIndex";
     internal const string AccountingBridgesExpectedFinalTransactionIdIndex = "IX_AccountingBridges_ExpectedFinalTransactionId";
+    internal const string ReceiverSeenInputsOutPointIndex = "IX_ReceiverSeenInputs_TransactionId_OutputIndex";
 
     internal const int ReceiverAddressMaxLength = 128;
     internal const int OhttpRelayUrlMaxLength = 2048;

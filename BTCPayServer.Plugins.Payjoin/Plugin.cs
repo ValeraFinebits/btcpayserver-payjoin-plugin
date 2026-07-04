@@ -28,6 +28,10 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton(provider => new PayjoinReceiverSessionStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
             provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+        applicationBuilder.AddSingleton(provider => new PayjoinSeenInputStore(
+            provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
+            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+        applicationBuilder.AddSingleton<IPayjoinWalletOwnershipService, PayjoinWalletOwnershipService>();
         applicationBuilder.AddSingleton<IPayjoinReceiverSessionGuard, PayjoinReceiverSessionGuard>();
         applicationBuilder.AddSingleton<IPayjoinReceiverRelayClient, PayjoinReceiverRelayClient>();
         applicationBuilder.AddSingleton<IPayjoinReceiverStateProcessor, PayjoinReceiverStateProcessor>();

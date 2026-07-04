@@ -6,12 +6,30 @@ using Microsoft.Extensions.Options;
 using NBitcoin;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
 
 public class PayjoinReceiverSessionStoreRelationalTests
 {
+    [Fact]
+    public void MarkSeenAndWasPresentReportsRepeatedOutpointsAsSeen()
+    {
+        // Arrange
+        using var testContext = new RelationalTestContext();
+        var store = testContext.CreateSeenInputStore();
+        var transactionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        // Act + Assert: first sighting is new, repeat is reported as seen, a different vout is new again.
+        Assert.False(store.MarkSeenAndWasPresent(transactionId, 0));
+        Assert.True(store.MarkSeenAndWasPresent(transactionId, 0));
+        Assert.False(store.MarkSeenAndWasPresent(transactionId, 1));
+
+        using var context = testContext.CreateDbContext();
+        Assert.Equal(2, context.ReceiverSeenInputs.Count());
+    }
+
     [Fact]
     public void TryReserveContributedInputAllowsOnlyOneReservationPerOutPointOnRelationalProvider()
     {
@@ -97,6 +115,8 @@ public class PayjoinReceiverSessionStoreRelationalTests
         }
 
         public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+
+        public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
         public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
 

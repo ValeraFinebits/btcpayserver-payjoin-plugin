@@ -21,6 +21,8 @@ public class PayjoinPluginDbContext : DbContext
 
     internal DbSet<PayjoinAccountingBridgeData> AccountingBridges { get; set; } = null!;
 
+    internal DbSet<PayjoinReceiverSeenInputData> ReceiverSeenInputs { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         System.ArgumentNullException.ThrowIfNull(modelBuilder);

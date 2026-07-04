@@ -43,7 +43,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
-    public async Task CreateInvoiceAndPayItThroughThePayjoinPluginWithSameWalletPayer()
+    public async Task CreateInvoiceAndAttemptToPayItThroughThePayjoinPluginWithSameWalletPayerIsRejected()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
         using var tester = CreateServerTester(newDb: true);
@@ -51,9 +51,22 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaSameWalletPayjoinPayerAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+        var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, payjoinContext.InvoiceId, cts.Token).ConfigureAwait(true);
 
-        PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
+        // A same-wallet payer funds the original PSBT with the receiver's own coins, so every
+        // input is receiver-owned. check_inputs_not_owned must treat that as an attempt to make
+        // the receiver co-sign its own inputs and reject the proposal instead of completing a
+        // payjoin. The sender only posts the original here; polling is deferred past the test
+        // timeout because no proposal may ever be produced.
+        var payjoinPayer = new PayjoinTestPayer(tester, context.Merchant, context.Network, useReservedSenderChangeAddress: true);
+        using var payCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+        var payTask = payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, PayjoinIntegrationTestSupport.TestTimeout, payCts.Token);
+
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, payjoinContext.InvoiceId, cts.Token).ConfigureAwait(true);
+
+        payCts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => payTask).ConfigureAwait(true);
     }
 
     [Fact]
