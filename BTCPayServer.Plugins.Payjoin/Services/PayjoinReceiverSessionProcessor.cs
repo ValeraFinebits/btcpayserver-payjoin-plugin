@@ -354,6 +354,13 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             return new ReceiverInputContribution(contribution.ProposalWithInputs, contribution.ContributedCoins);
         }
 
+        // An exhausted contribution attempt ends the session deliberately. Keeping it alive to
+        // retry on later ticks looks tempting for transient contention, but those races already
+        // resolve inside the attempt, and a session that lingers after its sender gave up would
+        // grab and reserve freshly confirmed coins until the monitoring deadline, starving future
+        // payjoins - the concurrency integration tests assert exactly this. Ending the session is
+        // the async analog of the v1 endpoint answering that payjoin is unavailable: the sender
+        // falls back and their original transaction still pays the invoice.
         LogPayjoinReceiverInputContributionFailed(_logger, invoiceId, contribution.FailureMessage, null);
         RemoveSession(invoiceId, "no receiver input available for payjoin contribution");
         return null;

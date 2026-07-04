@@ -35,9 +35,10 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
         // removed locally. The wallet view does not exclude coins reserved by concurrent sessions,
         // so rebuilding the set mid-attempt would re-offer the very input whose reservation just
         // failed and the deterministic library selection would pick it again. Each iteration
-        // strictly shrinks the set, which bounds the loop. A failed attempt currently ends the
-        // receiver session in PayjoinReceiverSessionProcessor; letting the session retry on a later
-        // poll tick with a freshly built candidate set is proposed separately.
+        // strictly shrinks the set, which bounds the loop, and transient reservation races resolve
+        // here by reselecting from the remaining candidates. An exhausted attempt is terminal:
+        // PayjoinReceiverSessionProcessor ends the session (see the rationale there) and the sender
+        // falls back to broadcasting their original transaction.
         var allCandidates = (await _walletAdapter.GetInputCandidatesAsync(storeId, cancellationToken).ConfigureAwait(false)).ToList();
         try
         {
