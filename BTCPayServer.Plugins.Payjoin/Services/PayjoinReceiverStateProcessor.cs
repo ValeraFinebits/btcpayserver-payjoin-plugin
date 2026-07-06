@@ -40,17 +40,17 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
 
         using var requestResponse = initialized.CreatePollRequest(context.OhttpRelayUrl.ToString());
         var responseBody = await _relayClient.SendAsync(
-            new SystemUri(requestResponse.request.url, UriKind.Absolute),
-            requestResponse.request.contentType,
-            requestResponse.request.body,
+            new SystemUri(requestResponse.Request.Url, UriKind.Absolute),
+            requestResponse.Request.ContentType,
+            requestResponse.Request.Body,
             cancellationToken).ConfigureAwait(false);
 
-        using var transition = initialized.ProcessResponse(responseBody, requestResponse.clientResponse);
+        using var transition = initialized.ProcessResponse(responseBody, requestResponse.ClientResponse);
         using var outcome = transition.Save(context.Persister);
 
         if (outcome is InitializedTransitionOutcome.Progress progress)
         {
-            await ProcessUncheckedProposalAsync(context, progress.inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
+            await ProcessUncheckedProposalAsync(context, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -61,11 +61,11 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
     {
         using var requestResponse = replyableError.CreateErrorRequest(context.OhttpRelayUrl.ToString());
         var responseBody = await _relayClient.SendAsync(
-            new SystemUri(requestResponse.request.url, UriKind.Absolute),
-            requestResponse.request.contentType,
-            requestResponse.request.body,
+            new SystemUri(requestResponse.Request.Url, UriKind.Absolute),
+            requestResponse.Request.ContentType,
+            requestResponse.Request.Body,
             cancellationToken).ConfigureAwait(false);
-        using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.clientResponse);
+        using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
         transition.Save(context.Persister);
     }
 
@@ -213,7 +213,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             return false;
         }
 
-        await ProcessReplyableErrorAsync(context, hasReplyableError.inner, cancellationToken).ConfigureAwait(false);
+        await ProcessReplyableErrorAsync(context, hasReplyableError.Inner, cancellationToken).ConfigureAwait(false);
         return true;
     }
 
@@ -244,7 +244,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         }
 
         public bool Callback(OutPoint outpoint) =>
-            _seenInputStore.MarkSeenAndWasPresent(outpoint.txid, checked((long)outpoint.vout));
+            _seenInputStore.MarkSeenAndWasPresent(outpoint.Txid, checked((long)outpoint.Vout));
     }
 
     internal sealed class CloseRequestedBroadcastGuard : CanBroadcast

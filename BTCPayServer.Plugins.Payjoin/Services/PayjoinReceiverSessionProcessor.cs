@@ -158,7 +158,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             case ReceiveSession.Initialized initialized:
                 try
                 {
-                    await _stateProcessor.ProcessInitializedAsync(stateContext, initialized.inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
+                    await _stateProcessor.ProcessInitializedAsync(stateContext, initialized.Inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
                 }
                 catch (PayjoinReceiverRelayTimeoutException ex)
                 {
@@ -167,25 +167,25 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
 
                 break;
             case ReceiveSession.HasReplyableError hasReplyableError:
-                await _stateProcessor.ProcessReplyableErrorAsync(stateContext, hasReplyableError.inner, stoppingToken).ConfigureAwait(false);
+                await _stateProcessor.ProcessReplyableErrorAsync(stateContext, hasReplyableError.Inner, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.UncheckedOriginalPayload payload:
-                await _stateProcessor.ProcessUncheckedProposalAsync(stateContext, payload.inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
+                await _stateProcessor.ProcessUncheckedProposalAsync(stateContext, payload.Inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.MaybeInputsOwned maybeInputsOwned:
-                await _stateProcessor.ProcessMaybeInputsOwnedAsync(stateContext, maybeInputsOwned.inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
+                await _stateProcessor.ProcessMaybeInputsOwnedAsync(stateContext, maybeInputsOwned.Inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.MaybeInputsSeen maybeInputsSeen:
-                await _stateProcessor.ProcessMaybeInputsSeenAsync(stateContext, maybeInputsSeen.inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
+                await _stateProcessor.ProcessMaybeInputsSeenAsync(stateContext, maybeInputsSeen.Inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.OutputsUnknown outputsUnknown:
-                await _stateProcessor.ProcessOutputsUnknownAsync(stateContext, outputsUnknown.inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
+                await _stateProcessor.ProcessOutputsUnknownAsync(stateContext, outputsUnknown.Inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsOutputs wantsOutputs:
-                await ContinueWithOutputsAsync(wantsOutputs.inner, stateContext, stoppingToken).ConfigureAwait(false);
+                await ContinueWithOutputsAsync(wantsOutputs.Inner, stateContext, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsInputs wantsInputs:
-                await ProcessWantsInputsAsync(wantsInputs.inner, persister, receiverScript, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, GetReservationExpiresAt(session), stoppingToken).ConfigureAwait(false);
+                await ProcessWantsInputsAsync(wantsInputs.Inner, persister, receiverScript, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, GetReservationExpiresAt(session), stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsFeeRange wantsFeeRange:
                 {
@@ -197,7 +197,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
 
                     await _proposalFinalizer.FinalizeAsync(
                         new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
-                        wantsFeeRange.inner,
+                        wantsFeeRange.Inner,
                         contributedCoinsForFeeRange,
                         stoppingToken).ConfigureAwait(false);
                     break;
@@ -212,7 +212,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
 
                     await _proposalFinalizer.FinalizeAsync(
                         new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
-                        provisionalProposal.inner,
+                        provisionalProposal.Inner,
                         contributedCoinsForProposal,
                         stoppingToken).ConfigureAwait(false);
                     break;
@@ -220,7 +220,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             case ReceiveSession.PayjoinProposal payjoinProposal:
                 await _proposalFinalizer.PostAsync(
                     new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
-                    payjoinProposal.inner,
+                    payjoinProposal.Inner,
                     stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.Monitor:
@@ -354,6 +354,13 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             return new ReceiverInputContribution(contribution.ProposalWithInputs, contribution.ContributedCoins);
         }
 
+        // An exhausted contribution attempt ends the session deliberately. Keeping it alive to
+        // retry on later ticks looks tempting for transient contention, but those races already
+        // resolve inside the attempt, and a session that lingers after its sender gave up would
+        // grab and reserve freshly confirmed coins until the monitoring deadline, starving future
+        // payjoins - the concurrency integration tests assert exactly this. Ending the session is
+        // the async analog of the v1 endpoint answering that payjoin is unavailable: the sender
+        // falls back and their original transaction still pays the invoice.
         LogPayjoinReceiverInputContributionFailed(_logger, invoiceId, contribution.FailureMessage, null);
         RemoveSession(invoiceId, "no receiver input available for payjoin contribution");
         return null;

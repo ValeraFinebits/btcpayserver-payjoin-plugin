@@ -205,8 +205,8 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
             using var withReplyKey = initial.Save(senderPersister);
 
             using var postContext = withReplyKey.CreateV2PostRequest(ohttpRelayUrl.ToString());
-            var postResponse = await SendRequestAsync(postContext.request, cancellationToken).ConfigureAwait(false);
-            using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.ohttpCtx);
+            var postResponse = await SendRequestAsync(postContext.Request, cancellationToken).ConfigureAwait(false);
+            using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.OhttpCtx);
 
             var current = withReplyTransition.Save(senderPersister);
             try
@@ -214,8 +214,8 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
                 for (var attempt = 0; attempt < MaxProposalPollAttempts; attempt++)
                 {
                     using var pollRequest = current.CreatePollRequest(ohttpRelayUrl.ToString());
-                    var pollResponse = await SendRequestAsync(pollRequest.request, cancellationToken).ConfigureAwait(false);
-                    using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.ohttpCtx);
+                    var pollResponse = await SendRequestAsync(pollRequest.Request, cancellationToken).ConfigureAwait(false);
+                    using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.OhttpCtx);
                     var outcome = pollTransition.Save(senderPersister);
 
                     try
@@ -223,11 +223,11 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
                         switch (outcome)
                         {
                             case PollingForProposalTransitionOutcome.Progress progress:
-                                proposalPsbtBase64 = progress.psbtBase64;
+                                proposalPsbtBase64 = progress.PsbtBase64;
                                 break;
                             case PollingForProposalTransitionOutcome.Stasis stasis:
                                 current.Dispose();
-                                current = stasis.inner;
+                                current = stasis.Inner;
                                 outcome = null;
                                 break;
                         }
@@ -330,11 +330,11 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
 
     private async Task<byte[]> SendRequestAsync(Request request, CancellationToken cancellationToken)
     {
-        using var message = new HttpRequestMessage(HttpMethod.Post, request.url)
+        using var message = new HttpRequestMessage(HttpMethod.Post, request.Url)
         {
-            Content = new ByteArrayContent(request.body)
+            Content = new ByteArrayContent(request.Body)
         };
-        message.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(request.contentType);
+        message.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(request.ContentType);
 
         var client = _httpClientFactory.CreateClient(nameof(RunTestPaymentService));
         using var response = await client.SendAsync(message, cancellationToken).ConfigureAwait(false);
