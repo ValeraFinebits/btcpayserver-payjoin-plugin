@@ -91,12 +91,12 @@ public sealed class GreenfieldPayjoinController : ControllerBase
 
         if (hasDirectoryUrls && PayjoinStoreSettings.NormalizeDirectoryUrls(settings.DirectoryUrls).Count == 0)
         {
-            ModelState.AddModelError(nameof(settings.DirectoryUrls), "At least one DirectoryUrl is required.");
+            ModelState.AddModelError(nameof(settings.DirectoryUrls), "At least one directory URL is required.");
         }
 
         if (hasRelayUrls && PayjoinStoreSettings.NormalizeOhttpRelayUrls(settings.OhttpRelayUrls).Count == 0)
         {
-            ModelState.AddModelError(nameof(settings.OhttpRelayUrls), "At least one OhttpRelayUrl is required.");
+            ModelState.AddModelError(nameof(settings.OhttpRelayUrls), "At least one OHTTP relay URL is required.");
         }
 
         var validatedDerivationScheme = await ValidateColdWalletDerivationSchemeAsync(settings.ColdWalletDerivationScheme).ConfigureAwait(false);

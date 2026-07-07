@@ -80,12 +80,12 @@ public class UIStorePayjoinController : Controller
 
         if (directoryUrls.Urls.Count == 0)
         {
-            ModelState.AddModelError(nameof(model.DirectoryUrlsText), "At least one DirectoryUrl is required.");
+            ModelState.AddModelError(nameof(model.DirectoryUrlsText), "At least one directory URL is required.");
         }
 
         if (relayUrls.Urls.Count == 0)
         {
-            ModelState.AddModelError(nameof(model.OhttpRelayUrlsText), "At least one OhttpRelayUrl is required.");
+            ModelState.AddModelError(nameof(model.OhttpRelayUrlsText), "At least one OHTTP relay URL is required.");
         }
 
         if (!ModelState.IsValid)
