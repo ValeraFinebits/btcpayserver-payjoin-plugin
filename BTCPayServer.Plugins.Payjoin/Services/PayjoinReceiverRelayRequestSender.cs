@@ -89,8 +89,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
             ExceptionDispatchInfo.Capture(lastTransportError).Throw();
         }
 
-        throw new InvalidOperationException($"No configured OHTTP relays are currently available for invoice '{invoiceId}'.");
-    }
+        throw new PayjoinReceiverRelayTimeoutException($"No configured OHTTP relays are currently available for invoice '{invoiceId}'.");
 
     private static void RemoveRelay(List<SystemUri> remainingRelays, SystemUri relayUrl)
     {
