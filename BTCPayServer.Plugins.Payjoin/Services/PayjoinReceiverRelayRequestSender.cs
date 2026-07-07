@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using SystemUri = System.Uri;
@@ -85,7 +86,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
 
         if (lastTransportError is not null)
         {
-            throw lastTransportError;
+            ExceptionDispatchInfo.Capture(lastTransportError).Throw();
         }
 
         throw new InvalidOperationException($"No configured OHTTP relays are currently available for invoice '{invoiceId}'.");
