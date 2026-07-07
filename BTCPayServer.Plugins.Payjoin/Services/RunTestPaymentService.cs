@@ -219,6 +219,7 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
                 relayUrl => withReplyKey.CreateV2PostRequest(relayUrl.ToString()),
                 requestResponse => requestResponse.Request,
                 cancellationToken).ConfigureAwait(false);
+            using var postRequest = postContext;
             using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.OhttpCtx);
 
             var current = withReplyTransition.Save(senderPersister);
@@ -231,6 +232,7 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
                         relayUrl => current.CreatePollRequest(relayUrl.ToString()),
                         requestResponse => requestResponse.Request,
                         cancellationToken).ConfigureAwait(false);
+                    using var pollRequestContext = pollRequest;
                     using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.OhttpCtx);
                     var outcome = pollTransition.Save(senderPersister);
 
@@ -393,6 +395,11 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
             catch (TaskCanceledException ex)
             {
                 context.Dispose();
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
                 lastError = ex;
             }
             catch

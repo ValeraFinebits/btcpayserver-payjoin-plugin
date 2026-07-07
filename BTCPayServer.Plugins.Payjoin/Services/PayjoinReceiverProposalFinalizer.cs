@@ -102,6 +102,7 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
             cancellationToken).ConfigureAwait(false);
         var responseBody = relayResponse.ResponseBody;
         var requestResponse = relayResponse.RequestContext;
+        using var relayRequestContext = requestResponse;
 
         using var transition = proposal.ProcessResponse(responseBody, requestResponse.ClientResponse);
         using var _ = transition.Save(context.Persister);

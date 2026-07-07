@@ -44,6 +44,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             initialized.CreatePollRequest,
             requestResponse => (new SystemUri(requestResponse.Request.Url), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
+        using var relayRequestContext = requestResponse;
 
         using var transition = initialized.ProcessResponse(responseBody, requestResponse.ClientResponse);
         using var outcome = transition.Save(context.Persister);
@@ -66,6 +67,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             replyableError.CreateErrorRequest,
             requestResponse => (new SystemUri(requestResponse.Request.Url), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
+        using var relayRequestContext = requestResponse;
         using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
         transition.Save(context.Persister);
     }

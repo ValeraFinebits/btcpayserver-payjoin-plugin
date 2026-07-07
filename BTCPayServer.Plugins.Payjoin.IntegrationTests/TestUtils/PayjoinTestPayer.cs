@@ -211,6 +211,7 @@ internal sealed class PayjoinTestPayer
             relayUrl => withReplyKey.CreateV2PostRequest(relayUrl.ToString()),
             requestResponse => requestResponse.Request,
             cancellationToken).ConfigureAwait(false);
+        using var postRequestContext = postContext;
         using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.OhttpCtx);
 
         try
@@ -263,6 +264,7 @@ internal sealed class PayjoinTestPayer
                     relayUrl => current.CreatePollRequest(relayUrl.ToString()),
                     requestResponse => requestResponse.Request,
                     cancellationToken).ConfigureAwait(false);
+                using var pollRequestContext = pollRequest;
                 using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.OhttpCtx);
 
                 var outcome = pollTransition.Save(senderPersister);
