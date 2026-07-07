@@ -121,7 +121,7 @@ public class UIPayJoinController : Controller
         var ohttpRelayUrls = storeSettings?.GetEffectiveOhttpRelayUrls();
         if (ohttpRelayUrls is null || ohttpRelayUrls.Count == 0)
         {
-            return RunTestPaymentFailure("OhttpRelayUrls not found");
+            return RunTestPaymentFailure("no OHTTP relay URLs configured");
         }
 
         var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
