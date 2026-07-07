@@ -81,12 +81,14 @@ public sealed class GreenfieldPayjoinController : ControllerBase
 
         foreach (var invalidDirectoryUrl in settings.GetInvalidDirectoryUrls())
         {
-            ModelState.AddModelError(nameof(settings.DirectoryUrls), $"'{invalidDirectoryUrl}' is invalid. Only absolute HTTPS URLs are allowed.");
+            var displayValue = invalidDirectoryUrl?.ToString() ?? "null";
+            ModelState.AddModelError(nameof(settings.DirectoryUrls), $"'{displayValue}' is invalid. Only absolute HTTPS URLs are allowed.");
         }
 
         foreach (var invalidRelayUrl in settings.GetInvalidOhttpRelayUrls())
         {
-            ModelState.AddModelError(nameof(settings.OhttpRelayUrls), $"'{invalidRelayUrl}' is invalid. Only absolute HTTPS URLs are allowed.");
+            var displayValue = invalidRelayUrl?.ToString() ?? "null";
+            ModelState.AddModelError(nameof(settings.OhttpRelayUrls), $"'{displayValue}' is invalid. Only absolute HTTPS URLs are allowed.");
         }
 
         if (hasDirectoryUrls && PayjoinStoreSettings.NormalizeDirectoryUrls(settings.DirectoryUrls).Count == 0)

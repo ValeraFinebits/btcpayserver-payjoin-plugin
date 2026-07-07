@@ -98,7 +98,7 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
             context.StoreId,
             context.InvoiceId,
             proposal.CreatePostRequest,
-            requestResponse => (new SystemUri(requestResponse.Request.Url), requestResponse.Request.ContentType, requestResponse.Request.Body),
+            requestResponse => (new SystemUri(requestResponse.Request.Url, UriKind.Absolute), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
         var responseBody = relayResponse.ResponseBody;
         var requestResponse = relayResponse.RequestContext;

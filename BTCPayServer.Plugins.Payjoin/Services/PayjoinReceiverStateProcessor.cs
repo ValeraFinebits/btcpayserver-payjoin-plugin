@@ -42,7 +42,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             context.StoreId,
             context.InvoiceId,
             initialized.CreatePollRequest,
-            requestResponse => (new SystemUri(requestResponse.Request.Url), requestResponse.Request.ContentType, requestResponse.Request.Body),
+            requestResponse => (new SystemUri(requestResponse.Request.Url, UriKind.Absolute), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
         using var relayRequestContext = requestResponse;
 
@@ -65,7 +65,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             context.StoreId,
             context.InvoiceId,
             replyableError.CreateErrorRequest,
-            requestResponse => (new SystemUri(requestResponse.Request.Url), requestResponse.Request.ContentType, requestResponse.Request.Body),
+            requestResponse => (new SystemUri(requestResponse.Request.Url, UriKind.Absolute), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
         using var relayRequestContext = requestResponse;
         using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
