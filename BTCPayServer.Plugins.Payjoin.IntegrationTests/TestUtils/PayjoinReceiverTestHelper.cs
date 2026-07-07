@@ -11,7 +11,7 @@ internal static class PayjoinReceiverTestHelper
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ReceiverSessionCreationTimeout = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan ReceiverSessionRemovalTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ReceiverSessionRemovalTimeout = TimeSpan.FromSeconds(50);
 
     public static Task AssertReceiverSessionEventuallyCreatedAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
     {
@@ -23,7 +23,7 @@ internal static class PayjoinReceiverTestHelper
         return AssertReceiverSessionStateAsync(tester, invoiceId, shouldExist: false, cancellationToken);
     }
 
-    public static async Task AssertReceiverSessionEventuallyCloseRequestedOrRemovedAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
+    public static async Task AssertReceiverSessionEventuallyCloseRequestedAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
     {
         var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
         var maxAttempts = GetAttemptCount(ReceiverSessionRemovalTimeout);
@@ -32,7 +32,7 @@ internal static class PayjoinReceiverTestHelper
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!sessionStore.TryGetSession(invoiceId, out var session) || session?.IsCloseRequested == true)
+            if (sessionStore.TryGetSession(invoiceId, out var session) && session?.IsCloseRequested == true)
             {
                 return;
             }
@@ -40,7 +40,7 @@ internal static class PayjoinReceiverTestHelper
             await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(true);
         }
 
-        Assert.Fail($"Expected receiver session for invoice '{invoiceId}' to be marked for closure or removed.");
+        Assert.Fail($"Expected receiver session for invoice '{invoiceId}' to be marked for closure while still present.");
     }
 
     public static async Task AssertReceiverSessionEventuallyHasContributedInputsAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)

@@ -136,10 +136,14 @@ public sealed class PayjoinReceiverSessionStore
         var changed = !sessionData.IsCloseRequested || sessionData.CloseInvoiceStatus != invoiceStatus;
         sessionData.IsCloseRequested = true;
         sessionData.CloseInvoiceStatus = invoiceStatus;
-        sessionData.CloseRequestedAt ??= requestedAt;
         if (changed)
         {
+            sessionData.CloseRequestedAt = requestedAt;
             sessionData.InitializedPollAfterCloseRequestConsumed = false;
+        }
+        else
+        {
+            sessionData.CloseRequestedAt ??= requestedAt;
         }
         if (!changed)
         {

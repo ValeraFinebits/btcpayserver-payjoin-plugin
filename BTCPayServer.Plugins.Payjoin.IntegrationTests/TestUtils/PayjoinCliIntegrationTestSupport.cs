@@ -33,7 +33,7 @@ internal static class PayjoinCliIntegrationTestSupport
             paymentResult = await payjoinCliPayer.PayAsync(
                 payjoinContext.PaymentUrl,
                 payjoinContext.DirectoryUrl,
-                payjoinContext.OhttpRelayUrl,
+                payjoinContext.OhttpRelayUrls,
                 payjoinContext.InvoiceScript,
                 Money.Coins(payjoinContext.ExpectedDue),
                 cancellationToken).ConfigureAwait(true);

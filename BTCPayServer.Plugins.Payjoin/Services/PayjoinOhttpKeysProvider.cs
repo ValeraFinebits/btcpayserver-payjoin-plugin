@@ -38,20 +38,30 @@ public sealed class PayjoinOhttpKeysProvider
         string storeId,
         CancellationToken cancellationToken)
     {
-        var cacheKey = $"PayjoinOhttpKeys_{storeId}_{ohttpRelayUrl}";
+        var result = await FetchKeysAsync(ohttpRelayUrl, directoryUrl, storeId, cancellationToken).ConfigureAwait(false);
+        return result.OhttpKeys;
+    }
 
-        if (_memoryCache.TryGetValue(cacheKey, out OhttpKeys? ohttpKeys))
+    internal async Task<PayjoinOhttpKeysFetchResult> FetchKeysAsync(
+        SystemUri ohttpRelayUrl,
+        string directoryUrl,
+        string storeId,
+        CancellationToken cancellationToken)
+    {
+        var cacheKey = CreateCacheKey(storeId, ohttpRelayUrl, directoryUrl);
+
+        if (_memoryCache.TryGetValue(cacheKey, out OhttpKeys? ohttpKeys) && ohttpKeys is not null)
         {
-            return ohttpKeys;
+            return PayjoinOhttpKeysFetchResult.Success(ohttpKeys!);
         }
 
         var semaphore = _fetchLocks.GetOrAdd(cacheKey, static _ => new SemaphoreSlim(1, 1));
         await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_memoryCache.TryGetValue(cacheKey, out ohttpKeys))
+            if (_memoryCache.TryGetValue(cacheKey, out ohttpKeys) && ohttpKeys is not null)
             {
-                return ohttpKeys;
+                return PayjoinOhttpKeysFetchResult.Success(ohttpKeys!);
             }
 
             //var ohttpKeysClient = new OhttpKeysClient(_httpClientFactory.CreateClient(nameof(PayjoinOhttpKeysProvider)));
@@ -63,16 +73,67 @@ public sealed class PayjoinOhttpKeysProvider
                 .SetAbsoluteExpiration(OhttpKeysCacheDuration)
                 .RegisterPostEvictionCallback(static (_, value, _, _) => (value as IDisposable)?.Dispose());
             _memoryCache.Set(cacheKey, ohttpKeys, cacheOptions);
-            return ohttpKeys;
+            return PayjoinOhttpKeysFetchResult.Success(ohttpKeys);
         }
-        catch (Exception e) when (e is UniffiException or HttpRequestException)
+        catch (HttpRequestException e)
         {
             LogFetchFailure(_logger, ohttpRelayUrl.AbsoluteUri, storeId, e);
-            return null;
+            return PayjoinOhttpKeysFetchResult.RetryableFailure(e);
+        }
+        catch (UniffiException e)
+        {
+            LogFetchFailure(_logger, ohttpRelayUrl.AbsoluteUri, storeId, e);
+            return PayjoinOhttpKeysFetchResult.NonRetryableFailure(e);
         }
         finally
         {
             semaphore.Release();
         }
+    }
+
+    internal static string CreateCacheKey(string storeId, SystemUri ohttpRelayUrl, string directoryUrl)
+    {
+        return $"PayjoinOhttpKeys_{storeId}_{ohttpRelayUrl.AbsoluteUri}_{directoryUrl}";
+    }
+}
+
+internal enum PayjoinOhttpKeysFetchStatus
+{
+    Success,
+    RetryableFailure,
+    NonRetryableFailure
+}
+
+internal sealed class PayjoinOhttpKeysFetchResult
+{
+    private PayjoinOhttpKeysFetchResult(PayjoinOhttpKeysFetchStatus status, OhttpKeys? ohttpKeys, Exception? exception)
+    {
+        Status = status;
+        OhttpKeys = ohttpKeys;
+        Exception = exception;
+    }
+
+    internal PayjoinOhttpKeysFetchStatus Status { get; }
+
+    internal OhttpKeys? OhttpKeys { get; }
+
+    internal Exception? Exception { get; }
+
+    internal static PayjoinOhttpKeysFetchResult Success(OhttpKeys ohttpKeys)
+    {
+        ArgumentNullException.ThrowIfNull(ohttpKeys);
+        return new PayjoinOhttpKeysFetchResult(PayjoinOhttpKeysFetchStatus.Success, ohttpKeys, null);
+    }
+
+    internal static PayjoinOhttpKeysFetchResult RetryableFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return new PayjoinOhttpKeysFetchResult(PayjoinOhttpKeysFetchStatus.RetryableFailure, null, exception);
+    }
+
+    internal static PayjoinOhttpKeysFetchResult NonRetryableFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return new PayjoinOhttpKeysFetchResult(PayjoinOhttpKeysFetchStatus.NonRetryableFailure, null, exception);
     }
 }

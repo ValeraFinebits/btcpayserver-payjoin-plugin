@@ -51,16 +51,30 @@ internal sealed class PayjoinTestPayer
 
     public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, CancellationToken cancellationToken)
     {
-        return await PayAsync(paymentUrl, ohttpRelayUrl, preProposalPollDelay: null, cancellationToken).ConfigureAwait(false);
+        return await PayAsync(paymentUrl, [ohttpRelayUrl], preProposalPollDelay: null, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
     {
+        return await PayAsync(paymentUrl, [ohttpRelayUrl], preProposalPollDelay, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, IReadOnlyList<SystemUri> ohttpRelayUrls, CancellationToken cancellationToken)
+    {
+        return await PayAsync(paymentUrl, ohttpRelayUrls, preProposalPollDelay: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, IReadOnlyList<SystemUri> ohttpRelayUrls, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(paymentUrl);
-        ArgumentNullException.ThrowIfNull(ohttpRelayUrl);
+        ArgumentNullException.ThrowIfNull(ohttpRelayUrls);
+        if (ohttpRelayUrls.Count == 0)
+        {
+            throw new InvalidOperationException($"No OHTTP relays configured for payer store '{_payer.StoreId}'.");
+        }
 
         var senderPsbtResult = await CreateSenderPsbtAsync(paymentUrl, cancellationToken).ConfigureAwait(false);
-        var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrl, senderPsbtResult.Psbt, preProposalPollDelay, cancellationToken).ConfigureAwait(false);
+        var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrls, senderPsbtResult.Psbt, preProposalPollDelay, cancellationToken).ConfigureAwait(false);
 
         return await FinalizeAndBroadcastAsync(senderPsbtResult, proposalPsbt, cancellationToken).ConfigureAwait(false);
     }
@@ -182,7 +196,7 @@ internal sealed class PayjoinTestPayer
         return new CreateSenderPsbtResult(createResult.PSBT, Money.Coins(paymentAmount));
     }
 
-    private async Task<PSBT> RequestProposalAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, PSBT senderPsbt, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
+    private async Task<PSBT> RequestProposalAsync(SystemUri paymentUrl, IReadOnlyList<SystemUri> ohttpRelayUrls, PSBT senderPsbt, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
     {
         string? proposalPsbtBase64 = null;
         var senderPersister = new InMemorySenderPersister();
@@ -192,8 +206,11 @@ internal sealed class PayjoinTestPayer
         using var initial = senderBuilder.BuildRecommended(RecommendedFeeContributionRate);
         using var withReplyKey = initial.Save(senderPersister);
 
-        using var postContext = withReplyKey.CreateV2PostRequest(ohttpRelayUrl.ToString());
-        var postResponse = await SendRequestAsync(postContext.Request, cancellationToken).ConfigureAwait(false);
+        var (postResponse, postContext) = await SendViaRelaysAsync(
+            ohttpRelayUrls,
+            relayUrl => withReplyKey.CreateV2PostRequest(relayUrl.ToString()),
+            requestResponse => requestResponse.Request,
+            cancellationToken).ConfigureAwait(false);
         using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.OhttpCtx);
 
         try
@@ -203,7 +220,7 @@ internal sealed class PayjoinTestPayer
             {
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
-            proposalPsbtBase64 = await PollForProposalAsync(current, senderPersister, ohttpRelayUrl, cancellationToken).ConfigureAwait(false);
+            proposalPsbtBase64 = await PollForProposalAsync(current, senderPersister, ohttpRelayUrls, cancellationToken).ConfigureAwait(false);
         }
         catch (SenderPersistedException.ResponseException ex)
         {
@@ -212,7 +229,7 @@ internal sealed class PayjoinTestPayer
 
         if (string.IsNullOrWhiteSpace(proposalPsbtBase64))
         {
-            throw new InvalidOperationException($"No payjoin proposal was received after {MaxProposalPollAttempts} poll attempts for payer store '{_payer.StoreId}' via relay '{ohttpRelayUrl}'.");
+            throw new InvalidOperationException($"No payjoin proposal was received after {MaxProposalPollAttempts} poll attempts for payer store '{_payer.StoreId}' via relays '{string.Join(", ", ohttpRelayUrls)}'.");
         }
 
         try
@@ -232,7 +249,7 @@ internal sealed class PayjoinTestPayer
     private async Task<string?> PollForProposalAsync(
         PollingForProposal current,
         InMemorySenderPersister senderPersister,
-        SystemUri ohttpRelayUrl,
+        IReadOnlyList<SystemUri> ohttpRelayUrls,
         CancellationToken cancellationToken)
     {
         string? proposalPsbtBase64 = null;
@@ -241,8 +258,11 @@ internal sealed class PayjoinTestPayer
         {
             for (var attempt = 0; attempt < MaxProposalPollAttempts; attempt++)
             {
-                using var pollRequest = current.CreatePollRequest(ohttpRelayUrl.ToString());
-                var pollResponse = await SendRequestAsync(pollRequest.Request, cancellationToken).ConfigureAwait(false);
+                var (pollResponse, pollRequest) = await SendViaRelaysAsync(
+                    ohttpRelayUrls,
+                    relayUrl => current.CreatePollRequest(relayUrl.ToString()),
+                    requestResponse => requestResponse.Request,
+                    cancellationToken).ConfigureAwait(false);
                 using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.OhttpCtx);
 
                 var outcome = pollTransition.Save(senderPersister);
@@ -280,6 +300,47 @@ internal sealed class PayjoinTestPayer
         }
 
         return proposalPsbtBase64;
+    }
+
+    private async Task<(byte[] Response, TContext Context)> SendViaRelaysAsync<TContext>(
+        IReadOnlyList<SystemUri> relayUrls,
+        Func<SystemUri, TContext> createContext,
+        Func<TContext, Request> getRequest,
+        CancellationToken cancellationToken)
+        where TContext : IDisposable
+    {
+        ArgumentNullException.ThrowIfNull(relayUrls);
+        ArgumentNullException.ThrowIfNull(createContext);
+        ArgumentNullException.ThrowIfNull(getRequest);
+
+        Exception? lastError = null;
+        foreach (var relayUrl in relayUrls)
+        {
+            var context = createContext(relayUrl);
+            try
+            {
+                var request = getRequest(context);
+                var response = await SendRequestAsync(request, cancellationToken).ConfigureAwait(false);
+                return (response, context);
+            }
+            catch (HttpRequestException ex)
+            {
+                context.Dispose();
+                lastError = ex;
+            }
+            catch (InvalidOperationException ex)
+            {
+                context.Dispose();
+                lastError = ex;
+            }
+            catch
+            {
+                context.Dispose();
+                throw;
+            }
+        }
+
+        throw new InvalidOperationException($"All configured OHTTP relays failed for payer store '{_payer.StoreId}'. LastError='{lastError?.Message}'", lastError);
     }
 
     private InvalidOperationException CreateSenderResponseFailure(SenderPersistedException.ResponseException ex)

@@ -28,15 +28,19 @@ internal sealed class PayjoinCliPayer : IDisposable
         _payjoinCliExecutablePath = ResolvePayjoinCliExecutablePath();
     }
 
-    public async Task<PayjoinCliPaymentResult> PayAsync(Uri paymentUrl, Uri directoryUrl, Uri ohttpRelayUrl, Script expectedInvoiceScript, Money expectedInvoiceAmount, CancellationToken cancellationToken)
+    public async Task<PayjoinCliPaymentResult> PayAsync(Uri paymentUrl, Uri directoryUrl, IReadOnlyList<Uri> ohttpRelayUrls, Script expectedInvoiceScript, Money expectedInvoiceAmount, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(paymentUrl);
         ArgumentNullException.ThrowIfNull(directoryUrl);
-        ArgumentNullException.ThrowIfNull(ohttpRelayUrl);
+        ArgumentNullException.ThrowIfNull(ohttpRelayUrls);
+        if (ohttpRelayUrls.Count == 0)
+        {
+            throw new InvalidOperationException("At least one OHTTP relay URL is required for payjoin-cli.");
+        }
         ArgumentNullException.ThrowIfNull(expectedInvoiceScript);
 
         var knownTransactionIds = await GetWalletTransactionIdsAsync(cancellationToken).ConfigureAwait(false);
-        await WriteConfigAsync(directoryUrl, ohttpRelayUrl, cancellationToken).ConfigureAwait(false);
+        await WriteConfigAsync(directoryUrl, ohttpRelayUrls, cancellationToken).ConfigureAwait(false);
 
         var startInfo = new ProcessStartInfo
         {
@@ -145,7 +149,7 @@ internal sealed class PayjoinCliPayer : IDisposable
         }
     }
 
-    private async Task WriteConfigAsync(Uri directoryUrl, Uri ohttpRelayUrl, CancellationToken cancellationToken)
+    private async Task WriteConfigAsync(Uri directoryUrl, IReadOnlyList<Uri> ohttpRelayUrls, CancellationToken cancellationToken)
     {
         var configPath = Path.Combine(_workingDirectory, "config.toml");
         var configBuilder = new StringBuilder();
@@ -158,7 +162,18 @@ internal sealed class PayjoinCliPayer : IDisposable
         configBuilder.AppendLine();
         configBuilder.AppendLine("[v2]");
         configBuilder.Append("pj_directory = \"").Append(directoryUrl.AbsoluteUri).AppendLine("\"");
-        configBuilder.Append("ohttp_relays = [\"").Append(ohttpRelayUrl.AbsoluteUri).AppendLine("\"]");
+        configBuilder.Append("ohttp_relays = [");
+        for (var i = 0; i < ohttpRelayUrls.Count; i++)
+        {
+            if (i > 0)
+            {
+                configBuilder.Append(", ");
+            }
+
+            configBuilder.Append('"').Append(ohttpRelayUrls[i].AbsoluteUri).Append('"');
+        }
+
+        configBuilder.AppendLine("]");
 
         var config = configBuilder.ToString();
 

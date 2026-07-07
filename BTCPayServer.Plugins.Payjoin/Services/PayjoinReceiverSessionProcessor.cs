@@ -8,7 +8,6 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -185,7 +184,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                 await ContinueWithOutputsAsync(wantsOutputs.Inner, stateContext, stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsInputs wantsInputs:
-                await ProcessWantsInputsAsync(wantsInputs.Inner, persister, receiverScript, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, GetReservationExpiresAt(session), stoppingToken).ConfigureAwait(false);
+                await ProcessWantsInputsAsync(wantsInputs.Inner, persister, receiverScript, session.StoreId, session.InvoiceId, GetReservationExpiresAt(session), stoppingToken).ConfigureAwait(false);
                 break;
             case ReceiveSession.WantsFeeRange wantsFeeRange:
                 {
@@ -196,7 +195,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     }
 
                     await _proposalFinalizer.FinalizeAsync(
-                        new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
+                        new PayjoinReceiverProposalFinalizationContext(persister, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
                         wantsFeeRange.Inner,
                         contributedCoinsForFeeRange,
                         stoppingToken).ConfigureAwait(false);
@@ -211,7 +210,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     }
 
                     await _proposalFinalizer.FinalizeAsync(
-                        new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
+                        new PayjoinReceiverProposalFinalizationContext(persister, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
                         provisionalProposal.Inner,
                         contributedCoinsForProposal,
                         stoppingToken).ConfigureAwait(false);
@@ -222,7 +221,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     // A replay can land here when the previous attempt stopped between finalizing the
                     // proposal and recording its expected transaction on the accounting bridge, so the
                     // recording is completed before the proposal is handed to the sender again.
-                    var finalizationContext = new PayjoinReceiverProposalFinalizationContext(persister, session.OhttpRelayUrl!, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode);
+                    var finalizationContext = new PayjoinReceiverProposalFinalizationContext(persister, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode);
                     await _proposalFinalizer.EnsureExpectedFinalTransactionAsync(finalizationContext, payjoinProposal.Inner, stoppingToken).ConfigureAwait(false);
                     await _proposalFinalizer.PostAsync(finalizationContext, payjoinProposal.Inner, stoppingToken).ConfigureAwait(false);
                     break;
@@ -244,7 +243,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             proposal,
             context.Persister,
             context.ReceiverScript,
-            context.OhttpRelayUrl,
             context.StoreId,
             context.InvoiceId,
             GetReservationExpiresAt(context.Session),
@@ -255,7 +253,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         WantsOutputs proposal,
         JsonReceiverSessionPersister persister,
         byte[] receiverScript,
-        SystemUri ohttpRelayUrl,
         string storeId,
         string invoiceId,
         DateTimeOffset reservationExpiresAt,
@@ -272,7 +269,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             using var wantsInputs = ApplySettlementOutputs(proposal, persister, settlementOutputs);
             await PersistSettlementScriptAsync(invoiceId, settlementOutputs, stoppingToken).ConfigureAwait(false);
             LogPayjoinReceiverPreparedSettlementOutputs(_logger, invoiceId, null);
-            await ProcessWantsInputsAsync(wantsInputs, persister, receiverScript, ohttpRelayUrl, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
+            await ProcessWantsInputsAsync(wantsInputs, persister, receiverScript, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
         }
         catch (OutputSubstitutionException ex)
         {
@@ -285,7 +282,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         WantsInputs proposal,
         JsonReceiverSessionPersister persister,
         byte[] receiverScript,
-        SystemUri ohttpRelayUrl,
         string storeId,
         string invoiceId,
         DateTimeOffset reservationExpiresAt,
@@ -301,7 +297,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
 
         try
         {
-            await FinalizeInputContributionAsync(contribution, persister, ohttpRelayUrl, storeId, invoiceId, stoppingToken).ConfigureAwait(false);
+            await FinalizeInputContributionAsync(contribution, persister, storeId, invoiceId, stoppingToken).ConfigureAwait(false);
         }
         finally
         {
@@ -375,7 +371,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private async Task FinalizeInputContributionAsync(
         ReceiverInputContribution contribution,
         JsonReceiverSessionPersister persister,
-        SystemUri ohttpRelayUrl,
         string storeId,
         string invoiceId,
         CancellationToken stoppingToken)
@@ -383,7 +378,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         using var transition = contribution.ProposalWithInputs!.CommitInputs();
         using var wantsFeeRange = transition.Save(persister);
         await _proposalFinalizer.FinalizeAsync(
-            new PayjoinReceiverProposalFinalizationContext(persister, ohttpRelayUrl, storeId, invoiceId, PayjoinConstants.BitcoinCode),
+            new PayjoinReceiverProposalFinalizationContext(persister, storeId, invoiceId, PayjoinConstants.BitcoinCode),
             wantsFeeRange,
             contribution.ContributedCoins,
             stoppingToken).ConfigureAwait(false);

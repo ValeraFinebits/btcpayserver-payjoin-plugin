@@ -118,9 +118,10 @@ public class UIPayJoinController : Controller
         }
 
         var storeSettings = await _storeSettingsRepository.GetAsync(invoice.StoreId).ConfigureAwait(false);
-        if (storeSettings is null || storeSettings.OhttpRelayUrl is null)
+        var ohttpRelayUrls = storeSettings?.GetEffectiveOhttpRelayUrls();
+        if (ohttpRelayUrls is null || ohttpRelayUrls.Count == 0)
         {
-            return RunTestPaymentFailure("OhttpRelayUrl not found");
+            return RunTestPaymentFailure("OhttpRelayUrls not found");
         }
 
         var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
@@ -170,7 +171,7 @@ public class UIPayJoinController : Controller
         var runTestPaymentContext = new RunTestPaymentContext(
             request.InvoiceId,
             canonicalPaymentUrl,
-            storeSettings.OhttpRelayUrl,
+            ohttpRelayUrls,
             paymentAddressValue,
             paymentAmount,
             network);

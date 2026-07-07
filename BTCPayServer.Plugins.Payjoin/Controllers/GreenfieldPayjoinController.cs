@@ -67,14 +67,36 @@ public sealed class GreenfieldPayjoinController : ControllerBase
             return this.CreateAPIError(400, "missing-request-body", "The request body is required");
         }
 
-        if (settings.DirectoryUrl is null)
+        var hasDirectoryUrls = settings.DirectoryUrls is not null;
+        if (!hasDirectoryUrls)
         {
-            ModelState.AddModelError(nameof(settings.DirectoryUrl), "DirectoryUrl is required.");
+            ModelState.AddModelError(nameof(settings.DirectoryUrls), "The directoryUrls field is required.");
         }
 
-        if (settings.OhttpRelayUrl is null)
+        var hasRelayUrls = settings.OhttpRelayUrls is not null;
+        if (!hasRelayUrls)
         {
-            ModelState.AddModelError(nameof(settings.OhttpRelayUrl), "OhttpRelayUrl is required.");
+            ModelState.AddModelError(nameof(settings.OhttpRelayUrls), "The ohttpRelayUrls field is required.");
+        }
+
+        foreach (var invalidDirectoryUrl in settings.GetInvalidDirectoryUrls())
+        {
+            ModelState.AddModelError(nameof(settings.DirectoryUrls), $"'{invalidDirectoryUrl}' is invalid. Only absolute HTTPS URLs are allowed.");
+        }
+
+        foreach (var invalidRelayUrl in settings.GetInvalidOhttpRelayUrls())
+        {
+            ModelState.AddModelError(nameof(settings.OhttpRelayUrls), $"'{invalidRelayUrl}' is invalid. Only absolute HTTPS URLs are allowed.");
+        }
+
+        if (hasDirectoryUrls && PayjoinStoreSettings.NormalizeDirectoryUrls(settings.DirectoryUrls).Count == 0)
+        {
+            ModelState.AddModelError(nameof(settings.DirectoryUrls), "At least one DirectoryUrl is required.");
+        }
+
+        if (hasRelayUrls && PayjoinStoreSettings.NormalizeOhttpRelayUrls(settings.OhttpRelayUrls).Count == 0)
+        {
+            ModelState.AddModelError(nameof(settings.OhttpRelayUrls), "At least one OhttpRelayUrl is required.");
         }
 
         var validatedDerivationScheme = await ValidateColdWalletDerivationSchemeAsync(settings.ColdWalletDerivationScheme).ConfigureAwait(false);

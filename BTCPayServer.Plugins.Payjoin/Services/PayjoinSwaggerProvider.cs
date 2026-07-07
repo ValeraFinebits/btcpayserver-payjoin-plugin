@@ -166,23 +166,29 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "directoryUrl",
-              "ohttpRelayUrl"
+              "directoryUrls",
+              "ohttpRelayUrls"
             ],
             "properties": {
               "payjoinV2Enabled": {
                 "type": "boolean",
                 "description": "Whether checkout and API-generated payment URLs should include Payjoin v2 (BIP77) by default."
               },
-              "directoryUrl": {
-                "type": "string",
-                "format": "uri",
-                "description": "PayJoin directory URL."
+              "directoryUrls": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "description": "PayJoin directory URLs."
               },
-              "ohttpRelayUrl": {
-                "type": "string",
-                "format": "uri",
-                "description": "OHTTP relay URL used for receiver polling."
+              "ohttpRelayUrls": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "description": "OHTTP relay URLs used for receiver polling."
               },
               "coldWalletDerivationScheme": {
                 "type": "string",

@@ -3,13 +3,12 @@ using BTCPayServer.Abstractions.Extensions;
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
 using BTCPayServer.Data;
-using BTCPayServer.Payments;
-using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Localization;
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace BTCPayServer.Plugins.Payjoin;
@@ -69,9 +68,11 @@ public class UIPayjoinOverviewController : Controller
 
         var settings = await _storeSettingsRepository.GetAsync(currentStore.Id).ConfigureAwait(false);
         var network = _networkProvider.GetNetwork<BTCPayNetwork>(BitcoinCode);
+        var directoryUrls = settings.GetEffectiveDirectoryUrls();
+        var ohttpRelayUrls = settings.GetEffectiveOhttpRelayUrls();
 
-        var directoryConfigured = settings.DirectoryUrl is not null;
-        var relayConfigured = settings.OhttpRelayUrl is not null;
+        var directoryConfigured = directoryUrls.Count > 0;
+        var relayConfigured = ohttpRelayUrls.Count > 0;
         var hasColdWallet = !string.IsNullOrWhiteSpace(settings.ColdWalletDerivationScheme);
         var hasConfirmedReceiverInputs = network is not null &&
                                          await _availabilityService.HasConfirmedReceiverInputsAsync(currentStore.Id, BitcoinCode, network, HttpContext.RequestAborted).ConfigureAwait(false);
@@ -81,8 +82,8 @@ public class UIPayjoinOverviewController : Controller
             currentStore.Id,
             currentStore.StoreName,
             settings.PayjoinV2Enabled,
-            settings.DirectoryUrl,
-            settings.OhttpRelayUrl,
+            directoryUrls,
+            ohttpRelayUrls,
             hasColdWallet,
             hasConfirmedReceiverInputs,
             status);
@@ -137,8 +138,8 @@ public sealed class CurrentStorePayjoinStatusViewModel
         string storeId,
         string? storeName,
         bool enabledByDefault,
-        Uri? directoryUrl,
-        Uri? ohttpRelayUrl,
+        IReadOnlyList<Uri> directoryUrls,
+        IReadOnlyList<Uri> ohttpRelayUrls,
         bool hasColdWallet,
         bool hasConfirmedReceiverInputs,
         PayjoinCurrentStoreStatus status)
@@ -146,8 +147,8 @@ public sealed class CurrentStorePayjoinStatusViewModel
         StoreId = storeId;
         StoreName = storeName;
         EnabledByDefault = enabledByDefault;
-        DirectoryUrl = directoryUrl;
-        OhttpRelayUrl = ohttpRelayUrl;
+        DirectoryUrls = directoryUrls;
+        OhttpRelayUrls = ohttpRelayUrls;
         HasColdWallet = hasColdWallet;
         HasConfirmedReceiverInputs = hasConfirmedReceiverInputs;
         Status = status;
@@ -159,9 +160,9 @@ public sealed class CurrentStorePayjoinStatusViewModel
 
     public bool EnabledByDefault { get; }
 
-    public Uri? DirectoryUrl { get; }
+    public IReadOnlyList<Uri> DirectoryUrls { get; }
 
-    public Uri? OhttpRelayUrl { get; }
+    public IReadOnlyList<Uri> OhttpRelayUrls { get; }
 
     public bool HasColdWallet { get; }
 

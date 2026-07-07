@@ -11,14 +11,13 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 {
-    private static readonly TimeSpan CloseRequestedInitializedReplyGracePeriod = TimeSpan.FromSeconds(10);
+    // TODO: Replace these grace periods with an explicit receiver session lifetime policy.
+    private static readonly TimeSpan CloseRequestedInitializedReplyGracePeriod = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan CloseRequestedSettledInitializedReplyGracePeriod = TimeSpan.FromSeconds(20);
 
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverScriptUnavailable =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(3, nameof(LogPayjoinReceiverScriptUnavailable)),
             "Payjoin receiver script unavailable for {InvoiceId}");
-    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverRelayUrlUnavailable =
-        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(4, nameof(LogPayjoinReceiverRelayUrlUnavailable)),
-            "Payjoin receiver relay URL unavailable for {InvoiceId}");
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinReceiverReplayFailed =
         LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(5, nameof(LogPayjoinReceiverReplayFailed)),
             "Payjoin receiver replay failed for {InvoiceId}: {Message}");
@@ -65,12 +64,6 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
         if (!TryGetReceiverScript(session, out var receiverScript))
         {
             LogPayjoinReceiverScriptUnavailable(_logger, session.InvoiceId, null);
-            return null;
-        }
-
-        if (session.OhttpRelayUrl is null)
-        {
-            LogPayjoinReceiverRelayUrlUnavailable(_logger, session.InvoiceId, null);
             return null;
         }
 
@@ -210,8 +203,12 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
             return true;
         }
 
+        var gracePeriod = session.CloseInvoiceStatus is InvoiceStatus.Processing or InvoiceStatus.Settled
+            ? CloseRequestedSettledInitializedReplyGracePeriod
+            : CloseRequestedInitializedReplyGracePeriod;
+
         return session.CloseRequestedAt is { } closeRequestedAt &&
-               DateTimeOffset.UtcNow - closeRequestedAt < CloseRequestedInitializedReplyGracePeriod;
+               DateTimeOffset.UtcNow - closeRequestedAt < gracePeriod;
     }
 
     private static DateTimeOffset GetCleanupDeadline(PayjoinReceiverSessionState session)

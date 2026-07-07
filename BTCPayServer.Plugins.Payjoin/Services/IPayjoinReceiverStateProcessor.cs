@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -51,7 +50,6 @@ internal sealed class PayjoinReceiverStateContext
         PayjoinReceiverSessionState session,
         JsonReceiverSessionPersister persister,
         byte[] receiverScript,
-        SystemUri ohttpRelayUrl,
         string storeId,
         string invoiceId,
         Func<PayjoinReceiverSessionState, bool> removeCloseRequestedSession)
@@ -59,7 +57,6 @@ internal sealed class PayjoinReceiverStateContext
         Session = session;
         Persister = persister;
         ReceiverScript = receiverScript;
-        OhttpRelayUrl = ohttpRelayUrl;
         StoreId = storeId;
         InvoiceId = invoiceId;
         RemoveCloseRequestedSession = removeCloseRequestedSession;
@@ -70,8 +67,6 @@ internal sealed class PayjoinReceiverStateContext
     internal JsonReceiverSessionPersister Persister { get; }
 
     internal byte[] ReceiverScript { get; }
-
-    internal SystemUri OhttpRelayUrl { get; }
 
     internal string StoreId { get; }
 

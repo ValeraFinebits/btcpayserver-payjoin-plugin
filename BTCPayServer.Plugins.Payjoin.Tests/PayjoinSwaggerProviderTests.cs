@@ -17,7 +17,12 @@ public class PayjoinSwaggerProviderTests
         Assert.NotNull(paths["/api/v1/stores/{storeId}/invoices/{invoiceId}/payjoin/payment-url"]?["get"]);
 
         var schemas = Assert.IsType<JObject>(swagger["components"]?["schemas"]);
-        Assert.NotNull(schemas["PayjoinStoreSettingsData"]);
+        var payjoinSettingsSchema = Assert.IsType<JObject>(schemas["PayjoinStoreSettingsData"]);
+        var properties = Assert.IsType<JObject>(payjoinSettingsSchema["properties"]);
+        Assert.NotNull(properties["directoryUrls"]);
+        Assert.NotNull(properties["ohttpRelayUrls"]);
+        Assert.Null(properties["directoryUrlsText"]);
+        Assert.Null(properties["ohttpRelayUrlsText"]);
         Assert.NotNull(schemas["PayjoinPaymentUrlData"]);
     }
 }
