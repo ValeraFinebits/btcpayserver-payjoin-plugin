@@ -176,6 +176,7 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
               },
               "directoryUrls": {
                 "type": "array",
+                "minItems": 1,
                 "items": {
                   "type": "string",
                   "format": "uri"
@@ -184,6 +185,7 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
               },
               "ohttpRelayUrls": {
                 "type": "array",
+                "minItems": 1,
                 "items": {
                   "type": "string",
                   "format": "uri"
