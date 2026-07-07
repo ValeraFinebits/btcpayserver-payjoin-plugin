@@ -91,6 +91,48 @@ public class PayjoinReceiverRelayRequestSenderTests
         Assert.Contains("No OHTTP relay URLs are configured", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task SendAsyncUsesCurrentStoreRelaySettingsOnEachCall()
+    {
+        var firstRelay = new SystemUri("https://relay-1.example/");
+        var secondRelay = new SystemUri("https://relay-2.example/");
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        settingsRepository.GetAsync("store-1").Returns(
+            Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = [firstRelay] }),
+            Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = [secondRelay] }));
+
+        var relayClient = Substitute.For<IPayjoinReceiverRelayClient>();
+        relayClient
+            .SendAsync(Arg.Any<SystemUri>(), "application/http", Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new byte[] { 0xCA, 0xFE }));
+
+        var manager = new PayjoinMailroomManager(
+            NullLogger<PayjoinMailroomManager>.Instance,
+            TimeSpan.FromMinutes(10),
+            (_, _, _, _) => Task.FromResult(PayjoinOhttpKeysFetchResult.RetryableFailure(new HttpRequestException("unused"))));
+        var sender = new PayjoinReceiverRelayRequestSender(settingsRepository, manager, relayClient);
+
+        var firstRequest = await sender.SendAsync(
+            "store-1",
+            "invoice-1",
+            relayUri => new TestRequestContext(relayUri),
+            context => (new SystemUri(context.RelayUri), "application/http", [0x01]),
+            CancellationToken.None).ConfigureAwait(true);
+        using var firstRequestContext = firstRequest.RequestContext;
+
+        var secondRequest = await sender.SendAsync(
+            "store-1",
+            "invoice-1",
+            relayUri => new TestRequestContext(relayUri),
+            context => (new SystemUri(context.RelayUri), "application/http", [0x02]),
+            CancellationToken.None).ConfigureAwait(true);
+        using var secondRequestContext = secondRequest.RequestContext;
+
+        Assert.Equal(firstRelay.AbsoluteUri, firstRequest.RequestContext.RelayUri);
+        Assert.Equal(secondRelay.AbsoluteUri, secondRequest.RequestContext.RelayUri);
+        await settingsRepository.Received(2).GetAsync("store-1").ConfigureAwait(true);
+    }
+
     private sealed class TestRequestContext(string relayUri) : IDisposable
     {
         public string RelayUri { get; } = relayUri;

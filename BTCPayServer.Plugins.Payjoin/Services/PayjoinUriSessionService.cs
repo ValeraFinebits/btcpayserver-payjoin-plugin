@@ -146,7 +146,6 @@ public sealed class PayjoinUriSessionService
                     invoiceId,
                     destination,
                     storeId,
-                    selectedRelay.RelayUrl,
                     monitoringExpiresAt,
                     bootstrapPersister.Load());
             }

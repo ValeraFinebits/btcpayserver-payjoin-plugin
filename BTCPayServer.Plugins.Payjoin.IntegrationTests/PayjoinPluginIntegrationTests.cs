@@ -655,8 +655,6 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var storeSettingsRepository = tester.PayTester.GetService<IPayjoinStoreSettingsRepository>();
         var storeSettings = await storeSettingsRepository.GetAsync(invoice!.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
         Assert.NotEmpty(storeSettings?.GetEffectiveOhttpRelayUrls() ?? []);
-        var ohttpRelayUrl = storeSettings!.GetEffectiveOhttpRelayUrls()[0];
-
         var prompt = invoice.GetPaymentPrompt(Payments.PaymentTypes.CHAIN.GetPaymentMethodId("BTC"));
         Assert.NotNull(prompt?.Destination);
 
@@ -669,7 +667,6 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 InvoiceId = invoiceId,
                 StoreId = invoice.StoreId,
                 ReceiverAddress = prompt.Destination,
-                OhttpRelayUrl = ohttpRelayUrl.AbsoluteUri,
                 MonitoringExpiresAt = invoice.MonitoringExpiration,
                 CreatedAt = now,
                 UpdatedAt = now

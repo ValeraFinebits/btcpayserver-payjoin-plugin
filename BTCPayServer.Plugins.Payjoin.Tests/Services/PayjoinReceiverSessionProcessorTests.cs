@@ -186,7 +186,6 @@ public class PayjoinReceiverSessionProcessorTests
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new global::System.Uri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(15),
             ["bootstrap-event"]);
     }

@@ -26,7 +26,7 @@ public class PayjoinPluginSchemaTests
 
         AssertKey(receiverSessions, PayjoinPluginDbSchema.ReceiverSessionsPrimaryKey);
         Assert.Equal(PayjoinPluginDbSchema.ReceiverAddressMaxLength, receiverSessions.FindProperty(nameof(PayjoinReceiverSessionData.ReceiverAddress))?.GetMaxLength());
-        Assert.Equal(PayjoinPluginDbSchema.OhttpRelayUrlMaxLength, receiverSessions.FindProperty(nameof(PayjoinReceiverSessionData.OhttpRelayUrl))?.GetMaxLength());
+        Assert.Null(receiverSessions.FindProperty("OhttpRelayUrl"));
         Assert.Equal(PayjoinPluginDbSchema.TransactionIdMaxLength, receiverSessions.FindProperty(nameof(PayjoinReceiverSessionData.ContributedInputTransactionId))?.GetMaxLength());
 
         var receiverSessionEvents = AssertEntity<PayjoinReceiverSessionEventData>(model, PayjoinPluginDbSchema.ReceiverSessionEventsTable);

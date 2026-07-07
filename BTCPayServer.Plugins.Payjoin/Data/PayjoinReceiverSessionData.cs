@@ -12,8 +12,6 @@ internal class PayjoinReceiverSessionData
 
     public string ReceiverAddress { get; set; } = null!;
 
-    public string OhttpRelayUrl { get; set; } = null!;
-
     public DateTimeOffset MonitoringExpiresAt { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }

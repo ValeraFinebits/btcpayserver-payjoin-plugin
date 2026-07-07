@@ -1,12 +1,10 @@
 using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Data;
 using Microsoft.EntityFrameworkCore;
-using NBitcoin;
 using Payjoin;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -29,11 +27,9 @@ public sealed class PayjoinReceiverSessionStore
         string invoiceId,
         string receiverAddress,
         string storeId,
-        SystemUri ohttpRelayUrl,
         DateTimeOffset monitoringExpiresAt,
         IEnumerable<string> bootstrapEvents)
     {
-        ArgumentNullException.ThrowIfNull(ohttpRelayUrl);
         ArgumentNullException.ThrowIfNull(bootstrapEvents);
 
         var persistedEvents = bootstrapEvents.ToArray();
@@ -55,7 +51,6 @@ public sealed class PayjoinReceiverSessionStore
             InvoiceId = invoiceId,
             StoreId = storeId,
             ReceiverAddress = receiverAddress,
-            OhttpRelayUrl = ohttpRelayUrl.AbsoluteUri,
             MonitoringExpiresAt = monitoringExpiresAt,
             CreatedAt = now,
             UpdatedAt = now
@@ -365,7 +360,6 @@ public sealed class PayjoinReceiverSessionStore
             sessionData.InvoiceId,
             sessionData.StoreId,
             sessionData.ReceiverAddress,
-            new SystemUri(sessionData.OhttpRelayUrl, UriKind.Absolute),
             sessionData.MonitoringExpiresAt,
             sessionData.CreatedAt,
             sessionData.UpdatedAt,

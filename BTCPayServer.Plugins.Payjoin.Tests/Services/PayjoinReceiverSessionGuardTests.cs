@@ -12,7 +12,6 @@ using NSubstitute;
 using Payjoin;
 using Xunit;
 using ReceiveSessionState = global::Payjoin.ReceiveSession;
-using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
@@ -28,7 +27,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-expired",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(-1),
             ["bootstrap-event"]);
 
@@ -48,7 +46,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-active",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
 
@@ -68,7 +65,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-open",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         using var state = CreateMonitorState();
@@ -89,7 +85,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-replyable-error",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
@@ -112,7 +107,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-initialized-keep",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
@@ -217,7 +211,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-remove",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
@@ -240,7 +233,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-keep",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
@@ -304,7 +296,6 @@ public class PayjoinReceiverSessionGuardTests
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
 

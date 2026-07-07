@@ -14,6 +14,8 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 /// <summary>
 /// Coordinates directory and relay selection for payjoin bootstrap and request-time relay transport.
+/// Bootstrap selection is only used to obtain OHTTP keys and initialize the receiver session; all
+/// subsequent poll/post/error requests may rotate across the currently configured relays.
 /// </summary>
 internal sealed class PayjoinMailroomManager
 {
@@ -41,7 +43,7 @@ internal sealed class PayjoinMailroomManager
         LoggerMessage.Define<string, string, string>(
             LogLevel.Information,
             new EventId(4, nameof(SelectBootstrapRouteAsync)),
-            "Selected OHTTP relay {OhttpRelayUrl} and directory {DirectoryUrl} for payjoin receiver session on invoice {InvoiceId}.");
+            "Selected bootstrap OHTTP relay {OhttpRelayUrl} and directory {DirectoryUrl} for invoice {InvoiceId}.");
 
     private static readonly Action<ILogger, string, int, int, Exception?> LogAllRoutesFailed =
         LoggerMessage.Define<string, int, int>(

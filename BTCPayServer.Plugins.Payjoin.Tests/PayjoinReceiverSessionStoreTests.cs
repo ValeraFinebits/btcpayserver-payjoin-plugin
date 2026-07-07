@@ -26,7 +26,6 @@ public class PayjoinReceiverSessionStoreTests
         Assert.Equal(createdSession.InvoiceId, reloadedSession!.InvoiceId);
         Assert.Equal(createdSession.StoreId, reloadedSession.StoreId);
         Assert.Equal(createdSession.ReceiverAddress, reloadedSession.ReceiverAddress);
-        Assert.Equal(createdSession.OhttpRelayUrl, reloadedSession.OhttpRelayUrl);
         Assert.Equal(createdSession.MonitoringExpiresAt, reloadedSession.MonitoringExpiresAt);
     }
 
@@ -308,7 +307,6 @@ public class PayjoinReceiverSessionStoreTests
             "invoice-bootstrap",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new Uri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(15),
             new[] { "event-1", "event-2" });
 
@@ -329,7 +327,6 @@ public class PayjoinReceiverSessionStoreTests
             "invoice-empty-bootstrap",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new Uri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(15),
             []));
 
@@ -342,7 +339,6 @@ public class PayjoinReceiverSessionStoreTests
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new Uri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(15),
             ["bootstrap-event"]);
     }
