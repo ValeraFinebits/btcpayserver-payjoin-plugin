@@ -54,7 +54,9 @@ internal sealed class PayjoinReceiverSessionGuardResult : IDisposable
 
     public void Dispose()
     {
-        _state.Dispose();
-        _replay.Dispose();
+        // Null-tolerant so tests can build a guard result around a replayed state
+        // without constructing native replay handles.
+        _state?.Dispose();
+        _replay?.Dispose();
     }
 }
