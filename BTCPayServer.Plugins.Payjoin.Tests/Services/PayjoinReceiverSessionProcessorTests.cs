@@ -14,6 +14,8 @@ using System.Collections.Concurrent;
 using Xunit;
 using HasReplyableError = Payjoin.HasReplyableError;
 using Initialized = Payjoin.Initialized;
+using IPayjoinProposal = Payjoin.IPayjoinProposal;
+using ReceiveSession = Payjoin.ReceiveSession;
 using MaybeInputsOwned = Payjoin.MaybeInputsOwned;
 using MaybeInputsSeen = Payjoin.MaybeInputsSeen;
 using OutputsUnknown = Payjoin.OutputsUnknown;
@@ -122,9 +124,31 @@ public class PayjoinReceiverSessionProcessorTests
         Assert.Contains(survivingSession.InvoiceId, guard.VisitedInvoiceIds);
     }
 
+    [Fact]
+    public async Task ProcessTickAsyncRecordsTheExpectedFinalTransactionBeforeRepostingAReplayedProposal()
+    {
+        // Arrange: the session replays straight to the PayjoinProposal state, as it does when a
+        // previous run stopped between finalizing the proposal and completing the bridge write.
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateSession(store, "invoice-replayed-proposal");
+        var guard = new ReplayedStateGuard(() => new ReceiveSession.PayjoinProposal(null!));
+        var finalizer = new RecordingProposalFinalizer();
+        var processor = CreateProcessor(store, guard, finalizer);
+
+        // Act
+        await processor.ProcessTickAsync(CancellationToken.None);
+
+        // Assert: the bridge is brought up to date before the proposal is handed to the sender again.
+        Assert.Equal(
+            new[] { nameof(IPayjoinReceiverProposalFinalizer.EnsureExpectedFinalTransactionAsync), nameof(IPayjoinReceiverProposalFinalizer.PostAsync) },
+            finalizer.Calls);
+    }
+
     private static PayjoinReceiverSessionProcessor CreateProcessor(
         PayjoinReceiverSessionStore sessionStore,
-        IPayjoinReceiverSessionGuard sessionGuard)
+        IPayjoinReceiverSessionGuard sessionGuard,
+        IPayjoinReceiverProposalFinalizer? proposalFinalizer = null)
     {
         var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
         var network = new BTCPayNetwork
@@ -151,7 +175,7 @@ public class PayjoinReceiverSessionProcessorTests
             new NoOpAccountingBridgeService(),
             new NoOpAccountingPaymentService(),
             new NoOpInvoiceLookup(),
-            new NoOpProposalFinalizer(),
+            proposalFinalizer ?? new NoOpProposalFinalizer(),
             networkProvider,
             NullLogger<PayjoinReceiverSessionProcessor>.Instance);
     }
@@ -208,8 +232,51 @@ public class PayjoinReceiverSessionProcessorTests
     {
         public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, WantsFeeRange proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, ProvisionalProposal proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task EnsureExpectedFinalTransactionAsync(PayjoinReceiverProposalFinalizationContext context, PayjoinProposal proposal, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task EnsureExpectedFinalTransactionAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, PayjoinProposal proposal, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class RecordingProposalFinalizer : IPayjoinReceiverProposalFinalizer
+    {
+        public List<string> Calls { get; } = [];
+
+        public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, WantsFeeRange proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken)
+        {
+            Calls.Add(nameof(FinalizeAsync));
+            return Task.CompletedTask;
+        }
+
+        public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, ProvisionalProposal proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken)
+        {
+            Calls.Add(nameof(FinalizeAsync));
+            return Task.CompletedTask;
+        }
+
+        public Task EnsureExpectedFinalTransactionAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken)
+        {
+            Calls.Add(nameof(EnsureExpectedFinalTransactionAsync));
+            return Task.CompletedTask;
+        }
+
+        public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, PayjoinProposal proposal, CancellationToken cancellationToken)
+        {
+            Calls.Add(nameof(PostAsync));
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ReplayedStateGuard(Func<ReceiveSession> createState) : IPayjoinReceiverSessionGuard
+    {
+        public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
+        {
+            return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(
+                session,
+                persister: null!,
+                receiverScript: [0x00, 0x14],
+                replay: null!,
+                state: createState(),
+                removeCloseRequestedSession: _ => false));
+        }
     }
 
     private sealed class NoOpAccountingBridgeService : IPayjoinAccountingBridgeService

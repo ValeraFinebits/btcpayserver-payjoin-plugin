@@ -58,7 +58,7 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
 
     public async Task EnsureExpectedFinalTransactionAsync(
         PayjoinReceiverProposalFinalizationContext context,
-        PayjoinProposal payjoinProposal,
+        IPayjoinProposal payjoinProposal,
         CancellationToken cancellationToken)
     {
         // The signed PSBT only exists after finalize_proposal runs the signing callback, so the expected

@@ -20,9 +20,11 @@ internal interface IPayjoinReceiverProposalFinalizer
         ReceivedCoin[] receiverCoins,
         CancellationToken cancellationToken);
 
+    // Takes the generated proposal interface rather than the concrete FFI object so the
+    // recording step can be exercised in tests, where native handles cannot be constructed.
     Task EnsureExpectedFinalTransactionAsync(
         PayjoinReceiverProposalFinalizationContext context,
-        PayjoinProposal proposal,
+        IPayjoinProposal proposal,
         CancellationToken cancellationToken);
 
     Task PostAsync(
