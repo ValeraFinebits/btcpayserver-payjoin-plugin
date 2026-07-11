@@ -1,19 +1,32 @@
 @inject BTCPayServer.Services.BTCPayServerEnvironment Env
+@inject Microsoft.Extensions.Localization.IStringLocalizer StringLocalizer
 
 <style>
     .payjoin-checkout-controls [data-payjoin-mode] {
         flex: 1 1 0;
         min-width: 0;
     }
+
+    .payjoin-checkout-controls.payjoin-mode-payjoin [data-payjoin-indicator] {
+        display: flex;
+    }
+
+    .payjoin-checkout-controls:not(.payjoin-mode-payjoin) [data-payjoin-indicator] {
+        display: none;
+    }
 </style>
 
 <script>
 (function () {
     const controlsId = 'PayJoinCheckoutControls';
-    const controlsMountId = 'PayJoinCheckoutControlsMount';
     const testPaymentId = 'PayJoinCheckoutTestPayment';
     const bootstrapRetryDelayMs = 100;
     const maxBootstrapRetryCount = 100;
+    const standardPayInWalletTitleKey = 'BIP21 payment link';
+    const standardPayInWalletPayjoinTitleKey = 'BIP21 payment link with PayJoin support';
+    const standardPayInWalletTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(StringLocalizer["BIP21 payment link"].Value));
+    const standardPayInWalletPayjoinTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(StringLocalizer["BIP21 payment link with PayJoin support"].Value));
+    const payInWalletPayjoinTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(StringLocalizer["BIP21 payment link with Async Payjoin support"].Value));
     const runTestEnabled = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Env.CheatMode));
     const runTestEndpoint = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Url.Action("RunTestPayment", "UIPayJoin")));
     let selectedPaymentMode = null;
@@ -153,10 +166,31 @@
             });
     }
 
-    function refreshPaymentDom(paymentUrl, paymentUrlQr) {
+    function translateTitle(key, fallback) {
+        const i18nextInstance = window.i18next;
+        if (!i18nextInstance || !i18nextInstance.isInitialized) {
+            return fallback;
+        }
+
+        const translated = i18nextInstance.t(key);
+        return translated || fallback;
+    }
+
+    function getPaymentLinkTitle(mode, paymentUrl) {
+        if (mode === 'payjoin') {
+            return payInWalletPayjoinTitle;
+        }
+
+        return extractQueryParameter(paymentUrl, 'pj')
+            ? translateTitle(standardPayInWalletPayjoinTitleKey, standardPayInWalletPayjoinTitle)
+            : translateTitle(standardPayInWalletTitleKey, standardPayInWalletTitle);
+    }
+
+    function refreshPaymentDom(paymentUrl, paymentUrlQr, mode) {
         const payInWallet = getPayInWalletButton();
         if (payInWallet) {
             payInWallet.setAttribute('href', paymentUrl);
+            payInWallet.setAttribute('title', getPaymentLinkTitle(mode, paymentUrl));
         }
 
         const qrContainer = document.querySelector('#payment .payment-box .qr-container');
@@ -188,6 +222,20 @@
         return model.payjoinV2Enabled === false ? 'standard' : 'payjoin';
     }
 
+    function syncPaymentDom(model) {
+        if (!shouldShowControls(model)) {
+            return;
+        }
+
+        const mode = getSelectedPaymentMode(model);
+        const paymentFields = getPaymentFields(model, mode);
+        if (!paymentFields.url || !paymentFields.qr) {
+            return;
+        }
+
+        refreshPaymentDom(paymentFields.url, paymentFields.qr, mode);
+    }
+
     function setPaymentUrl(paymentUrl, paymentUrlQr) {
         const vm = getCheckoutVm();
         const model = vm && vm.srvModel;
@@ -202,10 +250,11 @@
 
         replaceSrvModel(vm, nextModel);
 
-        refreshPaymentDom(paymentUrl, paymentUrlQr);
+        const mode = nextModel.invoiceBitcoinUrl === nextModel.payjoinPaymentUrl ? 'payjoin' : 'standard';
+        refreshPaymentDom(paymentUrl, paymentUrlQr, mode);
         if (vm.$nextTick) {
             vm.$nextTick(function () {
-                refreshPaymentDom(paymentUrl, paymentUrlQr);
+                refreshPaymentDom(paymentUrl, paymentUrlQr, mode);
                 scheduleTick();
             });
         } else {
@@ -244,8 +293,12 @@
         return document.querySelector('#payment .payment-box #PayInWallet');
     }
 
-    function getControlsMount() {
-        return document.getElementById(controlsMountId);
+    function getQrContainer() {
+        return document.querySelector('#payment .payment-box .qr-container');
+    }
+
+    function getPaymentBox() {
+        return document.querySelector('#payment .payment-box');
     }
 
     function getActiveTabStyle() {
@@ -265,9 +318,9 @@
     function buildControls(model) {
         const controls = document.createElement('div');
         controls.id = controlsId;
-        controls.className = 'payjoin-checkout-controls mt-3';
+        controls.className = 'payjoin-checkout-controls mt-3 mb-3';
         controls.innerHTML = [
-            '<div class="d-flex align-items-center justify-content-center gap-1 text-muted" style="font-size: 0.8125rem;">',
+            '<div class="align-items-center justify-content-center gap-1 text-muted" style="font-size: 0.8125rem;" data-payjoin-indicator>',
             '  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">',
             '    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>',
             '    <polyline points="9 12 11 14 15 10"></polyline>',
@@ -314,17 +367,17 @@
         updateTabState(standardButton, standardActive, activeStyle);
     }
 
-    function placeControls(controls, payInWallet, controlsMount) {
-        if (payInWallet) {
-            if (controls.previousElementSibling !== payInWallet) {
-                payInWallet.insertAdjacentElement('afterend', controls);
+    function placeControls(controls, qrContainer, paymentBox) {
+        if (qrContainer) {
+            if (controls.nextElementSibling !== qrContainer) {
+                qrContainer.insertAdjacentElement('beforebegin', controls);
             }
             return true;
         }
 
-        if (controlsMount) {
-            if (controls.parentElement !== controlsMount) {
-                controlsMount.appendChild(controls);
+        if (paymentBox) {
+            if (controls.parentElement !== paymentBox || paymentBox.firstElementChild !== controls) {
+                paymentBox.prepend(controls);
             }
             return true;
         }
@@ -339,20 +392,20 @@
             return;
         }
 
-        const payInWallet = getPayInWalletButton();
-        const controlsMount = getControlsMount();
-        if (!payInWallet && !controlsMount) {
+        const qrContainer = getQrContainer();
+        const paymentBox = getPaymentBox();
+        if (!qrContainer && !paymentBox) {
             return;
         }
 
         let controls = getControls();
         if (!controls) {
             controls = buildControls(model);
-            placeControls(controls, payInWallet, controlsMount);
+            placeControls(controls, qrContainer, paymentBox);
             return;
         }
 
-        if (placeControls(controls, payInWallet, controlsMount)) {
+        if (placeControls(controls, qrContainer, paymentBox)) {
             updateControlState(controls, model);
         }
     }
@@ -463,6 +516,7 @@
         startObserver();
         requestPayjoinPaymentUrl(model);
         applySelectedPaymentMode(model);
+        syncPaymentDom(model);
         renderControls();
         renderTestPayment();
 
