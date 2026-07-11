@@ -289,18 +289,32 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
     {
         using var context = _dbContextFactory.CreateContext();
         var bridge = await TryLoadByInvoiceIdAsync(context, invoiceId, cancellationToken).ConfigureAwait(false);
+        // Retry eligibility matches what GetRequiringAttentionAsync surfaces: failed bridges,
+        // and expired bridges that are still armed with an expected final transaction. An
+        // expired unarmed bridge has nothing left to reconcile once its invoice monitoring
+        // window closed, so it stays terminal.
         if (bridge is null ||
             !string.Equals(bridge.StoreId, storeId, StringComparison.Ordinal) ||
-            (bridge.Status != PayjoinAccountingBridgeStatus.Failed && bridge.Status != PayjoinAccountingBridgeStatus.Expired))
+            (bridge.Status != PayjoinAccountingBridgeStatus.Failed &&
+             (bridge.Status != PayjoinAccountingBridgeStatus.Expired || bridge.ExpectedFinalTransactionId is null)))
         {
             return null;
         }
 
-        bridge.Status = bridge.ExpectedFinalTransactionId is null
-            ? PayjoinAccountingBridgeStatus.PendingFallback
-            : PayjoinAccountingBridgeStatus.PendingFinalTransaction;
+        if (bridge.ExpectedFinalTransactionId is null)
+        {
+            // The grace period exists to outlive the invoice monitoring deadline while a known
+            // final transaction confirms. A failed unarmed bridge has no such transaction, so
+            // it keeps its original deadline and expires naturally if that deadline has passed.
+            bridge.Status = PayjoinAccountingBridgeStatus.PendingFallback;
+        }
+        else
+        {
+            bridge.Status = PayjoinAccountingBridgeStatus.PendingFinalTransaction;
+            bridge.ExpiresAt = now + ArmedBridgeGracePeriod;
+        }
+
         bridge.FailureMessage = null;
-        bridge.ExpiresAt = now + ArmedBridgeGracePeriod;
         bridge.UpdatedAt = now;
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return ToState(bridge);

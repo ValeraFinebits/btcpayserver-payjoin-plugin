@@ -100,6 +100,26 @@ public class PayjoinAccountingBridgeServiceTests
     }
 
     [Fact]
+    public async Task TryRetryAsyncKeepsTheOriginalDeadlineForFailedUnarmedBridges()
+    {
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        var originalDeadline = now.AddHours(1);
+        await CreateBridgeAsync(service, "invoice-failed", expiresAt: originalDeadline);
+        await service.MarkFailedAsync("invoice-failed", "reconciliation data problem", CancellationToken.None);
+
+        var retried = await service.TryRetryAsync("invoice-failed", "store-1", now, CancellationToken.None);
+
+        // Without an expected final transaction there is nothing for the grace period to
+        // outlive, so the bridge resumes waiting for a fallback under its original deadline.
+        Assert.NotNull(retried);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, retried!.Status);
+        Assert.Null(retried.FailureMessage);
+        Assert.Equal(originalDeadline, retried.ExpiresAt);
+    }
+
+    [Fact]
     public async Task TryRetryAsyncRefusesWrongStoreAndNonTerminalStatuses()
     {
         using var context = new TestContext();
@@ -112,6 +132,37 @@ public class PayjoinAccountingBridgeServiceTests
         Assert.Null(await service.TryRetryAsync("invoice-failed", "other-store", now, CancellationToken.None));
         Assert.Null(await service.TryRetryAsync("invoice-pending", "store-1", now, CancellationToken.None));
         Assert.Null(await service.TryRetryAsync("missing-invoice", "store-1", now, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task TryRetryAsyncRefusesExpiredUnarmedBridges()
+    {
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        await CreateBridgeAsync(service, "invoice-unarmed", expiresAt: now.AddMinutes(-5));
+        await service.ExpirePendingAsync(now, CancellationToken.None);
+
+        // Matches the attention surface: an expired bridge that never armed has nothing left
+        // to reconcile, so it is terminal and cannot be retried.
+        Assert.Null(await service.TryRetryAsync("invoice-unarmed", "store-1", now, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task TryRetryAsyncRetriesExpiredArmedBridges()
+    {
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        var pastGrace = now - PayjoinAccountingBridgeService.ArmedBridgeGracePeriod - TimeSpan.FromMinutes(1);
+        await CreateBridgeAsync(service, "invoice-armed", expiresAt: pastGrace, expectedFinalTransactionId: ExpectedTransactionId);
+        await service.ExpirePendingAsync(now, CancellationToken.None);
+
+        var retried = await service.TryRetryAsync("invoice-armed", "store-1", now, CancellationToken.None);
+
+        Assert.NotNull(retried);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFinalTransaction, retried!.Status);
+        Assert.Equal(now + PayjoinAccountingBridgeService.ArmedBridgeGracePeriod, retried.ExpiresAt);
     }
 
     private static Task<PayjoinAccountingBridgeState> CreateBridgeAsync(
