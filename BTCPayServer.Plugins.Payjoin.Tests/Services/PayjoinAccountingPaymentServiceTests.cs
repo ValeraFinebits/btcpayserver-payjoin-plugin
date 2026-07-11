@@ -1,5 +1,16 @@
+using BTCPayServer.Client.Models;
+using BTCPayServer.Data;
+using BTCPayServer.Events;
+using BTCPayServer.Logging;
+using BTCPayServer.Payments;
+using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Services.Invoices;
+using BTCPayServer.Services.Wallets;
+using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
+using NBXplorer;
+using NBXplorer.Models;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
@@ -162,6 +173,77 @@ public class PayjoinAccountingPaymentServiceTests
         Assert.Null(outputIndex);
     }
 
+    [Fact]
+    public async Task ReconcileMovesTheInvoiceFromTheFallbackPaymentToTheFinalPaymentOnceTheFinalTransactionConfirms()
+    {
+        // Arrange: an invoice whose accounted fallback payment is the only payment on record,
+        // and a final transaction that pays the settlement script but has not confirmed yet.
+        using var fixture = EndToEndFixture.Create();
+        Assert.Single(fixture.World.Materialize().GetPayments(true));
+
+        // Act + Assert: while the final transaction is unconfirmed, reconciliation waits and
+        // does not touch the payment records.
+        fixture.SetFinalTransactionConfirmations(0);
+        var pendingResult = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+
+        Assert.Null(pendingResult);
+        Assert.Single(fixture.World.Rows);
+        var pendingAccounted = Assert.Single(fixture.World.Materialize().GetPayments(true));
+        Assert.Equal(fixture.FallbackOutPoint.ToString(), pendingAccounted.Id);
+
+        // Act: the final transaction confirms.
+        fixture.SetFinalTransactionConfirmations(1);
+        var finalPayment = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+
+        // Assert: the final outpoint received its own payment record, the fallback payment was
+        // retired to Unaccounted, and the invoice ends up with exactly one accounted payment.
+        Assert.NotNull(finalPayment);
+        Assert.Equal(fixture.FinalOutPoint.ToString(), finalPayment.Id);
+        Assert.Equal(2, fixture.World.Rows.Count);
+
+        var invoice = fixture.World.Materialize();
+        var accountedPayment = Assert.Single(invoice.GetPayments(true));
+        Assert.Equal(fixture.FinalOutPoint.ToString(), accountedPayment.Id);
+        Assert.Equal(PaymentStatus.Settled, accountedPayment.Status);
+        Assert.Equal(Money.Satoshis(fixture.AccountedValueSats).ToDecimal(MoneyUnit.BTC), accountedPayment.Value);
+
+        var fallbackPayment = invoice.GetPayments(false).Single(p => p.Id == fixture.FallbackOutPoint.ToString());
+        Assert.Equal(PaymentStatus.Unaccounted, fallbackPayment.Status);
+
+        Assert.Equal(1, fixture.InvoiceNeedUpdateEvents);
+        Assert.Equal(1, fixture.StalePaidOverCorrections);
+    }
+
+    [Fact]
+    public async Task ReconcileIsIdempotentOnceTheFinalTransactionHasConfirmed()
+    {
+        // Arrange: reconcile once after confirmation so the fallback-to-final transition is done.
+        using var fixture = EndToEndFixture.Create();
+        fixture.SetFinalTransactionConfirmations(1);
+        var firstResult = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+        Assert.NotNull(firstResult);
+
+        // Act: reconcile repeatedly in the already-reconciled state.
+        var secondResult = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+        var thirdResult = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+
+        // Assert: repeated runs return the same payment, create no duplicate records, and leave
+        // the final state untouched.
+        Assert.NotNull(secondResult);
+        Assert.NotNull(thirdResult);
+        Assert.Equal(firstResult.Id, secondResult.Id);
+        Assert.Equal(firstResult.Id, thirdResult.Id);
+        Assert.Equal(2, fixture.World.Rows.Count);
+
+        var invoice = fixture.World.Materialize();
+        var accountedPayment = Assert.Single(invoice.GetPayments(true));
+        Assert.Equal(fixture.FinalOutPoint.ToString(), accountedPayment.Id);
+        Assert.Equal(PaymentStatus.Settled, accountedPayment.Status);
+
+        var fallbackPayment = invoice.GetPayments(false).Single(p => p.Id == fixture.FallbackOutPoint.ToString());
+        Assert.Equal(PaymentStatus.Unaccounted, fallbackPayment.Status);
+    }
+
     private static uint? InvokeResolveFinalOutputIndex(Transaction finalTransaction, PayjoinAccountingBridgeState bridge)
     {
         return PayjoinAccountingPaymentService.ResolveFinalOutputIndex(finalTransaction, bridge);
@@ -193,5 +275,264 @@ public class PayjoinAccountingPaymentServiceTests
             UpdatedAt: DateTimeOffset.UtcNow,
             ReconciledAt: null,
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
+    }
+
+    // Exercises the real service against the platform's own PaymentData <-> PaymentEntity
+    // conversion pipeline; only persistence and the chain view are replaced by fakes that
+    // mirror the platform semantics (duplicate inserts surface as null, updates rewrite the
+    // stored row, invoices materialize their payments from the stored rows).
+    private sealed class EndToEndFixture : IDisposable
+    {
+        private readonly ScriptedWalletTransactionReader _transactionReader;
+        private readonly Transaction _finalTransaction;
+
+        private EndToEndFixture(
+            PayjoinAccountingPaymentService service,
+            InMemoryPaymentWorld world,
+            PayjoinAccountingBridgeState bridge,
+            OutPoint fallbackOutPoint,
+            OutPoint finalOutPoint,
+            long accountedValueSats,
+            ScriptedWalletTransactionReader transactionReader,
+            Transaction finalTransaction,
+            RecordingStalePaidOverCorrectionService staleCorrections,
+            EventCounter invoiceNeedUpdateEvents,
+            EventAggregator eventAggregator)
+        {
+            Service = service;
+            World = world;
+            Bridge = bridge;
+            FallbackOutPoint = fallbackOutPoint;
+            FinalOutPoint = finalOutPoint;
+            AccountedValueSats = accountedValueSats;
+            _transactionReader = transactionReader;
+            _finalTransaction = finalTransaction;
+            _staleCorrections = staleCorrections;
+            _invoiceNeedUpdateEvents = invoiceNeedUpdateEvents;
+            _eventAggregator = eventAggregator;
+        }
+
+        private readonly RecordingStalePaidOverCorrectionService _staleCorrections;
+        private readonly EventCounter _invoiceNeedUpdateEvents;
+        private readonly EventAggregator _eventAggregator;
+
+        public void Dispose()
+        {
+            _eventAggregator.Dispose();
+        }
+
+        public PayjoinAccountingPaymentService Service { get; }
+
+        public InMemoryPaymentWorld World { get; }
+
+        public PayjoinAccountingBridgeState Bridge { get; }
+
+        public OutPoint FallbackOutPoint { get; }
+
+        public OutPoint FinalOutPoint { get; }
+
+        public long AccountedValueSats { get; }
+
+        public int StalePaidOverCorrections => _staleCorrections.Count;
+
+        public int InvoiceNeedUpdateEvents => _invoiceNeedUpdateEvents.Count;
+
+        public void SetFinalTransactionConfirmations(long confirmations)
+        {
+            _transactionReader.Result = new TransactionResult
+            {
+                Transaction = _finalTransaction,
+                TransactionHash = _finalTransaction.GetHash(),
+                Confirmations = confirmations
+            };
+        }
+
+        public static EndToEndFixture Create()
+        {
+            const long accountedValueSats = 50_000;
+            var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
+            var network = new BTCPayNetwork
+            {
+                CryptoCode = PayjoinConstants.BitcoinCode,
+                DisplayName = "Bitcoin",
+                NBXplorerNetwork = nbxplorerNetworkProvider.GetFromCryptoCode(PayjoinConstants.BitcoinCode),
+                CryptoImagePath = "imlegacy/bitcoin.svg",
+                LightningImagePath = "imlegacy/bitcoin-lightning.svg",
+                DefaultSettings = new BTCPayDefaultSettings(),
+                CoinType = new KeyPath("1'"),
+                SupportRBF = true,
+                SupportPayJoin = true,
+                VaultSupported = true
+            }.SetDefaultElectrumMapping(ChainName.Regtest);
+            var networkProvider = new BTCPayNetworkProvider([network], nbxplorerNetworkProvider, new Logs());
+
+            var paymentMethodId = PaymentMethodId.Parse("BTC-CHAIN");
+            var handler = new BitcoinLikePaymentHandler(paymentMethodId, null!, network, null!, null!, null!, null!, null!);
+
+            using var settlementKey = new Key();
+            using var changeKey = new Key();
+            var settlementScript = settlementKey.PubKey.WitHash.ScriptPubKey;
+
+            var invoice = new InvoiceEntity
+            {
+                Id = "invoice-1",
+                StoreId = "store-1",
+                SpeedPolicy = SpeedPolicy.MediumSpeed
+            };
+            invoice.SetPaymentPrompt(paymentMethodId, new PaymentPrompt
+            {
+                Currency = PayjoinConstants.BitcoinCode,
+                Divisibility = 8,
+                Destination = settlementScript.GetDestinationAddress(Network.RegTest)!.ToString()
+            });
+
+            var fallbackOutPoint = new OutPoint(
+                uint256.Parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 0);
+            var finalTransaction = Network.RegTest.CreateTransaction();
+            finalTransaction.Outputs.Add(Money.Satoshis(10_000), changeKey.PubKey.WitHash.ScriptPubKey);
+            finalTransaction.Outputs.Add(Money.Satoshis(accountedValueSats), settlementScript);
+            var finalOutPoint = new OutPoint(finalTransaction.GetHash(), 1);
+
+            var world = new InMemoryPaymentWorld(invoice);
+            var fallbackDetails = new BitcoinLikePaymentData
+            {
+                Outpoint = fallbackOutPoint,
+                RBF = true,
+                ConfirmationCount = 0
+            };
+            world.Rows.Add(new PaymentData
+            {
+                Id = fallbackOutPoint.ToString(),
+                Created = DateTimeOffset.UtcNow,
+                Status = PaymentStatus.Processing,
+                Amount = Money.Satoshis(accountedValueSats).ToDecimal(MoneyUnit.BTC),
+                Currency = PayjoinConstants.BitcoinCode
+            }.Set(invoice, handler, fallbackDetails));
+
+            var bridge = new PayjoinAccountingBridgeState(
+                Id: 1,
+                InvoiceId: invoice.Id,
+                StoreId: invoice.StoreId,
+                CryptoCode: PayjoinConstants.BitcoinCode,
+                PaymentMethodId: paymentMethodId.ToString(),
+                FallbackTransactionId: fallbackOutPoint.Hash.ToString(),
+                FallbackOutputIndex: fallbackOutPoint.N,
+                FallbackValueSats: accountedValueSats,
+                EffectiveInvoiceValueSats: accountedValueSats,
+                SettlementScript: Convert.ToHexString(settlementScript.ToBytes()),
+                ExpectedFinalTransactionId: finalTransaction.GetHash().ToString(),
+                ExpectedFinalOutputIndex: 1,
+                ExpectedFinalValueSats: accountedValueSats,
+                FailureMessage: null,
+                Status: Data.PayjoinAccountingBridgeStatus.PendingFinalTransaction,
+                CreatedAt: DateTimeOffset.UtcNow,
+                UpdatedAt: DateTimeOffset.UtcNow,
+                ReconciledAt: null,
+                ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
+
+            var transactionReader = new ScriptedWalletTransactionReader();
+            var staleCorrections = new RecordingStalePaidOverCorrectionService();
+            var eventAggregator = new EventAggregator(new Logs());
+            var invoiceNeedUpdateEvents = new EventCounter();
+            eventAggregator.Subscribe<InvoiceNeedUpdateEvent>(_ => invoiceNeedUpdateEvents.Count++);
+
+            var service = new PayjoinAccountingPaymentService(
+                world,
+                staleCorrections,
+                world,
+                eventAggregator,
+                new PaymentMethodHandlerDictionary([handler]),
+                networkProvider,
+                transactionReader,
+                NullLogger<PayjoinAccountingPaymentService>.Instance);
+
+            return new EndToEndFixture(
+                service,
+                world,
+                bridge,
+                fallbackOutPoint,
+                finalOutPoint,
+                accountedValueSats,
+                transactionReader,
+                finalTransaction,
+                staleCorrections,
+                invoiceNeedUpdateEvents,
+                eventAggregator);
+        }
+
+        private sealed class EventCounter
+        {
+            public int Count { get; set; }
+        }
+    }
+
+    private sealed class InMemoryPaymentWorld : IPayjoinInvoiceLookup, IPayjoinPlatformPaymentRecorder
+    {
+        private readonly InvoiceEntity _invoice;
+
+        public InMemoryPaymentWorld(InvoiceEntity invoice)
+        {
+            _invoice = invoice;
+        }
+
+        public List<PaymentData> Rows { get; } = [];
+
+        public Task<InvoiceEntity?> GetInvoiceAsync(string invoiceId)
+        {
+            return Task.FromResult<InvoiceEntity?>(invoiceId == _invoice.Id ? Materialize() : null);
+        }
+
+        public Task<PaymentEntity?> AddPaymentAsync(PaymentData paymentData, HashSet<string> searchTerms)
+        {
+            // The platform surfaces a duplicate insert (unique key violation) as a null result.
+            if (Rows.Any(row => row.Id == paymentData.Id))
+            {
+                return Task.FromResult<PaymentEntity?>(null);
+            }
+
+            Rows.Add(paymentData);
+            return Task.FromResult<PaymentEntity?>(Materialize().GetPayments(false).Single(p => p.Id == paymentData.Id));
+        }
+
+        public Task UpdatePaymentsAsync(List<PaymentEntity> payments)
+        {
+            foreach (var payment in payments)
+            {
+                Rows.Single(row => row.Id == payment.Id).SetBlob(payment);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public InvoiceEntity Materialize()
+        {
+            // The platform's invoice repository materializes payments onto this property the
+            // same way; the setter is only obsolete for consumers reading payments.
+#pragma warning disable CS0618
+            _invoice.Payments = Rows.Select(row => row.GetBlob()).ToList();
+#pragma warning restore CS0618
+            return _invoice;
+        }
+    }
+
+    private sealed class ScriptedWalletTransactionReader : IPayjoinWalletTransactionReader
+    {
+        public TransactionResult? Result { get; set; }
+
+        public Task<TransactionResult?> GetTransactionAsync(BTCPayNetwork network, uint256 transactionId, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(Result is not null && Result.TransactionHash == transactionId ? Result : null);
+        }
+    }
+
+    private sealed class RecordingStalePaidOverCorrectionService : IPayjoinStalePaidOverCorrectionService
+    {
+        public int Count { get; private set; }
+
+        public Task ClearStalePaidOverAsync(string invoiceId)
+        {
+            Count++;
+            return Task.CompletedTask;
+        }
     }
 }

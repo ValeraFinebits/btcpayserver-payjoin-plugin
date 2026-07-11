@@ -3,7 +3,6 @@ using BTCPayServer.Events;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Services.Invoices;
-using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using System;
@@ -49,30 +48,30 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             "Payjoin accounting could not record a payment for the final transaction of {InvoiceId}");
     private readonly IPayjoinInvoiceLookup _invoiceLookup;
     private readonly IPayjoinStalePaidOverCorrectionService _stalePaidOverCorrectionService;
-    private readonly PaymentService _paymentService;
+    private readonly IPayjoinPlatformPaymentRecorder _paymentRecorder;
     private readonly EventAggregator _eventAggregator;
     private readonly PaymentMethodHandlerDictionary _handlers;
     private readonly BTCPayNetworkProvider _networkProvider;
-    private readonly BTCPayWalletProvider _walletProvider;
+    private readonly IPayjoinWalletTransactionReader _transactionReader;
     private readonly ILogger<PayjoinAccountingPaymentService> _logger;
 
     public PayjoinAccountingPaymentService(
         IPayjoinInvoiceLookup invoiceLookup,
         IPayjoinStalePaidOverCorrectionService stalePaidOverCorrectionService,
-        PaymentService paymentService,
+        IPayjoinPlatformPaymentRecorder paymentRecorder,
         EventAggregator eventAggregator,
         PaymentMethodHandlerDictionary handlers,
         BTCPayNetworkProvider networkProvider,
-        BTCPayWalletProvider walletProvider,
+        IPayjoinWalletTransactionReader transactionReader,
         ILogger<PayjoinAccountingPaymentService> logger)
     {
         _invoiceLookup = invoiceLookup;
         _stalePaidOverCorrectionService = stalePaidOverCorrectionService;
-        _paymentService = paymentService;
+        _paymentRecorder = paymentRecorder;
         _eventAggregator = eventAggregator;
         _handlers = handlers;
         _networkProvider = networkProvider;
-        _walletProvider = walletProvider;
+        _transactionReader = transactionReader;
         _logger = logger;
     }
 
@@ -87,9 +86,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
 
         var accountingContext = contextResult.Context;
 
-        var wallet = _walletProvider.GetWallet(accountingContext.Network)
-            ?? throw new InvalidOperationException($"Wallet for {accountingContext.Network.CryptoCode} is not available.");
-        var finalTx = await wallet.GetTransactionAsync(uint256.Parse(bridge.ExpectedFinalTransactionId), true, cancellationToken).ConfigureAwait(false);
+        var finalTx = await _transactionReader.GetTransactionAsync(accountingContext.Network, uint256.Parse(bridge.ExpectedFinalTransactionId), cancellationToken).ConfigureAwait(false);
         if (finalTx?.Transaction is null)
         {
             LogPayjoinAccountingFinalTransactionUnavailable(_logger, bridge.ExpectedFinalTransactionId, bridge.InvoiceId, null);
@@ -126,7 +123,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         if (finalPayment is null)
         {
             var paymentData = CreateObservedPaymentData(accountingContext, accountedValueSats.Value, finalTransactionId, outputIndex.Value, finalTx.Confirmations, finalTransactionRbf);
-            finalPayment = await _paymentService.AddPayment(paymentData, [bridge.ExpectedFinalTransactionId]).ConfigureAwait(false);
+            finalPayment = await _paymentRecorder.AddPaymentAsync(paymentData, [bridge.ExpectedFinalTransactionId]).ConfigureAwait(false);
             if (finalPayment is null)
             {
                 var refreshedContextResult = await CreateAccountingContextAsync(bridge).ConfigureAwait(false);
@@ -161,7 +158,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             updatedPayments.Add(trackedPayment);
         }
 
-        await _paymentService.UpdatePayments(updatedPayments).ConfigureAwait(false);
+        await _paymentRecorder.UpdatePaymentsAsync(updatedPayments).ConfigureAwait(false);
         await _stalePaidOverCorrectionService.ClearStalePaidOverAsync(bridge.InvoiceId).ConfigureAwait(false);
         _eventAggregator.Publish(new InvoiceNeedUpdateEvent(accountingContext.Invoice.Id));
         return finalPayment;
