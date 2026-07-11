@@ -56,7 +56,7 @@ public class UIPayjoinOverviewController : Controller
         }
 
         var currentStoreStatus = await BuildCurrentStoreStatusAsync(currentStore).ConfigureAwait(false);
-        ViewData.SetLayoutModel(new LayoutModel("PayjoinV2", "Async Payjoin").SetCategory(WellKnownCategories.Store));
+        ViewData.SetLayoutModel(new LayoutModel("PayjoinV2", "Async Payjoin"));
         return View(new PayjoinOverviewViewModel(currentStoreStatus));
     }
 
