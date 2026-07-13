@@ -3,7 +3,6 @@ using NBitcoin;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -15,7 +14,6 @@ public sealed class PayjoinReceiverSessionState
         string invoiceId,
         string storeId,
         string receiverAddress,
-        SystemUri ohttpRelayUrl,
         DateTimeOffset monitoringExpiresAt,
         DateTimeOffset createdAt,
         DateTimeOffset updatedAt,
@@ -30,7 +28,6 @@ public sealed class PayjoinReceiverSessionState
         InvoiceId = invoiceId;
         StoreId = storeId;
         ReceiverAddress = receiverAddress;
-        OhttpRelayUrl = ohttpRelayUrl;
         MonitoringExpiresAt = monitoringExpiresAt;
         CreatedAt = createdAt;
         UpdatedAt = updatedAt;
@@ -48,8 +45,6 @@ public sealed class PayjoinReceiverSessionState
     public string StoreId { get; }
 
     public string ReceiverAddress { get; }
-
-    public SystemUri OhttpRelayUrl { get; }
 
     public DateTimeOffset MonitoringExpiresAt { get; }
 

@@ -34,7 +34,7 @@ public sealed class PayjoinUriSessionService
             "Persisted payjoin receiver session for invoice {InvoiceId} had an empty event log and will be rebuilt.");
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly PayjoinReceiverSessionStore _receiverSessionStore;
-    private readonly PayjoinOhttpKeysProvider _ohttpKeysProvider;
+    private readonly PayjoinMailroomManager _mailroomManager;
     private readonly PayjoinAvailabilityService _availabilityService;
     private readonly PayjoinSessionBuildLock _sessionBuildLock;
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
@@ -43,7 +43,7 @@ public sealed class PayjoinUriSessionService
     internal PayjoinUriSessionService(
         BTCPayNetworkProvider networkProvider,
         PayjoinReceiverSessionStore receiverSessionStore,
-        PayjoinOhttpKeysProvider ohttpKeysProvider,
+        PayjoinMailroomManager mailroomManager,
         PayjoinAvailabilityService availabilityService,
         PayjoinSessionBuildLock sessionBuildLock,
         IPayjoinAccountingBridgeService accountingBridgeService,
@@ -51,7 +51,7 @@ public sealed class PayjoinUriSessionService
     {
         _networkProvider = networkProvider;
         _receiverSessionStore = receiverSessionStore;
-        _ohttpKeysProvider = ohttpKeysProvider;
+        _mailroomManager = mailroomManager;
         _availabilityService = availabilityService;
         _sessionBuildLock = sessionBuildLock;
         _accountingBridgeService = accountingBridgeService;
@@ -87,17 +87,17 @@ public sealed class PayjoinUriSessionService
             return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "store settings are unavailable");
         }
 
-        if (storeSettings.DirectoryUrl is null)
+        var directoryUrls = storeSettings.GetEffectiveDirectoryUrls();
+        if (directoryUrls.Count == 0)
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "directory URL is missing");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "directory URLs are missing");
         }
 
-        var directoryUrl = storeSettings.DirectoryUrl.AbsoluteUri;
-        var ohttpRelayUrl = storeSettings.OhttpRelayUrl;
+        var ohttpRelayUrls = storeSettings.GetEffectiveOhttpRelayUrls();
 
-        if (ohttpRelayUrl is null)
+        if (ohttpRelayUrls.Count == 0)
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP relay URL is missing");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP relay URLs are missing");
         }
 
         if (due <= 0m)
@@ -108,13 +108,6 @@ public sealed class PayjoinUriSessionService
         if (!await _availabilityService.HasConfirmedReceiverInputsAsync(storeId, cryptoCode, network, cancellationToken).ConfigureAwait(false))
         {
             return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "no confirmed receiver inputs are available");
-        }
-
-        OhttpKeys? ohttpKeys = await _ohttpKeysProvider.GetKeysAsync(ohttpRelayUrl, directoryUrl, storeId, cancellationToken).ConfigureAwait(false);
-
-        if (ohttpKeys is null)
-        {
-            return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP keys are unavailable");
         }
 
         try
@@ -136,13 +129,23 @@ public sealed class PayjoinUriSessionService
 
             if (session is null)
             {
+                var selectedRelay = await _mailroomManager.SelectBootstrapRouteAsync(
+                    storeSettings,
+                    storeId,
+                    invoiceId,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (selectedRelay is null)
+                {
+                    return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP keys are unavailable from all configured relays");
+                }
+
                 var bootstrapPersister = new BufferedReceiverSessionPersister();
-                InitializeSession(destination, due, directoryUrl, ohttpKeys, monitoringExpiresAt, bootstrapPersister);
+                InitializeSession(destination, due, selectedRelay.DirectoryUrl.AbsoluteUri, selectedRelay.OhttpKeys, monitoringExpiresAt, bootstrapPersister);
                 session = _receiverSessionStore.CreateSession(
                     invoiceId,
                     destination,
                     storeId,
-                    ohttpRelayUrl,
                     monitoringExpiresAt,
                     bootstrapPersister.Load());
             }

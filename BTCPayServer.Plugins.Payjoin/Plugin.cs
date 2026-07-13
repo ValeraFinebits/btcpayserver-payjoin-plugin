@@ -34,6 +34,7 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinWalletOwnershipService, PayjoinWalletOwnershipService>();
         applicationBuilder.AddSingleton<IPayjoinReceiverSessionGuard, PayjoinReceiverSessionGuard>();
         applicationBuilder.AddSingleton<IPayjoinReceiverRelayClient, PayjoinReceiverRelayClient>();
+        applicationBuilder.AddSingleton<IPayjoinReceiverRelayRequestSender, PayjoinReceiverRelayRequestSender>();
         applicationBuilder.AddSingleton<IPayjoinReceiverStateProcessor, PayjoinReceiverStateProcessor>();
         applicationBuilder.AddSingleton<IPayjoinReceiverOutputBuilder, PayjoinReceiverOutputBuilder>();
         applicationBuilder.AddSingleton<IPayjoinReceiverWalletAdapter, PayjoinReceiverWalletAdapter>();
@@ -48,11 +49,12 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinReceiverProposalFinalizer, PayjoinReceiverProposalFinalizer>();
         applicationBuilder.AddSingleton<IPayjoinReceiverSessionProcessor, PayjoinReceiverSessionProcessor>();
         applicationBuilder.AddSingleton<PayjoinOhttpKeysProvider>();
+        applicationBuilder.AddSingleton<PayjoinMailroomManager>();
         applicationBuilder.AddSingleton<PayjoinSessionBuildLock>();
         applicationBuilder.AddSingleton(provider => new PayjoinUriSessionService(
             provider.GetRequiredService<BTCPayNetworkProvider>(),
             provider.GetRequiredService<PayjoinReceiverSessionStore>(),
-            provider.GetRequiredService<PayjoinOhttpKeysProvider>(),
+            provider.GetRequiredService<PayjoinMailroomManager>(),
             provider.GetRequiredService<PayjoinAvailabilityService>(),
             provider.GetRequiredService<PayjoinSessionBuildLock>(),
             provider.GetRequiredService<IPayjoinAccountingBridgeService>(),

@@ -11,18 +11,18 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProcessor
 {
     private readonly PayjoinReceiverSessionStore _sessionStore;
-    private readonly IPayjoinReceiverRelayClient _relayClient;
+    private readonly IPayjoinReceiverRelayRequestSender _relayRequestSender;
     private readonly IPayjoinWalletOwnershipService _walletOwnershipService;
     private readonly PayjoinSeenInputStore _seenInputStore;
 
     public PayjoinReceiverStateProcessor(
         PayjoinReceiverSessionStore sessionStore,
-        IPayjoinReceiverRelayClient relayClient,
+        IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinWalletOwnershipService walletOwnershipService,
         PayjoinSeenInputStore seenInputStore)
     {
         _sessionStore = sessionStore;
-        _relayClient = relayClient;
+        _relayRequestSender = relayRequestSender;
         _walletOwnershipService = walletOwnershipService;
         _seenInputStore = seenInputStore;
     }
@@ -38,19 +38,21 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             _sessionStore.TryConsumeInitializedPollAfterCloseRequest(context.Session.InvoiceId);
         }
 
-        using var requestResponse = initialized.CreatePollRequest(context.OhttpRelayUrl.ToString());
-        var responseBody = await _relayClient.SendAsync(
-            new SystemUri(requestResponse.Request.Url, UriKind.Absolute),
-            requestResponse.Request.ContentType,
-            requestResponse.Request.Body,
+        var (responseBody, requestResponse) = await _relayRequestSender.SendAsync(
+            context.StoreId,
+            context.InvoiceId,
+            initialized.CreatePollRequest,
+            requestResponse => (new SystemUri(requestResponse.Request.Url, UriKind.Absolute), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
+        using var relayRequestContext = requestResponse;
 
         using var transition = initialized.ProcessResponse(responseBody, requestResponse.ClientResponse);
         using var outcome = transition.Save(context.Persister);
 
         if (outcome is InitializedTransitionOutcome.Progress progress)
         {
-            await ProcessUncheckedProposalAsync(context, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
+            var currentContext = RefreshCloseRequestedContext(context);
+            await ProcessUncheckedProposalAsync(currentContext, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -59,12 +61,13 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         HasReplyableError replyableError,
         CancellationToken cancellationToken)
     {
-        using var requestResponse = replyableError.CreateErrorRequest(context.OhttpRelayUrl.ToString());
-        var responseBody = await _relayClient.SendAsync(
-            new SystemUri(requestResponse.Request.Url, UriKind.Absolute),
-            requestResponse.Request.ContentType,
-            requestResponse.Request.Body,
+        var (responseBody, requestResponse) = await _relayRequestSender.SendAsync(
+            context.StoreId,
+            context.InvoiceId,
+            replyableError.CreateErrorRequest,
+            requestResponse => (new SystemUri(requestResponse.Request.Url, UriKind.Absolute), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
+        using var relayRequestContext = requestResponse;
         using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
         transition.Save(context.Persister);
     }
@@ -161,6 +164,27 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         }
 
         return scripts;
+    }
+
+    private PayjoinReceiverStateContext RefreshCloseRequestedContext(PayjoinReceiverStateContext context)
+    {
+        if (context.Session.IsCloseRequested)
+        {
+            return context;
+        }
+
+        if (!_sessionStore.TryGetSession(context.InvoiceId, out var latestSession) || latestSession is null || !latestSession.IsCloseRequested)
+        {
+            return context;
+        }
+
+        return new PayjoinReceiverStateContext(
+            latestSession,
+            context.Persister,
+            context.ReceiverScript,
+            context.StoreId,
+            context.InvoiceId,
+            context.RemoveCloseRequestedSession);
     }
 
     private async Task<bool> TryRejectCloseRequestedOriginalPayloadAsync(

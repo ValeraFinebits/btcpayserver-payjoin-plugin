@@ -12,7 +12,6 @@ using NSubstitute;
 using Payjoin;
 using Xunit;
 using ReceiveSessionState = global::Payjoin.ReceiveSession;
-using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
@@ -28,7 +27,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-expired",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(-1),
             ["bootstrap-event"]);
 
@@ -48,7 +46,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-active",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
 
@@ -68,7 +65,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-open",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         using var state = CreateMonitorState();
@@ -89,7 +85,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-replyable-error",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
@@ -112,7 +107,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-initialized-keep",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
@@ -137,6 +131,48 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-initialized-remove",
             DateTimeOffset.UtcNow.AddMinutes(-1),
             initializedPollAfterCloseRequestConsumed: true);
+        using var state = CreateInitializedState();
+
+        var removed = guard.TryRemoveCloseRequestedSession(closeRequested!, state);
+
+        Assert.True(removed);
+        Assert.False(sessionStore.TryGetSession(closeRequested.InvoiceId, out _));
+    }
+
+    [Fact]
+    public void TryRemoveCloseRequestedSessionKeepsSessionBrieflyWhenInitializedPollAfterCloseRequestConsumedForSettledInvoice()
+    {
+        using var context = new TestContext();
+        var sessionStore = context.CreateStore();
+        var guard = CreateGuard(sessionStore);
+        var closeRequested = CreateCloseRequestedSession(
+            context,
+            sessionStore,
+            "invoice-close-initialized-settled-keep",
+            DateTimeOffset.UtcNow,
+            initializedPollAfterCloseRequestConsumed: true,
+            closeInvoiceStatus: InvoiceStatus.Settled);
+        using var state = CreateInitializedState();
+
+        var removed = guard.TryRemoveCloseRequestedSession(closeRequested!, state);
+
+        Assert.False(removed);
+        Assert.True(sessionStore.TryGetSession(closeRequested.InvoiceId, out _));
+    }
+
+    [Fact]
+    public void TryRemoveCloseRequestedSessionRemovesSessionWhenInitializedPollAfterCloseRequestConsumedForSettledInvoiceAfterGrace()
+    {
+        using var context = new TestContext();
+        var sessionStore = context.CreateStore();
+        var guard = CreateGuard(sessionStore);
+        var closeRequested = CreateCloseRequestedSession(
+            context,
+            sessionStore,
+            "invoice-close-initialized-settled-remove",
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            initializedPollAfterCloseRequestConsumed: true,
+            closeInvoiceStatus: InvoiceStatus.Settled);
         using var state = CreateInitializedState();
 
         var removed = guard.TryRemoveCloseRequestedSession(closeRequested!, state);
@@ -175,7 +211,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-remove",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
@@ -198,7 +233,6 @@ public class PayjoinReceiverSessionGuardTests
             "invoice-close-keep",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
         Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
@@ -255,17 +289,17 @@ public class PayjoinReceiverSessionGuardTests
         PayjoinReceiverSessionStore sessionStore,
         string invoiceId,
         DateTimeOffset closeRequestedAt,
-        bool initializedPollAfterCloseRequestConsumed)
+        bool initializedPollAfterCloseRequestConsumed,
+        InvoiceStatus closeInvoiceStatus = InvoiceStatus.Expired)
     {
         var session = sessionStore.CreateSession(
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new SystemUri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddMinutes(10),
             ["bootstrap-event"]);
 
-        Assert.True(sessionStore.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
+        Assert.True(sessionStore.RequestClose(session.InvoiceId, closeInvoiceStatus));
 
         using var db = context.CreateDbContext();
         var sessionData = db.ReceiverSessions.Single(x => x.InvoiceId == invoiceId);

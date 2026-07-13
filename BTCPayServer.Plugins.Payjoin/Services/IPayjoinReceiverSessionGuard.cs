@@ -34,7 +34,6 @@ internal sealed class PayjoinReceiverSessionGuardResult : IDisposable
             session,
             persister,
             receiverScript,
-            session.OhttpRelayUrl!,
             session.StoreId,
             session.InvoiceId,
             removeCloseRequestedSession);

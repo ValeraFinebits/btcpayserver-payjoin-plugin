@@ -31,7 +31,6 @@ internal static class PayjoinPluginDbSchema
     internal const string ReceiverSeenInputsOutPointIndex = "IX_ReceiverSeenInputs_TransactionId_OutputIndex";
 
     internal const int ReceiverAddressMaxLength = 128;
-    internal const int OhttpRelayUrlMaxLength = 2048;
     internal const int TransactionIdMaxLength = 64;
     internal const int CryptoCodeMaxLength = 16;
     internal const int PaymentMethodIdMaxLength = 64;

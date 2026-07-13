@@ -22,8 +22,10 @@ public class PayjoinStoreSettingsViewModel : PayjoinStoreSettingsInput
         {
             StoreId = storeId,
             PayjoinV2Enabled = settings.PayjoinV2Enabled,
-            DirectoryUrl = settings.DirectoryUrl,
-            OhttpRelayUrl = settings.OhttpRelayUrl,
+            DirectoryUrls = settings.GetEffectiveDirectoryUrls(),
+            DirectoryUrlsText = FormatDirectoryUrlsText(settings.GetEffectiveDirectoryUrls()),
+            OhttpRelayUrls = settings.GetEffectiveOhttpRelayUrls(),
+            OhttpRelayUrlsText = FormatOhttpRelayUrlsText(settings.GetEffectiveOhttpRelayUrls()),
             ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme,
             LayoutModel = layoutModel
         };

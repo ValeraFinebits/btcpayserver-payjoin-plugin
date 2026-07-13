@@ -25,15 +25,17 @@
             </div>
 
             <div class="form-group">
-                <label asp-for="DirectoryUrl" class="form-label" text-translate="true">Directory URL</label>
-                <input asp-for="DirectoryUrl" class="form-control" id="PayjoinDirectoryUrl" />
-                <span asp-validation-for="DirectoryUrl" class="text-danger"></span>
+                <label asp-for="DirectoryUrlsText" class="form-label" text-translate="true">Directory URLs</label>
+                <textarea asp-for="DirectoryUrlsText" class="form-control" id="PayjoinDirectoryUrls" rows="3"></textarea>
+                <span asp-validation-for="DirectoryUrlsText" class="text-danger"></span>
+                <div class="form-text" text-translate="true">Enter one Payjoin directory URL per line. Multiple directories improve resilience when one directory is unavailable.</div>
             </div>
 
             <div class="form-group">
-                <label asp-for="OhttpRelayUrl" class="form-label" text-translate="true">OHTTP Relay URL</label>
-                <input asp-for="OhttpRelayUrl" class="form-control" id="PayjoinOhttpRelayUrl" />
-                <span asp-validation-for="OhttpRelayUrl" class="text-danger"></span>
+                <label asp-for="OhttpRelayUrlsText" class="form-label" text-translate="true">OHTTP Relay URLs</label>
+                <textarea asp-for="OhttpRelayUrlsText" class="form-control" id="PayjoinOhttpRelayUrls" rows="4"></textarea>
+                <span asp-validation-for="OhttpRelayUrlsText" class="text-danger"></span>
+                <div class="form-text" text-translate="true">Enter one OHTTP relay URL per line. Multiple relays improve reliability when a relay is unavailable.</div>
             </div>
 
             <div class="form-group">

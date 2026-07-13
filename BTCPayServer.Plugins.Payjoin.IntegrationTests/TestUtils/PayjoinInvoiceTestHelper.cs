@@ -46,8 +46,10 @@ internal static class PayjoinInvoiceTestHelper
 
         var paymentUrl = new Uri(bip21Response.Bip21, UriKind.Absolute);
         var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(merchant.StoreId).WaitAsync(cancellationToken).ConfigureAwait(true);
-        Assert.NotNull(storeSettings.DirectoryUrl);
-        Assert.NotNull(storeSettings.OhttpRelayUrl);
+        var directoryUrls = storeSettings.GetEffectiveDirectoryUrls();
+        var ohttpRelayUrls = storeSettings.GetEffectiveOhttpRelayUrls();
+        Assert.NotEmpty(directoryUrls);
+        Assert.NotEmpty(ohttpRelayUrls);
 
         var invoiceScript = BitcoinAddress.Create(promptBeforePayment.Destination, network.NBitcoinNetwork).ScriptPubKey;
         return new PayjoinInvoiceContext(
@@ -56,8 +58,8 @@ internal static class PayjoinInvoiceTestHelper
             expectedDue,
             receiverOutpointsBeforePayment,
             paymentUrl,
-            storeSettings.DirectoryUrl,
-            storeSettings.OhttpRelayUrl,
+            directoryUrls,
+            ohttpRelayUrls,
             invoiceScript);
     }
 
@@ -130,8 +132,17 @@ internal static class PayjoinInvoiceTestHelper
         Func<CancellationToken, Task> confirmFinalTransactionAsync,
         CancellationToken cancellationToken)
     {
-        await AssertInvoiceStatusEventuallyAsync(tester, invoiceId, InvoiceStatus.Processing, cancellationToken).ConfigureAwait(true);
-        await confirmFinalTransactionAsync(cancellationToken).ConfigureAwait(true);
+        var observedStatus = await AssertInvoiceStatusEventuallyAsync(
+            tester,
+            invoiceId,
+            [InvoiceStatus.Processing, InvoiceStatus.Settled],
+            cancellationToken).ConfigureAwait(true);
+
+        if (observedStatus != InvoiceStatus.Settled)
+        {
+            await confirmFinalTransactionAsync(cancellationToken).ConfigureAwait(true);
+        }
+
         await AssertInvoiceStatusEventuallyAsync(tester, invoiceId, InvoiceStatus.Settled, cancellationToken).ConfigureAwait(true);
     }
 
@@ -165,7 +176,16 @@ internal static class PayjoinInvoiceTestHelper
         return null!;
     }
 
-    public static async Task AssertInvoiceStatusEventuallyAsync(ServerTester tester, string invoiceId, InvoiceStatus expectedStatus, CancellationToken cancellationToken)
+    public static async Task<InvoiceStatus> AssertInvoiceStatusEventuallyAsync(ServerTester tester, string invoiceId, InvoiceStatus expectedStatus, CancellationToken cancellationToken)
+    {
+        return await AssertInvoiceStatusEventuallyAsync(tester, invoiceId, [expectedStatus], cancellationToken).ConfigureAwait(true);
+    }
+
+    public static async Task<InvoiceStatus> AssertInvoiceStatusEventuallyAsync(
+        ServerTester tester,
+        string invoiceId,
+        IReadOnlyCollection<InvoiceStatus> expectedStatuses,
+        CancellationToken cancellationToken)
     {
         var invoiceRepository = tester.PayTester.GetService<InvoiceRepository>();
 
@@ -174,15 +194,20 @@ internal static class PayjoinInvoiceTestHelper
             cancellationToken.ThrowIfCancellationRequested();
 
             var invoice = await invoiceRepository.GetInvoice(invoiceId).WaitAsync(cancellationToken).ConfigureAwait(true);
-            if (invoice is not null && invoice.GetInvoiceState().Status == expectedStatus)
+            if (invoice is not null)
             {
-                return;
+                var status = invoice.GetInvoiceState().Status;
+                if (expectedStatuses.Contains(status))
+                {
+                    return status;
+                }
             }
 
             await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(true);
         }
 
-        Assert.Fail($"Expected invoice '{invoiceId}' status to become '{expectedStatus}'.");
+        Assert.Fail($"Expected invoice '{invoiceId}' status to become one of: {string.Join(", ", expectedStatuses)}.");
+        return default;
     }
 
     private static void AssertHasReceiverContribution(Transaction payjoinTx, HashSet<string> receiverOutpointsBeforePayment)
@@ -276,7 +301,12 @@ internal static class PayjoinInvoiceTestHelper
         decimal ExpectedDue,
         HashSet<string> ReceiverOutpointsBeforePayment,
         Uri PaymentUrl,
-        Uri DirectoryUrl,
-        Uri OhttpRelayUrl,
-        Script InvoiceScript);
+        IReadOnlyList<Uri> DirectoryUrls,
+        IReadOnlyList<Uri> OhttpRelayUrls,
+        Script InvoiceScript)
+    {
+        public Uri DirectoryUrl => DirectoryUrls[0];
+
+        public Uri OhttpRelayUrl => OhttpRelayUrls[0];
+    }
 }

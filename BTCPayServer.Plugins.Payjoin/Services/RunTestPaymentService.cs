@@ -59,7 +59,12 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         };
 
         var senderPsbtResult = await CreateSenderPsbtAsync(runTestPaymentContext, cancellationToken).ConfigureAwait(false);
-        var proposalPsbt = await RequestProposalAsync(runTestPaymentContext.PaymentUrl, runTestPaymentContext.OhttpRelayUrl, senderPsbtResult.Psbt, runTestPaymentContext.Network, cancellationToken).ConfigureAwait(false);
+        var proposalPsbt = await RequestProposalAsync(
+            runTestPaymentContext.PaymentUrl,
+            GetConfiguredRelayUrls(runTestPaymentContext),
+            senderPsbtResult.Psbt,
+            runTestPaymentContext.Network,
+            cancellationToken).ConfigureAwait(false);
 
         return await SignAndBroadcastAsync(runTestPaymentContext, proposalPsbt, cancellationToken).ConfigureAwait(false);
     }
@@ -191,7 +196,12 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         }
     }
 
-    private async Task<PSBT> RequestProposalAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, PSBT senderPsbt, BTCPayNetwork network, CancellationToken cancellationToken)
+    private async Task<PSBT> RequestProposalAsync(
+        SystemUri paymentUrl,
+        IReadOnlyList<SystemUri> ohttpRelayUrls,
+        PSBT senderPsbt,
+        BTCPayNetwork network,
+        CancellationToken cancellationToken)
     {
         string? proposalPsbtBase64 = null;
 
@@ -204,8 +214,12 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
             using var initial = senderBuilder.BuildRecommended(RecommendedFeeContributionRate);
             using var withReplyKey = initial.Save(senderPersister);
 
-            using var postContext = withReplyKey.CreateV2PostRequest(ohttpRelayUrl.ToString());
-            var postResponse = await SendRequestAsync(postContext.Request, cancellationToken).ConfigureAwait(false);
+            var (postResponse, postContext) = await SendViaRelaysAsync(
+                ohttpRelayUrls,
+                relayUrl => withReplyKey.CreateV2PostRequest(relayUrl.ToString()),
+                requestResponse => requestResponse.Request,
+                cancellationToken).ConfigureAwait(false);
+            using var postRequest = postContext;
             using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.OhttpCtx);
 
             var current = withReplyTransition.Save(senderPersister);
@@ -213,8 +227,12 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
             {
                 for (var attempt = 0; attempt < MaxProposalPollAttempts; attempt++)
                 {
-                    using var pollRequest = current.CreatePollRequest(ohttpRelayUrl.ToString());
-                    var pollResponse = await SendRequestAsync(pollRequest.Request, cancellationToken).ConfigureAwait(false);
+                    var (pollResponse, pollRequest) = await SendViaRelaysAsync(
+                        ohttpRelayUrls,
+                        relayUrl => current.CreatePollRequest(relayUrl.ToString()),
+                        requestResponse => requestResponse.Request,
+                        cancellationToken).ConfigureAwait(false);
+                    using var pollRequestContext = pollRequest;
                     using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.OhttpCtx);
                     var outcome = pollTransition.Save(senderPersister);
 
@@ -334,13 +352,74 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         {
             Content = new ByteArrayContent(request.Body)
         };
-        message.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(request.ContentType);
+        message.Content!.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(request.ContentType);
 
         var client = _httpClientFactory.CreateClient(nameof(RunTestPaymentService));
         using var response = await client.SendAsync(message, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         return await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<(byte[] Response, TContext Context)> SendViaRelaysAsync<TContext>(
+        IReadOnlyList<SystemUri> relayUrls,
+        Func<SystemUri, TContext> createContext,
+        Func<TContext, Request> getRequest,
+        CancellationToken cancellationToken)
+        where TContext : IDisposable
+    {
+        ArgumentNullException.ThrowIfNull(relayUrls);
+        ArgumentNullException.ThrowIfNull(createContext);
+        ArgumentNullException.ThrowIfNull(getRequest);
+
+        if (relayUrls.Count == 0)
+        {
+            throw new RunTestPaymentExecutionException("No OHTTP relays configured for test payment.");
+        }
+
+        Exception? lastError = null;
+        foreach (var relayUrl in relayUrls)
+        {
+            var context = createContext(relayUrl);
+            try
+            {
+                var request = getRequest(context);
+                var response = await SendRequestAsync(request, cancellationToken).ConfigureAwait(false);
+                return (response, context);
+            }
+            catch (HttpRequestException ex)
+            {
+                context.Dispose();
+                lastError = ex;
+            }
+            catch (TaskCanceledException ex)
+            {
+                context.Dispose();
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                lastError = ex;
+            }
+            catch
+            {
+                context.Dispose();
+                throw;
+            }
+        }
+
+        throw new RunTestPaymentExecutionException($"Sender failed across all configured relays: {lastError?.Message}", lastError!);
+    }
+
+    private static IReadOnlyList<SystemUri> GetConfiguredRelayUrls(RunTestPaymentContext context)
+    {
+        if (context.OhttpRelayUrls is { Count: > 0 })
+        {
+            return context.OhttpRelayUrls;
+        }
+
+        throw new RunTestPaymentExecutionException("No OHTTP relays configured for test payment.");
     }
 
     private static string FormatSenderResponseException(global::Payjoin.ResponseException responseException)
@@ -389,7 +468,7 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
 public sealed record RunTestPaymentContext(
     string InvoiceId,
     SystemUri PaymentUrl,
-    SystemUri OhttpRelayUrl,
+    IReadOnlyList<SystemUri>? OhttpRelayUrls,
     BitcoinAddress PaymentAddress,
     decimal PaymentAmount,
     BTCPayNetwork Network,

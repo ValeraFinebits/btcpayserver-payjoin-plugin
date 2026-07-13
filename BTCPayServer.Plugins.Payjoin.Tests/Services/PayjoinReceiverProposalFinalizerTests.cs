@@ -84,7 +84,7 @@ public class PayjoinReceiverProposalFinalizerTests
     private static PayjoinReceiverProposalFinalizer CreateFinalizer(IPayjoinAccountingBridgeService bridgeService)
     {
         return new PayjoinReceiverProposalFinalizer(
-            new UnusedRelayClient(),
+            new UnusedRelayRequestSender(),
             new UnusedProposalSigner(),
             bridgeService,
             CreateNetworkProvider());
@@ -94,7 +94,6 @@ public class PayjoinReceiverProposalFinalizerTests
     {
         return new PayjoinReceiverProposalFinalizationContext(
             persister: null!,
-            new Uri("https://relay.example/"),
             "store-1",
             "invoice-1",
             PayjoinConstants.BitcoinCode);
@@ -178,9 +177,15 @@ public class PayjoinReceiverProposalFinalizerTests
         public PayjoinOutPoint[] UtxosToBeLocked() => throw new NotSupportedException();
     }
 
-    private sealed class UnusedRelayClient : IPayjoinReceiverRelayClient
+    private sealed class UnusedRelayRequestSender : IPayjoinReceiverRelayRequestSender
     {
-        public Task<byte[]> SendAsync(Uri url, string contentType, byte[] body, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<(byte[] ResponseBody, TRequestContext RequestContext)> SendAsync<TRequestContext>(
+            string storeId,
+            string invoiceId,
+            Func<string, TRequestContext> buildRequest,
+            Func<TRequestContext, (Uri Url, string ContentType, byte[] Body)> describeRequest,
+            CancellationToken cancellationToken)
+            where TRequestContext : IDisposable => throw new NotSupportedException();
     }
 
     private sealed class UnusedProposalSigner : IPayjoinReceiverProposalSigner

@@ -1,11 +1,11 @@
 using BTCPayServer.BIP78.Sender;
 using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
+using BTCPayServer.Payments;
+using BTCPayServer.Payments.PayJoin.Sender;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 using BTCPayServer.Plugins.Payjoin.Services;
-using BTCPayServer.Payments;
-using BTCPayServer.Payments.PayJoin.Sender;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Tests;
@@ -35,6 +35,26 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
+
+        PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task CreateInvoiceAndPayItThroughThePayjoinPluginWithExternalPayerFallsBackAcrossConfiguredRelays()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
+        {
+            var configuredRelays = settings.GetEffectiveOhttpRelayUrls();
+            settings.OhttpRelayUrls = [new Uri("https://127.0.0.1:1/"), .. configuredRelays];
+        }, cts.Token).ConfigureAwait(true);
 
         var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
 
@@ -109,8 +129,8 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
             prompt!.Calculate().Due,
             receiverOutpointsBeforePayment,
             new Uri(bip21Response.Bip21, UriKind.Absolute),
-            new Uri("https://example.invalid", UriKind.Absolute),
-            new Uri("https://example.invalid", UriKind.Absolute),
+            new[] { new Uri("https://example.invalid", UriKind.Absolute) },
+            new[] { new Uri("https://example.invalid", UriKind.Absolute) },
             bip21.Address.ScriptPubKey);
 
         var explorerClient = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(context.Network);
@@ -207,10 +227,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
             delay,
             cts.Token);
 
-        await Task.Delay(delay, cts.Token).ConfigureAwait(true);
-
-        var session = PayjoinReceiverTestHelper.GetRequiredReceiverSession(tester, invoiceId);
-        Assert.True(session.TryGetContributedInput(out _));
+        await PayjoinReceiverTestHelper
+            .AssertReceiverSessionEventuallyHasContributedInputsAsync(tester, invoiceId, cts.Token)
+            .ConfigureAwait(true);
 
         var transactionId = await paymentTask.ConfigureAwait(true);
         Assert.False(string.IsNullOrWhiteSpace(transactionId));
@@ -292,14 +311,22 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
 
         var coldDerivation = await PayjoinIntegrationTestSupport.CreateTrackedColdWalletAsync(tester, cts.Token).ConfigureAwait(true);
-        var expectedDirectoryUrl = new Uri("https://directory.example.test/");
-        var expectedRelayUrl = new Uri("https://relay.example.test/");
+        var expectedDirectoryUrls = new[]
+        {
+            new Uri("https://directory-1.example.test/"),
+            new Uri("https://directory-2.example.test/")
+        };
+        var expectedRelayUrls = new[]
+        {
+            new Uri("https://relay-1.example.test/"),
+            new Uri("https://relay-2.example.test/")
+        };
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
             settings.ColdWalletDerivationScheme = coldDerivation.ToString();
-            settings.DirectoryUrl = expectedDirectoryUrl;
-            settings.OhttpRelayUrl = expectedRelayUrl;
+            settings.DirectoryUrls = expectedDirectoryUrls;
+            settings.OhttpRelayUrls = expectedRelayUrls;
         }, cts.Token).ConfigureAwait(true);
 
         await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
@@ -307,8 +334,8 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(context.Merchant.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
         Assert.False(storeSettings.PayjoinV2Enabled);
         Assert.Equal(coldDerivation.ToString(), storeSettings.ColdWalletDerivationScheme);
-        Assert.Equal(expectedDirectoryUrl, storeSettings.DirectoryUrl);
-        Assert.Equal(expectedRelayUrl, storeSettings.OhttpRelayUrl);
+        Assert.Equal(expectedDirectoryUrls, storeSettings.DirectoryUrls);
+        Assert.Equal(expectedRelayUrls, storeSettings.OhttpRelayUrls);
     }
 
     [Fact]
@@ -626,8 +653,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         var storeSettingsRepository = tester.PayTester.GetService<IPayjoinStoreSettingsRepository>();
         var storeSettings = await storeSettingsRepository.GetAsync(invoice!.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
-        Assert.NotNull(storeSettings?.OhttpRelayUrl);
-
+        Assert.NotEmpty(storeSettings?.GetEffectiveOhttpRelayUrls() ?? []);
         var prompt = invoice.GetPaymentPrompt(Payments.PaymentTypes.CHAIN.GetPaymentMethodId("BTC"));
         Assert.NotNull(prompt?.Destination);
 
@@ -640,7 +666,6 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
                 InvoiceId = invoiceId,
                 StoreId = invoice.StoreId,
                 ReceiverAddress = prompt.Destination,
-                OhttpRelayUrl = storeSettings!.OhttpRelayUrl!.AbsoluteUri,
                 MonitoringExpiresAt = invoice.MonitoringExpiration,
                 CreatedAt = now,
                 UpdatedAt = now
@@ -681,7 +706,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
-            settings.OhttpRelayUrl = null;
+            settings.OhttpRelayUrls = [];
         }, cts.Token).ConfigureAwait(true);
 
         var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
@@ -691,7 +716,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
-    public async Task GetBip21DoesNotEnablePayjoinWhenDirectoryUrlMissing()
+    public async Task GetBip21DoesNotEnablePayjoinWhenDirectoryUrlsMissing()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
         using var tester = CreateServerTester(newDb: true);
@@ -699,7 +724,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
-            settings.DirectoryUrl = null;
+            settings.DirectoryUrls = [];
         }, cts.Token).ConfigureAwait(true);
 
         var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
@@ -717,7 +742,8 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
         {
-            settings.OhttpRelayUrl = new Uri("http://127.0.0.1:1/");
+            var failedRelayUrl = new Uri("https://127.0.0.1:1/");
+            settings.OhttpRelayUrls = [failedRelayUrl];
         }, cts.Token).ConfigureAwait(true);
 
         var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
@@ -741,6 +767,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         await context.Merchant.PayInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        await context.Merchant.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
@@ -764,6 +793,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await invoiceRepository.UpdateInvoiceExpiry(invoiceId, TimeSpan.Zero).WaitAsync(cts.Token).ConfigureAwait(true);
 
         await PayjoinInvoiceTestHelper.AssertInvoiceStatusEventuallyAsync(tester, invoiceId, InvoiceStatus.Expired, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
@@ -787,6 +817,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         Assert.True(marked);
 
         await PayjoinInvoiceTestHelper.AssertInvoiceStatusEventuallyAsync(tester, invoiceId, InvoiceStatus.Invalid, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
     }
 
@@ -809,7 +840,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await context.Merchant.PayInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
         await context.Merchant.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
 
-        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedOrRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
@@ -845,6 +876,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await invoiceRepository.UpdateInvoiceExpiry(invoiceId, TimeSpan.Zero).WaitAsync(cts.Token).ConfigureAwait(true);
 
         await PayjoinInvoiceTestHelper.AssertInvoiceStatusEventuallyAsync(tester, invoiceId, InvoiceStatus.Expired, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
@@ -881,7 +913,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         Assert.True(marked);
 
         await PayjoinInvoiceTestHelper.AssertInvoiceStatusEventuallyAsync(tester, invoiceId, InvoiceStatus.Invalid, cts.Token).ConfigureAwait(true);
-        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedOrRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCloseRequestedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(

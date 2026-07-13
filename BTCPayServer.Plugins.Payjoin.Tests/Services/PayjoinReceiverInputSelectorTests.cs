@@ -209,7 +209,6 @@ public class PayjoinReceiverInputSelectorTests
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
-            new Uri("https://relay.example/"),
             DateTimeOffset.UtcNow.AddHours(1),
             ["bootstrap-event"]);
     }
@@ -242,7 +241,6 @@ public class PayjoinReceiverInputSelectorTests
         string? invoiceId = null,
         string? storeId = null,
         string? receiverAddress = null,
-        Uri? ohttpRelayUrl = null,
         DateTimeOffset? monitoringExpiresAt = null,
         DateTimeOffset? createdAt = null,
         DateTimeOffset? updatedAt = null,
@@ -259,7 +257,6 @@ public class PayjoinReceiverInputSelectorTests
             invoiceId ?? "invoice-1",
             storeId ?? "store-1",
             receiverAddress ?? "bcrt1qexampleaddress0000000000000000000000000",
-            ohttpRelayUrl ?? new Uri("https://relay.example/"),
             monitoringExpiresAt ?? now.AddHours(1),
             createdAt ?? now,
             updatedAt ?? now,

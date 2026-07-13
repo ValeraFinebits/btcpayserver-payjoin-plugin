@@ -11,18 +11,18 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposalFinalizer
 {
-    private readonly IPayjoinReceiverRelayClient _relayClient;
+    private readonly IPayjoinReceiverRelayRequestSender _relayRequestSender;
     private readonly IPayjoinReceiverProposalSigner _proposalSigner;
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
     private readonly BTCPayNetworkProvider _networkProvider;
 
     public PayjoinReceiverProposalFinalizer(
-        IPayjoinReceiverRelayClient relayClient,
+        IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinReceiverProposalSigner proposalSigner,
         IPayjoinAccountingBridgeService accountingBridgeService,
         BTCPayNetworkProvider networkProvider)
     {
-        _relayClient = relayClient;
+        _relayRequestSender = relayRequestSender;
         _proposalSigner = proposalSigner;
         _accountingBridgeService = accountingBridgeService;
         _networkProvider = networkProvider;
@@ -94,12 +94,15 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         PayjoinProposal proposal,
         CancellationToken cancellationToken)
     {
-        using var requestResponse = proposal.CreatePostRequest(context.OhttpRelayUrl.ToString());
-        var responseBody = await _relayClient.SendAsync(
-            new SystemUri(requestResponse.Request.Url, UriKind.Absolute),
-            requestResponse.Request.ContentType,
-            requestResponse.Request.Body,
+        var relayResponse = await _relayRequestSender.SendAsync(
+            context.StoreId,
+            context.InvoiceId,
+            proposal.CreatePostRequest,
+            requestResponse => (new SystemUri(requestResponse.Request.Url, UriKind.Absolute), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
+        var responseBody = relayResponse.ResponseBody;
+        var requestResponse = relayResponse.RequestContext;
+        using var relayRequestContext = requestResponse;
 
         using var transition = proposal.ProcessResponse(responseBody, requestResponse.ClientResponse);
         using var _ = transition.Save(context.Persister);

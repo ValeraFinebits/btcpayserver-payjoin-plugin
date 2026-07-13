@@ -7,9 +7,11 @@ using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Cors;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Routing;
 using NSubstitute;
+using Newtonsoft.Json.Linq;
 using System.Reflection;
 using Xunit;
 
@@ -118,6 +120,99 @@ public class GreenfieldPayjoinControllerTests
         var error = Assert.IsType<GreenfieldAPIError>(objectResult.Value);
         Assert.Equal("payment-url-not-payable", error.Code);
         await paymentUrlService.DidNotReceive().GetInvoicePaymentUrlAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateSettingsRequiresExplicitArrays()
+    {
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        var controller = CreateController(settingsRepository);
+
+        var result = await controller.UpdateSettings("store-1", new PayjoinStoreSettingsData());
+
+        var unprocessable = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        var errors = Assert.IsAssignableFrom<List<GreenfieldValidationError>>(unprocessable.Value);
+        Assert.Collection(
+            errors.FindAll(error => error.Path == nameof(PayjoinStoreSettingsData.DirectoryUrls)),
+            static error => Assert.Equal(nameof(PayjoinStoreSettingsData.DirectoryUrls), error.Path));
+        Assert.Collection(
+            errors.FindAll(error => error.Path == nameof(PayjoinStoreSettingsData.OhttpRelayUrls)),
+            static error => Assert.Equal(nameof(PayjoinStoreSettingsData.OhttpRelayUrls), error.Path));
+        await settingsRepository.DidNotReceive().SetAsync(Arg.Any<string>(), Arg.Any<PayjoinStoreSettings>());
+    }
+
+    [Fact]
+    public async Task UpdateSettingsRejectsNullUrlEntries()
+    {
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        var controller = CreateController(settingsRepository);
+        var settings = JObject.Parse("""
+            {
+              "directoryUrls": [null, "https://configured.example/directory"],
+              "ohttpRelayUrls": [null, "https://configured.example/relay"]
+            }
+            """).ToObject<PayjoinStoreSettingsData>()!;
+
+        var result = await controller.UpdateSettings("store-1", settings);
+
+        var unprocessable = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        var errors = Assert.IsAssignableFrom<List<GreenfieldValidationError>>(unprocessable.Value);
+        Assert.Contains(errors, error => error.Path == nameof(PayjoinStoreSettingsData.DirectoryUrls));
+        Assert.Contains(errors, error => error.Path == nameof(PayjoinStoreSettingsData.OhttpRelayUrls));
+        await settingsRepository.DidNotReceive().SetAsync(Arg.Any<string>(), Arg.Any<PayjoinStoreSettings>());
+    }
+
+    [Fact]
+    public async Task UpdateSettingsRejectsNonHttpsUrls()
+    {
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        var controller = CreateController(settingsRepository);
+
+        var result = await controller.UpdateSettings("store-1", new PayjoinStoreSettingsData
+        {
+            DirectoryUrls = [new Uri("http://fallback.example/directory")],
+            OhttpRelayUrls = [new Uri("http://fallback.example/relay")]
+        });
+
+        var unprocessable = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        var errors = Assert.IsAssignableFrom<List<GreenfieldValidationError>>(unprocessable.Value);
+        Assert.Contains(errors, error => error.Path == nameof(PayjoinStoreSettingsData.DirectoryUrls));
+        Assert.Contains(errors, error => error.Path == nameof(PayjoinStoreSettingsData.OhttpRelayUrls));
+        await settingsRepository.DidNotReceive().SetAsync(Arg.Any<string>(), Arg.Any<PayjoinStoreSettings>());
+    }
+
+    [Fact]
+    public async Task UpdateSettingsUsesValidHttpsArrays()
+    {
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        var controller = CreateController(settingsRepository);
+        var expectedDirectoryUrls = new[] { new Uri("https://configured.example/directory") };
+        var expectedRelayUrls = new[] { new Uri("https://configured.example/relay") };
+
+        var result = await controller.UpdateSettings("store-1", new PayjoinStoreSettingsData
+        {
+            DirectoryUrls = expectedDirectoryUrls,
+            OhttpRelayUrls = expectedRelayUrls
+        });
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<PayjoinStoreSettingsData>(ok.Value);
+        Assert.Equal(expectedDirectoryUrls, response.DirectoryUrls);
+        Assert.Equal(expectedRelayUrls, response.OhttpRelayUrls);
+        await settingsRepository.Received(1).SetAsync(
+            "store-1",
+            Arg.Is<PayjoinStoreSettings>(saved =>
+                saved.DirectoryUrls!.SequenceEqual(expectedDirectoryUrls) &&
+                saved.OhttpRelayUrls!.SequenceEqual(expectedRelayUrls)));
+    }
+
+    private static GreenfieldPayjoinController CreateController(IPayjoinStoreSettingsRepository settingsRepository)
+    {
+        var controller = new GreenfieldPayjoinController(settingsRepository, null!, null!, null!, null!);
+        var httpContext = new DefaultHttpContext();
+        httpContext.SetStoreData(new BTCPayServer.Data.StoreData { Id = "store-1" });
+        controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
+        return controller;
     }
 
     private static void AssertEndpoint(string actionName, string routeTemplate, string policy, Type httpMethodAttributeType)

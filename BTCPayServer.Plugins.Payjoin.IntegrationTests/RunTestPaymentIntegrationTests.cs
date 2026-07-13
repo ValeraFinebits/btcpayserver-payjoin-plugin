@@ -26,4 +26,23 @@ public class RunTestPaymentIntegrationTests : UnitTestBase
 
         PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
     }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task CreateInvoiceAndPayItThroughRunTestPaymentFallsBackAcrossConfiguredRelays()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
+        {
+            var configuredRelays = settings.GetEffectiveOhttpRelayUrls();
+            settings.OhttpRelayUrls = [new Uri("https://127.0.0.1:1/"), .. configuredRelays];
+        }, cts.Token).ConfigureAwait(true);
+
+        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaRunTestPaymentWithExternalPayerAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+
+        PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
+    }
 }

@@ -81,25 +81,35 @@ else if (store.Status.Severity == "danger")
                 <dl class="mb-0 row">
                     <dt class="col-sm-4 text-muted" text-translate="true">Directory</dt>
                     <dd class="col-sm-8 mb-3">
-                        @if (store.DirectoryUrl is null)
+                        @if (store.DirectoryUrls.Count == 0)
                         {
                             <span class="badge bg-danger" text-translate="true">Missing</span>
                         }
                         else
                         {
-                            <span class="text-break">@store.DirectoryUrl</span>
+                            <ul class="list-unstyled mb-0">
+                                @foreach (var directoryUrl in store.DirectoryUrls)
+                                {
+                                    <li class="text-break">@directoryUrl</li>
+                                }
+                            </ul>
                         }
                     </dd>
 
-                    <dt class="col-sm-4 text-muted" text-translate="true">OHTTP relay</dt>
+                    <dt class="col-sm-4 text-muted" text-translate="true">OHTTP relays</dt>
                     <dd class="col-sm-8 mb-3">
-                        @if (store.OhttpRelayUrl is null)
+                        @if (store.OhttpRelayUrls.Count == 0)
                         {
                             <span class="badge bg-danger" text-translate="true">Missing</span>
                         }
                         else
                         {
-                            <span class="text-break">@store.OhttpRelayUrl</span>
+                            <ul class="list-unstyled mb-0">
+                                @foreach (var relayUrl in store.OhttpRelayUrls)
+                                {
+                                    <li class="text-break">@relayUrl</li>
+                                }
+                            </ul>
                         }
                     </dd>
 
@@ -138,11 +148,11 @@ else if (store.Status.Severity == "danger")
                 <div class="d-grid gap-3 mb-0">
                     <div class="d-flex align-items-center justify-content-between border-bottom pb-3">
                         <span text-translate="true">Directory configured</span>
-                        <span class="badge @(store.DirectoryUrl is null ? "bg-danger" : "bg-success")">@(store.DirectoryUrl is null ? StringLocalizer["Missing"].Value : StringLocalizer["Present"].Value)</span>
+                        <span class="badge @(store.DirectoryUrls.Count == 0 ? "bg-danger" : "bg-success")">@(store.DirectoryUrls.Count == 0 ? StringLocalizer["Missing"].Value : StringLocalizer["Present"].Value)</span>
                     </div>
                     <div class="d-flex align-items-center justify-content-between border-bottom pb-3">
                         <span text-translate="true">OHTTP relay configured</span>
-                        <span class="badge @(store.OhttpRelayUrl is null ? "bg-danger" : "bg-success")">@(store.OhttpRelayUrl is null ? StringLocalizer["Missing"].Value : StringLocalizer["Present"].Value)</span>
+                        <span class="badge @(store.OhttpRelayUrls.Count == 0 ? "bg-danger" : "bg-success")">@(store.OhttpRelayUrls.Count == 0 ? StringLocalizer["Missing"].Value : StringLocalizer["Present"].Value)</span>
                     </div>
                     <div class="d-flex align-items-center justify-content-between">
                         <span text-translate="true">Confirmed receiver inputs</span>

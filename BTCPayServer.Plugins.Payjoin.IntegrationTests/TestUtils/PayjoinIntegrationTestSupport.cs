@@ -182,7 +182,7 @@ internal static class PayjoinIntegrationTestSupport
     {
         var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, merchant, network, cancellationToken).ConfigureAwait(true);
         var payjoinPayer = new PayjoinTestPayer(tester, payer, network);
-        var paymentResult = await payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, preProposalPollDelay, cancellationToken).ConfigureAwait(true);
+        var paymentResult = await payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrls, preProposalPollDelay, cancellationToken).ConfigureAwait(true);
 
         return await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, merchant, payjoinContext, paymentResult.TransactionId, cancellationToken).ConfigureAwait(true);
     }
@@ -221,10 +221,11 @@ internal static class PayjoinIntegrationTestSupport
         CancellationToken cancellationToken)
     {
         var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
-        Assert.NotNull(storeSettings.OhttpRelayUrl);
+        Assert.NotEmpty(storeSettings.GetEffectiveOhttpRelayUrls());
+        var ohttpRelayUrls = storeSettings.GetEffectiveOhttpRelayUrls();
 
         var payjoinPayer = new PayjoinTestPayer(tester, payer, network, mineBlockAfterBroadcast: mineBlockAfterBroadcast);
-        var paymentResult = await payjoinPayer.PayAsync(paymentUrl, storeSettings.OhttpRelayUrl, preProposalPollDelay, cancellationToken).ConfigureAwait(true);
+        var paymentResult = await payjoinPayer.PayAsync(paymentUrl, ohttpRelayUrls, preProposalPollDelay, cancellationToken).ConfigureAwait(true);
         Assert.False(string.IsNullOrWhiteSpace(paymentResult.TransactionId), "TransactionId must be returned on success");
 
         return paymentResult.TransactionId;

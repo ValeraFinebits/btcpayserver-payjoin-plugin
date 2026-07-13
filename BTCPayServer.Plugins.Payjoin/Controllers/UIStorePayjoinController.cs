@@ -64,6 +64,30 @@ public class UIStorePayjoinController : Controller
 
         model.StoreId = storeId;
         model.LayoutModel = new LayoutModel("Payjoin", "Async Payjoin Settings").SetCategory(WellKnownCategories.Store);
+
+        var directoryUrls = PayjoinStoreSettingsInput.ParseDirectoryUrlsTextWithErrors(model.DirectoryUrlsText, model.DirectoryUrls);
+        var relayUrls = PayjoinStoreSettingsInput.ParseOhttpRelayUrlsTextWithErrors(model.OhttpRelayUrlsText, model.OhttpRelayUrls);
+
+        foreach (var error in directoryUrls.Errors)
+        {
+            ModelState.AddModelError(nameof(model.DirectoryUrlsText), $"Line {error.LineNumber}: '{error.Value}' is invalid. {error.Message}");
+        }
+
+        foreach (var error in relayUrls.Errors)
+        {
+            ModelState.AddModelError(nameof(model.OhttpRelayUrlsText), $"Line {error.LineNumber}: '{error.Value}' is invalid. {error.Message}");
+        }
+
+        if (directoryUrls.Urls.Count == 0)
+        {
+            ModelState.AddModelError(nameof(model.DirectoryUrlsText), "At least one directory URL is required.");
+        }
+
+        if (relayUrls.Urls.Count == 0)
+        {
+            ModelState.AddModelError(nameof(model.OhttpRelayUrlsText), "At least one OHTTP relay URL is required.");
+        }
+
         if (!ModelState.IsValid)
         {
             ViewData.SetLayoutModel(model.LayoutModel);

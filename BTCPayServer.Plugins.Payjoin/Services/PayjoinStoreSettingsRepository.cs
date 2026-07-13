@@ -49,6 +49,15 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
             throw new ArgumentNullException(nameof(settings));
         }
 
+        var normalizedSettings = new PayjoinStoreSettings
+        {
+            PayjoinV2Enabled = settings.PayjoinV2Enabled,
+            DirectoryUrls = PayjoinStoreSettings.NormalizeDirectoryUrls(settings.DirectoryUrls),
+            OhttpRelayUrls = PayjoinStoreSettings.NormalizeOhttpRelayUrls(settings.OhttpRelayUrls),
+            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme
+        };
+        normalizedSettings.NormalizeUrlSettings();
+
         var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false);
         if (store is null)
         {
@@ -57,7 +66,7 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
 
         var blob = store.GetStoreBlob();
         blob.AdditionalData ??= new Newtonsoft.Json.Linq.JObject();
-        blob.AdditionalData[Key] = Newtonsoft.Json.Linq.JToken.FromObject(settings);
+        blob.AdditionalData[Key] = Newtonsoft.Json.Linq.JToken.FromObject(normalizedSettings);
         store.SetStoreBlob(blob);
         await _storeRepository.UpdateStore(store).ConfigureAwait(false);
     }
@@ -71,7 +80,9 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
 
         try
         {
-            return token.ToObject<PayjoinStoreSettings>() ?? new PayjoinStoreSettings();
+            var settings = token.ToObject<PayjoinStoreSettings>() ?? new PayjoinStoreSettings();
+            settings.NormalizeUrlSettings();
+            return settings;
         }
         catch (JsonException)
         {

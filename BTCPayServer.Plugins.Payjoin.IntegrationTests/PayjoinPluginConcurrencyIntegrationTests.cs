@@ -146,6 +146,8 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             network,
             merchant.StoreId,
             new Uri(bip21ResponseOne.Bip21, UriKind.Absolute),
+            preProposalPollDelay: null,
+            mineBlockAfterBroadcast: false,
             cts.Token);
         var paymentTaskTwo = PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
             tester,
@@ -153,6 +155,8 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             network,
             merchant.StoreId,
             new Uri(bip21ResponseTwo.Bip21, UriKind.Absolute),
+            preProposalPollDelay: null,
+            mineBlockAfterBroadcast: false,
             cts.Token);
 
         var paymentResults = await Task.WhenAll(
@@ -170,6 +174,8 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
 
         Assert.False(string.IsNullOrWhiteSpace(successfulTransactionId));
         Assert.NotNull(failedException);
+
+        await MineSingleBlockAsync(tester, network, cts.Token).ConfigureAwait(true);
 
         await merchant.WaitInvoicePaid(successfulInvoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, successfulInvoiceId, cts.Token).ConfigureAwait(true);
