@@ -1,14 +1,61 @@
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Payjoin;
-using SystemUri = System.Uri;
 using Xunit;
+using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinMailroomManagerTests
 {
+    [Fact]
+    public async Task SelectBootstrapRouteAsyncFallsBackToAnotherRelayWhenOhttpKeysFetchTimesOut()
+    {
+        using var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        var attemptedRelays = new List<SystemUri>();
+        var fetchAttempts = 0;
+        var ohttpKeysProvider = new PayjoinOhttpKeysProvider(
+            memoryCache,
+            NullLogger<PayjoinOhttpKeysProvider>.Instance,
+            async (relayUrl, _, cancellationToken) =>
+            {
+                attemptedRelays.Add(relayUrl);
+                if (Interlocked.Increment(ref fetchAttempts) == 1)
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                    throw new InvalidOperationException("The delay should only complete by cancellation.");
+                }
+
+                return CreateSuccessResult().OhttpKeys!;
+            },
+            TimeSpan.FromMilliseconds(50));
+        var manager = new PayjoinMailroomManager(
+            ohttpKeysProvider,
+            NullLogger<PayjoinMailroomManager>.Instance);
+
+        var selected = await manager.SelectBootstrapRouteAsync(
+            new PayjoinStoreSettings
+            {
+                DirectoryUrls = [new SystemUri("https://directory.example/")],
+                OhttpRelayUrls =
+                [
+                    new SystemUri("https://relay-1.example/"),
+                    new SystemUri("https://relay-2.example/")
+                ]
+            },
+            "store-1",
+            "invoice-1",
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(selected);
+        Assert.Equal(2, fetchAttempts);
+        Assert.Equal(2, attemptedRelays.Count);
+        Assert.NotEqual(attemptedRelays[0], attemptedRelays[1]);
+        Assert.Equal(attemptedRelays[1], selected!.RelayUrl);
+    }
+
     [Fact]
     public async Task SelectBootstrapRouteAsyncTriesAllRelaysWhenFailuresAreRetryable()
     {
