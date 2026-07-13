@@ -202,6 +202,7 @@ public class GreenfieldPayjoinControllerTests
         await settingsRepository.Received(1).SetAsync(
             "store-1",
             Arg.Is<PayjoinStoreSettings>(saved =>
+                saved is not null &&
                 saved.DirectoryUrls!.SequenceEqual(expectedDirectoryUrls) &&
                 saved.OhttpRelayUrls!.SequenceEqual(expectedRelayUrls)));
     }
