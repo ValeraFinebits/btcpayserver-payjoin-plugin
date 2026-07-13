@@ -67,6 +67,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
 	<Compile Include="..\rust-payjoin\payjoin-ffi\csharp\Payjoin.Http.cs" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\Payjoin.Http.cs')" />
     <Compile Include="..\rust-payjoin\payjoin-ffi\csharp\src\payjoin.cs" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\src\payjoin.cs')" />
     <None Include="..\rust-payjoin\payjoin-ffi\csharp\lib\libpayjoin_ffi.so" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\lib\libpayjoin_ffi.so')">
