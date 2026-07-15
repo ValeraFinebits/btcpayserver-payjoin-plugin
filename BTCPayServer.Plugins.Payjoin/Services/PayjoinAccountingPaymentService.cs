@@ -3,10 +3,10 @@ using BTCPayServer.Events;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Services.Invoices;
-using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -43,35 +43,35 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
     private static readonly Action<ILogger, string, Exception?> LogPayjoinAccountingSettlementOutputUnavailable =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(13, nameof(LogPayjoinAccountingSettlementOutputUnavailable)),
             "Payjoin accounting could not resolve a settlement output for {InvoiceId}");
-    private static readonly Action<ILogger, string, Exception?> LogPayjoinAccountingTrackedPaymentUnavailable =
-        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(14, nameof(LogPayjoinAccountingTrackedPaymentUnavailable)),
-            "Payjoin accounting could not find a tracked payment to reconcile for {InvoiceId}");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinAccountingFinalPaymentUnavailable =
+        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(14, nameof(LogPayjoinAccountingFinalPaymentUnavailable)),
+            "Payjoin accounting could not record a payment for the final transaction of {InvoiceId}");
     private readonly IPayjoinInvoiceLookup _invoiceLookup;
     private readonly IPayjoinStalePaidOverCorrectionService _stalePaidOverCorrectionService;
-    private readonly PaymentService _paymentService;
+    private readonly IPayjoinPlatformPaymentRecorder _paymentRecorder;
     private readonly EventAggregator _eventAggregator;
     private readonly PaymentMethodHandlerDictionary _handlers;
     private readonly BTCPayNetworkProvider _networkProvider;
-    private readonly BTCPayWalletProvider _walletProvider;
+    private readonly IPayjoinWalletTransactionReader _transactionReader;
     private readonly ILogger<PayjoinAccountingPaymentService> _logger;
 
     public PayjoinAccountingPaymentService(
         IPayjoinInvoiceLookup invoiceLookup,
         IPayjoinStalePaidOverCorrectionService stalePaidOverCorrectionService,
-        PaymentService paymentService,
+        IPayjoinPlatformPaymentRecorder paymentRecorder,
         EventAggregator eventAggregator,
         PaymentMethodHandlerDictionary handlers,
         BTCPayNetworkProvider networkProvider,
-        BTCPayWalletProvider walletProvider,
+        IPayjoinWalletTransactionReader transactionReader,
         ILogger<PayjoinAccountingPaymentService> logger)
     {
         _invoiceLookup = invoiceLookup;
         _stalePaidOverCorrectionService = stalePaidOverCorrectionService;
-        _paymentService = paymentService;
+        _paymentRecorder = paymentRecorder;
         _eventAggregator = eventAggregator;
         _handlers = handlers;
         _networkProvider = networkProvider;
-        _walletProvider = walletProvider;
+        _transactionReader = transactionReader;
         _logger = logger;
     }
 
@@ -86,9 +86,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
 
         var accountingContext = contextResult.Context;
 
-        var wallet = _walletProvider.GetWallet(accountingContext.Network)
-            ?? throw new InvalidOperationException($"Wallet for {accountingContext.Network.CryptoCode} is not available.");
-        var finalTx = await wallet.GetTransactionAsync(uint256.Parse(bridge.ExpectedFinalTransactionId), true, cancellationToken).ConfigureAwait(false);
+        var finalTx = await _transactionReader.GetTransactionAsync(accountingContext.Network, uint256.Parse(bridge.ExpectedFinalTransactionId), cancellationToken).ConfigureAwait(false);
         if (finalTx?.Transaction is null)
         {
             LogPayjoinAccountingFinalTransactionUnavailable(_logger, bridge.ExpectedFinalTransactionId, bridge.InvoiceId, null);
@@ -113,50 +111,62 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         var finalOutPoint = new OutPoint(finalTransactionId, outputIndex.Value);
 
         var finalPayment = FindPaymentByOutPoint(accountingContext, finalOutPoint);
-        if (finalPayment is not null)
+        var trackedPayment = FindTrackedPayment(accountingContext, bridge);
+        if (ShouldWaitForFinalTransactionConfirmation(finalPayment is not null, trackedPayment is not null, finalTx.Confirmations))
         {
-            ApplyFinalPaymentState(accountingContext, finalPayment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
-
-            await _paymentService.UpdatePayments([finalPayment]).ConfigureAwait(false);
-            await _stalePaidOverCorrectionService.ClearStalePaidOverAsync(bridge.InvoiceId).ConfigureAwait(false);
-            _eventAggregator.Publish(new InvoiceNeedUpdateEvent(accountingContext.Invoice.Id));
-            return finalPayment;
+            // The tracked fallback payment reflects what is currently observable on-chain, and the
+            // final transaction conflicts with it. The fallback payment keeps crediting the invoice
+            // until the final transaction confirms; it then receives its own payment record below.
+            return null;
         }
 
-        var payment = FindTrackedPayment(accountingContext, bridge);
-        if (payment is null)
+        if (finalPayment is null)
         {
             var paymentData = CreateObservedPaymentData(accountingContext, accountedValueSats.Value, finalTransactionId, outputIndex.Value, finalTx.Confirmations, finalTransactionRbf);
-            payment = await _paymentService.AddPayment(paymentData, [bridge.ExpectedFinalTransactionId]).ConfigureAwait(false);
-            if (payment is null)
+            finalPayment = await _paymentRecorder.AddPaymentAsync(paymentData, [bridge.ExpectedFinalTransactionId]).ConfigureAwait(false);
+            if (finalPayment is null)
             {
                 var refreshedContextResult = await CreateAccountingContextAsync(bridge).ConfigureAwait(false);
                 if (refreshedContextResult.Success)
                 {
                     accountingContext = refreshedContextResult.Context;
-                    payment = FindPaymentByOutPoint(accountingContext, finalOutPoint);
+                    finalPayment = FindPaymentByOutPoint(accountingContext, finalOutPoint);
+                    trackedPayment = FindTrackedPayment(accountingContext, bridge);
                 }
             }
 
-            if (payment is null)
+            if (finalPayment is null)
             {
-                LogPayjoinAccountingTrackedPaymentUnavailable(_logger, bridge.InvoiceId, null);
+                LogPayjoinAccountingFinalPaymentUnavailable(_logger, bridge.InvoiceId, null);
                 return null;
             }
-
-            ApplyFinalPaymentState(accountingContext, payment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
-            await _paymentService.UpdatePayments([payment]).ConfigureAwait(false);
-            await _stalePaidOverCorrectionService.ClearStalePaidOverAsync(bridge.InvoiceId).ConfigureAwait(false);
-            _eventAggregator.Publish(new InvoiceNeedUpdateEvent(accountingContext.Invoice.Id));
-            return payment;
         }
 
-        ApplyFinalPaymentState(accountingContext, payment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
+        ApplyFinalPaymentState(accountingContext, finalPayment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
 
-        await _paymentService.UpdatePayments([payment]).ConfigureAwait(false);
+        var updatedPayments = new List<PaymentEntity> { finalPayment };
+        if (trackedPayment is not null &&
+            trackedPayment.Id != finalPayment.Id &&
+            trackedPayment.Accounted &&
+            finalTx.Confirmations >= 1)
+        {
+            // Once the final transaction has confirmed, the fallback transaction it replaces can no
+            // longer confirm, so its payment stops counting toward the invoice. This mirrors how the
+            // platform retires payments whose transaction was replaced, and keeps the fallback payment
+            // record intact under its own id in case the fallback ever needs to be re-examined.
+            trackedPayment.Status = PaymentStatus.Unaccounted;
+            updatedPayments.Add(trackedPayment);
+        }
+
+        await _paymentRecorder.UpdatePaymentsAsync(updatedPayments).ConfigureAwait(false);
         await _stalePaidOverCorrectionService.ClearStalePaidOverAsync(bridge.InvoiceId).ConfigureAwait(false);
         _eventAggregator.Publish(new InvoiceNeedUpdateEvent(accountingContext.Invoice.Id));
-        return payment;
+        return finalPayment;
+    }
+
+    internal static bool ShouldWaitForFinalTransactionConfirmation(bool finalPaymentExists, bool trackedPaymentExists, long confirmations)
+    {
+        return !finalPaymentExists && trackedPaymentExists && confirmations < 1;
     }
 
     private static PaymentEntity? FindPaymentByOutPoint(AccountingContext accountingContext, OutPoint outPoint)
