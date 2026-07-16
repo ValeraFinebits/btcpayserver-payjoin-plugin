@@ -335,6 +335,17 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
     private async Task<string> SignAndBroadcastAsync(RunTestPaymentContext runTestPaymentContext, PSBT proposalPsbt, CancellationToken cancellationToken)
     {
         var client = _explorerClientProvider.GetExplorerClient(runTestPaymentContext.Network);
+
+        // The payjoin sender restores the proposal's input metadata from the original PSBT, and a
+        // finalized original no longer carries BIP32 key paths, so refresh them from the wallet
+        // before signing instead of depending on what survived the round trip.
+        var updateResult = await client.UpdatePSBTAsync(new UpdatePSBTRequest
+        {
+            DerivationScheme = runTestPaymentContext.PayerAccountDerivation,
+            PSBT = proposalPsbt
+        }, cancellationToken).ConfigureAwait(false);
+        proposalPsbt = updateResult?.PSBT ?? proposalPsbt;
+
         SignAndFinalize(proposalPsbt, runTestPaymentContext, "PSBT could not be finalized");
 
         var transaction = proposalPsbt.ExtractTransaction();
