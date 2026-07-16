@@ -74,6 +74,16 @@ internal sealed class PayjoinTestPayer
         }
 
         var senderPsbtResult = await CreateSenderPsbtAsync(paymentUrl, cancellationToken).ConfigureAwait(false);
+        // BIP 78 requires the original PSBT to be a fully signed, broadcastable transaction: it is
+        // the fallback the receiver can put on-chain if the payjoin never completes. Sign it before
+        // it is handed to the payjoin sender.
+        var signedOriginal = await _payer.Sign(senderPsbtResult.Psbt).ConfigureAwait(false);
+        if (!signedOriginal.TryFinalize(out _))
+        {
+            throw new InvalidOperationException($"Original PSBT could not be finalized for payer store '{_payer.StoreId}'.");
+        }
+
+        senderPsbtResult = senderPsbtResult with { Psbt = signedOriginal };
         var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrls, senderPsbtResult.Psbt, preProposalPollDelay, cancellationToken).ConfigureAwait(false);
 
         return await FinalizeAndBroadcastAsync(senderPsbtResult, proposalPsbt, cancellationToken).ConfigureAwait(false);
