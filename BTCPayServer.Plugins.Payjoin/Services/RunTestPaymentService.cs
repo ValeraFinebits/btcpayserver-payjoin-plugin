@@ -59,6 +59,10 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         };
 
         var senderPsbtResult = await CreateSenderPsbtAsync(runTestPaymentContext, cancellationToken).ConfigureAwait(false);
+        // BIP 78 requires the original PSBT to be a fully signed, broadcastable transaction: it is
+        // the fallback the receiver can put on-chain if the payjoin never completes. Sign it before
+        // it is handed to the payjoin sender.
+        SignAndFinalize(senderPsbtResult.Psbt, runTestPaymentContext, "original PSBT could not be finalized");
         var proposalPsbt = await RequestProposalAsync(
             runTestPaymentContext.PaymentUrl,
             GetConfiguredRelayUrls(runTestPaymentContext),
@@ -312,21 +316,37 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         }
     }
 
-    private async Task<string> SignAndBroadcastAsync(RunTestPaymentContext runTestPaymentContext, PSBT proposalPsbt, CancellationToken cancellationToken)
+    private static void SignAndFinalize(PSBT psbt, RunTestPaymentContext runTestPaymentContext, string finalizeFailureMessage)
     {
-        var client = _explorerClientProvider.GetExplorerClient(runTestPaymentContext.Network);
         var payerAccountDerivation = runTestPaymentContext.PayerAccountDerivation
             ?? throw new RunTestPaymentExecutionException("payer derivation is not available");
         var accountKey = runTestPaymentContext.PayerAccountKey
             ?? throw new RunTestPaymentExecutionException("payer key is not available");
         var rootedKeyPath = new RootedKeyPath(accountKey.Neuter().PubKey.GetHDFingerPrint(), new KeyPath());
-        proposalPsbt.RebaseKeyPaths(accountKey.Neuter(), rootedKeyPath);
-        proposalPsbt.SignAll(payerAccountDerivation, accountKey, rootedKeyPath);
+        psbt.RebaseKeyPaths(accountKey.Neuter(), rootedKeyPath);
+        psbt.SignAll(payerAccountDerivation, accountKey, rootedKeyPath);
 
-        if (!proposalPsbt.TryFinalize(out _))
+        if (!psbt.TryFinalize(out _))
         {
-            throw new RunTestPaymentExecutionException("PSBT could not be finalized");
+            throw new RunTestPaymentExecutionException(finalizeFailureMessage);
         }
+    }
+
+    private async Task<string> SignAndBroadcastAsync(RunTestPaymentContext runTestPaymentContext, PSBT proposalPsbt, CancellationToken cancellationToken)
+    {
+        var client = _explorerClientProvider.GetExplorerClient(runTestPaymentContext.Network);
+
+        // The payjoin sender restores the proposal's input metadata from the original PSBT, and a
+        // finalized original no longer carries BIP32 key paths, so refresh them from the wallet
+        // before signing instead of depending on what survived the round trip.
+        var updateResult = await client.UpdatePSBTAsync(new UpdatePSBTRequest
+        {
+            DerivationScheme = runTestPaymentContext.PayerAccountDerivation,
+            PSBT = proposalPsbt
+        }, cancellationToken).ConfigureAwait(false);
+        proposalPsbt = updateResult?.PSBT ?? proposalPsbt;
+
+        SignAndFinalize(proposalPsbt, runTestPaymentContext, "PSBT could not be finalized");
 
         var transaction = proposalPsbt.ExtractTransaction();
 
