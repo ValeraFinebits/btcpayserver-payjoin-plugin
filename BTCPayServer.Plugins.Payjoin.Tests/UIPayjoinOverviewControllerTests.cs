@@ -50,6 +50,7 @@ public class UIPayjoinOverviewControllerTests
         var model = Assert.IsType<PayjoinOverviewViewModel>(view.Model);
         Assert.True(model.CanRetryBridges);
         Assert.Equal(2, model.AttentionBridges.Count);
+        Assert.Equal(2, model.AttentionBridgesTotalCount);
         var failed = Assert.Single(model.AttentionBridges, x => x.InvoiceId == "invoice-failed");
         Assert.True(failed.IsFailed);
         Assert.Equal("reconciliation data problem", failed.FailureMessage);

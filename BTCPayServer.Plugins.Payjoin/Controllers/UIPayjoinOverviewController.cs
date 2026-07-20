@@ -61,7 +61,7 @@ public class UIPayjoinOverviewController : Controller
         var attentionBridges = await _bridgeAttentionService.GetRequiringAttentionAsync(currentStore.Id, HttpContext.RequestAborted).ConfigureAwait(false);
         var canRetryBridges = (await _authorizationService.AuthorizeAsync(User, currentStore.Id, Policies.CanModifyStoreSettings).ConfigureAwait(false)).Succeeded;
         ViewData.SetLayoutModel(new LayoutModel("PayjoinV2", "Async Payjoin"));
-        return View(new PayjoinOverviewViewModel(currentStoreStatus, attentionBridges, canRetryBridges));
+        return View(new PayjoinOverviewViewModel(currentStoreStatus, attentionBridges.Items, attentionBridges.TotalCount, canRetryBridges));
     }
 
     [HttpPost("bridges/{invoiceId}/retry")]
@@ -160,17 +160,21 @@ public class PayjoinOverviewViewModel
 {
     public PayjoinOverviewViewModel(
         CurrentStorePayjoinStatusViewModel? currentStore,
-        System.Collections.Generic.IReadOnlyCollection<Services.PayjoinBridgeAttentionItem> attentionBridges,
+        IReadOnlyCollection<PayjoinBridgeAttentionItem> attentionBridges,
+        int attentionBridgesTotalCount,
         bool canRetryBridges)
     {
         CurrentStore = currentStore;
         AttentionBridges = attentionBridges;
+        AttentionBridgesTotalCount = attentionBridgesTotalCount;
         CanRetryBridges = canRetryBridges;
     }
 
     public CurrentStorePayjoinStatusViewModel? CurrentStore { get; }
 
-    public System.Collections.Generic.IReadOnlyCollection<Services.PayjoinBridgeAttentionItem> AttentionBridges { get; }
+    public IReadOnlyCollection<PayjoinBridgeAttentionItem> AttentionBridges { get; }
+
+    public int AttentionBridgesTotalCount { get; }
 
     public bool CanRetryBridges { get; }
 }

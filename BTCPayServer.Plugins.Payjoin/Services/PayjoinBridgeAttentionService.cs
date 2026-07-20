@@ -20,10 +20,10 @@ public sealed class PayjoinBridgeAttentionService
         _accountingBridgeService = accountingBridgeService;
     }
 
-    public async Task<IReadOnlyCollection<PayjoinBridgeAttentionItem>> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken)
+    public async Task<PayjoinBridgeAttentionList> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken)
     {
-        var bridges = await _accountingBridgeService.GetRequiringAttentionAsync(storeId, cancellationToken).ConfigureAwait(false);
-        return bridges
+        var result = await _accountingBridgeService.GetRequiringAttentionAsync(storeId, cancellationToken).ConfigureAwait(false);
+        var items = result.Bridges
             .Select(bridge => new PayjoinBridgeAttentionItem(
                 bridge.InvoiceId,
                 bridge.Status == PayjoinAccountingBridgeStatus.Failed,
@@ -31,6 +31,7 @@ public sealed class PayjoinBridgeAttentionService
                 bridge.FailureMessage,
                 bridge.UpdatedAt))
             .ToArray();
+        return new PayjoinBridgeAttentionList(items, result.TotalCount);
     }
 
     public async Task<bool> TryRetryAsync(string invoiceId, string storeId, CancellationToken cancellationToken)
@@ -46,3 +47,7 @@ public sealed record PayjoinBridgeAttentionItem(
     string? ExpectedFinalTransactionId,
     string? FailureMessage,
     DateTimeOffset UpdatedAt);
+
+public sealed record PayjoinBridgeAttentionList(
+    IReadOnlyCollection<PayjoinBridgeAttentionItem> Items,
+    int TotalCount);

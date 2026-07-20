@@ -34,6 +34,10 @@ internal sealed record PayjoinAccountingBridgeState(
     public bool HasEffectiveInvoiceValue => EffectiveInvoiceValueSats.HasValue;
 }
 
+internal sealed record PayjoinAccountingBridgeAttentionResult(
+    IReadOnlyList<PayjoinAccountingBridgeState> Bridges,
+    int TotalCount);
+
 internal sealed record CreatePayjoinAccountingBridgeRequest(
     string InvoiceId,
     string StoreId,
@@ -69,7 +73,7 @@ internal interface IPayjoinAccountingBridgeService
 
     Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken);
 
-    Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken);
+    Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken);
 
     Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken);
 }
@@ -81,6 +85,10 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
     // That absorbs confirmations and transient reconciliation failures landing near the deadline
     // instead of retiring the bridge while its settlement can still be recorded.
     internal static readonly TimeSpan ArmedBridgeGracePeriod = TimeSpan.FromHours(6);
+
+    // The attention list is bounded so one store cannot render an unbounded table; the total count
+    // travels alongside it so the UI can tell operators when older records are not shown.
+    internal const int AttentionListLimit = 50;
 
     private readonly PayjoinPluginDbContextFactory _dbContextFactory;
     private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
@@ -270,19 +278,21 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
         return expired.Select(ToState).ToArray();
     }
 
-    public async Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken)
+    public async Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken)
     {
         using var context = _dbContextFactory.CreateContext();
-        var bridges = await context.AccountingBridges
+        var query = context.AccountingBridges
             .AsNoTracking()
             .Where(x => x.StoreId == storeId &&
                         (x.Status == PayjoinAccountingBridgeStatus.Failed ||
-                         (x.Status == PayjoinAccountingBridgeStatus.Expired && x.ExpectedFinalTransactionId != null)))
+                         (x.Status == PayjoinAccountingBridgeStatus.Expired && x.ExpectedFinalTransactionId != null)));
+        var totalCount = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+        var bridges = await query
             .OrderByDescending(x => x.UpdatedAt)
-            .Take(50)
+            .Take(AttentionListLimit)
             .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);
-        return bridges.Select(ToState).ToArray();
+        return new PayjoinAccountingBridgeAttentionResult(bridges.Select(ToState).ToArray(), totalCount);
     }
 
     public async Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken)

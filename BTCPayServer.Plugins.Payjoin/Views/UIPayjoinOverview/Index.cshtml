@@ -171,6 +171,10 @@ else if (store.Status.Severity == "danger")
                 <div class="card-body">
                     <h4 class="card-title mb-2" text-translate="true">Settlement records needing attention</h4>
                     <p class="text-muted" text-translate="true">These invoices have an Async Payjoin settlement record that stopped before reconciliation completed. Review the invoice and retry reconciliation once the underlying issue is resolved.</p>
+                    @if (Model.AttentionBridgesTotalCount > Model.AttentionBridges.Count)
+                    {
+                        <p class="text-muted">@StringLocalizer["Showing the {0} most recently updated of {1} records.", Model.AttentionBridges.Count, Model.AttentionBridgesTotalCount]</p>
+                    }
                     <div class="table-responsive">
                         <table class="table table-hover mb-0">
                             <thead>
@@ -198,7 +202,7 @@ else if (store.Status.Severity == "danger")
                                         </td>
                                         <td class="text-break"><code>@bridge.ExpectedFinalTransactionId</code></td>
                                         <td class="text-break">@bridge.FailureMessage</td>
-                                        <td>@bridge.UpdatedAt.ToString("u")</td>
+                                        <td>@bridge.UpdatedAt.ToBrowserDate()</td>
                                         @if (Model.CanRetryBridges)
                                         {
                                             <td class="text-end">

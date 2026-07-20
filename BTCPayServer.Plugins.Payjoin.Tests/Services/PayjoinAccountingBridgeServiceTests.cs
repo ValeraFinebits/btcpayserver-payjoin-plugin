@@ -75,9 +75,29 @@ public class PayjoinAccountingBridgeServiceTests
 
         var attention = await service.GetRequiringAttentionAsync("store-1", CancellationToken.None);
 
-        Assert.Equal(2, attention.Count);
-        Assert.Contains(attention, x => x.InvoiceId == "invoice-failed" && x.Status == PayjoinAccountingBridgeStatus.Failed);
-        Assert.Contains(attention, x => x.InvoiceId == "invoice-armed-expired" && x.Status == PayjoinAccountingBridgeStatus.Expired);
+        Assert.Equal(2, attention.TotalCount);
+        Assert.Equal(2, attention.Bridges.Count);
+        Assert.Contains(attention.Bridges, x => x.InvoiceId == "invoice-failed" && x.Status == PayjoinAccountingBridgeStatus.Failed);
+        Assert.Contains(attention.Bridges, x => x.InvoiceId == "invoice-armed-expired" && x.Status == PayjoinAccountingBridgeStatus.Expired);
+    }
+
+    [Fact]
+    public async Task GetRequiringAttentionAsyncBoundsTheListAndReportsTheTotal()
+    {
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        for (var i = 0; i < PayjoinAccountingBridgeService.AttentionListLimit + 1; i++)
+        {
+            var invoiceId = $"invoice-failed-{i}";
+            await CreateBridgeAsync(service, invoiceId, expiresAt: now.AddHours(1));
+            await service.MarkFailedAsync(invoiceId, "reconciliation data problem", CancellationToken.None);
+        }
+
+        var attention = await service.GetRequiringAttentionAsync("store-1", CancellationToken.None);
+
+        Assert.Equal(PayjoinAccountingBridgeService.AttentionListLimit, attention.Bridges.Count);
+        Assert.Equal(PayjoinAccountingBridgeService.AttentionListLimit + 1, attention.TotalCount);
     }
 
     [Fact]
