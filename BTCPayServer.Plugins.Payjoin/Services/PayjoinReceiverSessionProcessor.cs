@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using NBitcoin;
 using Payjoin;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
@@ -344,16 +345,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         var wantsInputs = transition.Save(capturingPersister);
         try
         {
-            var settlementScriptHex = Convert.ToHexString(settlementOutputs.SettlementScript);
-            var settlementAmountSats = checked((long)settlementOutputs.SettlementAmountSats);
-            _sessionStore.AppendEventsWithAccountingUpdate(
-                invoiceId,
-                capturingPersister.Events,
-                bridge =>
-                {
-                    bridge.SettlementScript = settlementScriptHex;
-                    bridge.EffectiveInvoiceValueSats = settlementAmountSats;
-                });
+            PersistCommittedOutputs(invoiceId, capturingPersister.Events, settlementOutputs);
             return wantsInputs;
         }
         catch
@@ -362,6 +354,23 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             wantsInputs.Dispose();
             throw;
         }
+    }
+
+    internal void PersistCommittedOutputs(
+        string invoiceId,
+        IReadOnlyList<string> events,
+        PayjoinReceiverOutputBuilder.OutputReplacement settlementOutputs)
+    {
+        var settlementScriptHex = Convert.ToHexString(settlementOutputs.SettlementScript);
+        var settlementAmountSats = checked((long)settlementOutputs.SettlementAmountSats);
+        _sessionStore.AppendEventsWithAccountingUpdate(
+            invoiceId,
+            events,
+            bridge =>
+            {
+                bridge.SettlementScript = settlementScriptHex;
+                bridge.EffectiveInvoiceValueSats = settlementAmountSats;
+            });
     }
 
     private async Task<ReceiverInputContribution?> TryCreateInputContributionAsync(

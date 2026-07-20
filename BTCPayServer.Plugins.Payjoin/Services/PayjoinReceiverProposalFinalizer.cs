@@ -54,13 +54,22 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
     {
         var signer = await _proposalSigner.CreateContributedInputSignerAsync(context.StoreId, receiverCoins, cancellationToken).ConfigureAwait(false);
         using var transition = proposal.FinalizeProposal(signer);
+        await FinalizeCoreAsync(context, transition.Save, cancellationToken).ConfigureAwait(false);
+    }
 
+    // Takes the transition's save step as a delegate over the generated proposal interface so the
+    // persist-then-post flow can be exercised in tests, where native handles cannot be constructed.
+    internal async Task FinalizeCoreAsync(
+        PayjoinReceiverProposalFinalizationContext context,
+        Func<CapturingReceiverSessionPersister, IPayjoinProposal> saveTransition,
+        CancellationToken cancellationToken)
+    {
         // The finalize event and the expected final transaction are written in one database
         // transaction: once the session can hand the proposal to the sender, the accounting side
         // already knows which transaction to reconcile against. The replay path below stays as a
         // defensive backfill.
         var capturingPersister = new CapturingReceiverSessionPersister();
-        var payjoinProposal = transition.Save(capturingPersister);
+        var payjoinProposal = saveTransition(capturingPersister);
         try
         {
             var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false);
@@ -94,13 +103,17 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         catch
         {
             // Nothing was persisted, so the next tick replays back into the provisional state.
-            payjoinProposal.Dispose();
+            (payjoinProposal as IDisposable)?.Dispose();
             throw;
         }
 
-        using (payjoinProposal)
+        try
         {
             await PostAsync(context, payjoinProposal, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            (payjoinProposal as IDisposable)?.Dispose();
         }
     }
 
@@ -139,7 +152,7 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
 
     public async Task PostAsync(
         PayjoinReceiverProposalFinalizationContext context,
-        PayjoinProposal proposal,
+        IPayjoinProposal proposal,
         CancellationToken cancellationToken)
     {
         var relayResponse = await _relayRequestSender.SendAsync(

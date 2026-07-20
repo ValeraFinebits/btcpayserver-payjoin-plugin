@@ -28,7 +28,7 @@ internal interface IPayjoinReceiverProposalFinalizer
 
     Task PostAsync(
         PayjoinReceiverProposalFinalizationContext context,
-        PayjoinProposal proposal,
+        IPayjoinProposal proposal,
         CancellationToken cancellationToken);
 }
 

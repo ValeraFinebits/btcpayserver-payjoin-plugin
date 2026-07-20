@@ -1,11 +1,5 @@
-using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using NBitcoin;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
-using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Xunit;
 
@@ -17,7 +11,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
     public void MarkSeenAndWasPresentReportsRepeatedOutpointsAsSeen()
     {
         // Arrange
-        using var testContext = new RelationalTestContext();
+        using var testContext = new RelationalPluginTestContext();
         var store = testContext.CreateSeenInputStore();
         var transactionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -34,7 +28,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
     public void TryReserveContributedInputAllowsOnlyOneReservationPerOutPointOnRelationalProvider()
     {
         // Arrange
-        using var testContext = new RelationalTestContext();
+        using var testContext = new RelationalPluginTestContext();
         var firstStore = testContext.CreateStore();
         var secondStore = testContext.CreateStore();
         var firstSession = CreateSession(firstStore, "invoice-relational-first");
@@ -58,7 +52,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
     public async Task TryReserveContributedInputAllowsOnlyOneWinnerUnderConcurrentRequestsOnRelationalProvider()
     {
         // Arrange
-        using var testContext = new RelationalTestContext();
+        using var testContext = new RelationalPluginTestContext();
         var firstStore = testContext.CreateStore();
         var secondStore = testContext.CreateStore();
         var firstSession = CreateSession(firstStore, "invoice-relational-concurrent-first");
@@ -96,7 +90,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
     [Fact]
     public void AppendEventsWithAccountingUpdateWritesEventsAndBridgeTogether()
     {
-        using var testContext = new RelationalTestContext();
+        using var testContext = new RelationalPluginTestContext();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-atomic-append");
         using (var seed = testContext.CreateDbContext())
@@ -138,7 +132,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
     [Fact]
     public void AppendEventsWithAccountingUpdateAppendsEventsWhenNoBridgeExists()
     {
-        using var testContext = new RelationalTestContext();
+        using var testContext = new RelationalPluginTestContext();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-atomic-no-bridge");
 
@@ -162,117 +156,5 @@ public class PayjoinReceiverSessionStoreRelationalTests
             "store-1",
             DateTimeOffset.UtcNow.AddMinutes(15),
             ["bootstrap-event"]);
-    }
-
-    private sealed class RelationalTestContext : IDisposable
-    {
-        private readonly TestPayjoinPluginDbContextFactory _dbContextFactory;
-        private readonly SqliteUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
-
-        public RelationalTestContext()
-        {
-            _dbContextFactory = new TestPayjoinPluginDbContextFactory();
-        }
-
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
-
-        public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
-
-        public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
-
-        public void Dispose()
-        {
-            using var context = _dbContextFactory.CreateContext();
-            context.Database.EnsureDeleted();
-            _dbContextFactory.Dispose();
-        }
-    }
-
-    private sealed class SqliteUniqueConstraintViolationDetector : IPayjoinUniqueConstraintViolationDetector
-    {
-        public bool IsUniqueConstraintViolation(DbUpdateException exception, string constraintName)
-        {
-            ArgumentNullException.ThrowIfNull(exception);
-            ArgumentException.ThrowIfNullOrWhiteSpace(constraintName);
-
-            if (exception.InnerException is not SqliteException sqliteException)
-            {
-                return false;
-            }
-
-            return sqliteException.SqliteErrorCode == 19 &&
-                   (sqliteException.SqliteExtendedErrorCode == 19 ||
-                    sqliteException.SqliteExtendedErrorCode == 1555 ||
-                    sqliteException.SqliteExtendedErrorCode == 2067);
-        }
-    }
-
-    private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory, IDisposable
-    {
-        private readonly string _connectionString;
-        private readonly SqliteConnection _keeperConnection;
-
-        public TestPayjoinPluginDbContextFactory()
-            : base(Options.Create(new DatabaseOptions
-            {
-                ConnectionString = "Data Source=:memory:"
-            }))
-        {
-            _connectionString = $"Data Source=payjoin-relational-tests-{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
-            _keeperConnection = new SqliteConnection(_connectionString);
-            _keeperConnection.Open();
-
-            using var context = CreateContext();
-            context.Database.EnsureCreated();
-        }
-
-        [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The created SQLite connection is owned and disposed by SqliteOwnedPayjoinPluginDbContext.")]
-        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
-        {
-            var connection = new SqliteConnection(_connectionString);
-            try
-            {
-                connection.Open();
-                var dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                    .UseSqlite(connection, sqliteOptions => sqliteOptions.CommandTimeout(30))
-                    .Options;
-
-                return new SqliteOwnedPayjoinPluginDbContext(dbContextOptions, connection);
-            }
-            catch
-            {
-                connection.Dispose();
-                throw;
-            }
-        }
-
-        public void Dispose()
-        {
-            _keeperConnection.Dispose();
-        }
-
-        private sealed class SqliteOwnedPayjoinPluginDbContext : PayjoinPluginDbContext
-        {
-            private readonly SqliteConnection _connection;
-
-            public SqliteOwnedPayjoinPluginDbContext(DbContextOptions<PayjoinPluginDbContext> options, SqliteConnection connection)
-                : base(options)
-            {
-                _connection = connection;
-            }
-
-            public override void Dispose()
-            {
-                base.Dispose();
-                _connection.Dispose();
-            }
-
-            public override async ValueTask DisposeAsync()
-            {
-                await base.DisposeAsync().ConfigureAwait(false);
-                await _connection.DisposeAsync().ConfigureAwait(false);
-            }
-        }
-
     }
 }
