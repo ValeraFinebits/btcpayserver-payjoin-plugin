@@ -1,7 +1,6 @@
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 using BTCPayServer.Tests;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
 
