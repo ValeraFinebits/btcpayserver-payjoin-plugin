@@ -56,9 +56,9 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverFallbackOutputAmbiguous =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(17, nameof(LogPayjoinReceiverFallbackOutputAmbiguous)),
             "Payjoin receiver found multiple fallback outputs matching the receiver script for {InvoiceId}");
-    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverNonWitnessSenderInput =
-        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(18, nameof(LogPayjoinReceiverNonWitnessSenderInput)),
-            "Payjoin receiver session for {InvoiceId} was closed because the sender's proposal spends inputs without witness data, which the settlement tracking cannot follow.");
+    private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverTxidUnstableSenderInput =
+        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(18, nameof(LogPayjoinReceiverTxidUnstableSenderInput)),
+            "Payjoin receiver session for {InvoiceId} was closed because the sender's proposal spends inputs that finalize through the scriptSig, so the final transaction id cannot be pinned for settlement tracking.");
 
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IPayjoinReceiverSessionGuard _sessionGuard;
@@ -471,15 +471,16 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         }
 
         var fallbackTx = Transaction.Load(fallbackBytes, network);
-        if (HasNonWitnessInput(fallbackTx))
+        if (HasTxidUnstableInput(fallbackTx))
         {
-            // A sender input without witness data re-signs through its scriptSig, so the final
-            // transaction id differs from anything derived on the receiver side and settlement
-            // reconciliation could never match it. The session ends here, before anything is
-            // contributed; if the sender broadcasts the original, the invoice is still credited
-            // through the platform's own address tracking.
-            LogPayjoinReceiverNonWitnessSenderInput(_logger, session.InvoiceId, null);
-            RemoveSession(session.InvoiceId, "sender inputs without witness data are not supported");
+            // A sender input that finalizes with a non-empty scriptSig (legacy, or nested SegWit
+            // with its redeem-script push) changes the txid preimage when the sender signs the
+            // payjoin proposal, so the final transaction id differs from anything derived on the
+            // receiver side and settlement reconciliation could never match it. The session ends
+            // here, before anything is contributed; if the sender broadcasts the original, the
+            // invoice is still credited through the platform's own address tracking.
+            LogPayjoinReceiverTxidUnstableSenderInput(_logger, session.InvoiceId, null);
+            RemoveSession(session.InvoiceId, "sender inputs that finalize through the scriptSig are not supported");
             return;
         }
 
@@ -515,9 +516,15 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             cancellationToken).ConfigureAwait(false);
     }
 
-    internal static bool HasNonWitnessInput(Transaction transaction)
+    internal static bool HasTxidUnstableInput(Transaction transaction)
     {
-        return transaction.Inputs.Any(input => input.WitScript is null || input.WitScript == WitScript.Empty);
+        // The txid preimage covers each input's scriptSig but not its witness, so only inputs
+        // that finalize with an empty scriptSig (native SegWit) keep the txid stable between the
+        // proposal the receiver sees and the transaction the sender broadcasts. Legacy inputs
+        // sign entirely through the scriptSig, and nested SegWit pushes its redeem script there,
+        // so both rewrite the txid. Witness data alone proves nothing: a nested input carries a
+        // witness and still changes the txid.
+        return transaction.Inputs.Any(input => input.ScriptSig is not null && input.ScriptSig.Length > 0);
     }
 
     internal static FallbackReceiverOutputMatch ResolveFallbackReceiverOutput(Transaction fallbackTransaction, byte[] receiverScript)

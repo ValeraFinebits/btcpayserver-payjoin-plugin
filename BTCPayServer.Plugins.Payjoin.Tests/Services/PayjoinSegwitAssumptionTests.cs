@@ -7,28 +7,44 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 public class PayjoinSegwitAssumptionTests
 {
     [Fact]
-    public void HasNonWitnessInputDetectsInputsWithoutWitnessData()
+    public void HasTxidUnstableInputDetectsLegacyInputsSigningThroughTheScriptSig()
     {
+        using var key = new Key();
         var tx = Network.RegTest.CreateTransaction();
         tx.Inputs.Add(new OutPoint(uint256.One, 0));
-        tx.Inputs[0].WitScript = WitScript.Empty;
+        tx.Inputs[0].ScriptSig = new Script(Op.GetPushOp(new byte[71]), Op.GetPushOp(key.PubKey.ToBytes()));
 
-        Assert.True(PayjoinReceiverSessionProcessor.HasNonWitnessInput(tx));
+        Assert.True(PayjoinReceiverSessionProcessor.HasTxidUnstableInput(tx));
     }
 
     [Fact]
-    public void HasNonWitnessInputAcceptsFullyWitnessedTransactions()
+    public void HasTxidUnstableInputDetectsNestedSegwitInputsDespiteTheirWitness()
+    {
+        // P2SH-P2WPKH finalizes with a witness AND a redeem-script push in the scriptSig; the
+        // push is part of the txid preimage, so the witness alone must not count as stable.
+        using var key = new Key();
+        var redeemScript = key.PubKey.WitHash.ScriptPubKey;
+        var tx = Network.RegTest.CreateTransaction();
+        tx.Inputs.Add(new OutPoint(uint256.One, 0));
+        tx.Inputs[0].ScriptSig = new Script(Op.GetPushOp(redeemScript.ToBytes()));
+        tx.Inputs[0].WitScript = new WitScript(Op.GetPushOp(new byte[71]), Op.GetPushOp(key.PubKey.ToBytes()));
+
+        Assert.True(PayjoinReceiverSessionProcessor.HasTxidUnstableInput(tx));
+    }
+
+    [Fact]
+    public void HasTxidUnstableInputAcceptsNativeSegwitInputs()
     {
         using var key = new Key();
         var tx = Network.RegTest.CreateTransaction();
         tx.Inputs.Add(new OutPoint(uint256.One, 0));
         tx.Inputs[0].WitScript = new WitScript(Op.GetPushOp(new byte[71]), Op.GetPushOp(key.PubKey.ToBytes()));
 
-        Assert.False(PayjoinReceiverSessionProcessor.HasNonWitnessInput(tx));
+        Assert.False(PayjoinReceiverSessionProcessor.HasTxidUnstableInput(tx));
     }
 
     [Fact]
-    public void HasNonWitnessInputDetectsAMixOfWitnessAndLegacyInputs()
+    public void HasTxidUnstableInputDetectsAMixOfNativeAndScriptSigInputs()
     {
         using var key = new Key();
         var tx = Network.RegTest.CreateTransaction();
@@ -36,9 +52,8 @@ public class PayjoinSegwitAssumptionTests
         tx.Inputs[0].WitScript = new WitScript(Op.GetPushOp(new byte[71]), Op.GetPushOp(key.PubKey.ToBytes()));
         tx.Inputs.Add(new OutPoint(uint256.One, 1));
         tx.Inputs[1].ScriptSig = new Script(Op.GetPushOp(new byte[71]));
-        tx.Inputs[1].WitScript = WitScript.Empty;
 
-        Assert.True(PayjoinReceiverSessionProcessor.HasNonWitnessInput(tx));
+        Assert.True(PayjoinReceiverSessionProcessor.HasTxidUnstableInput(tx));
     }
 
     [Theory]
