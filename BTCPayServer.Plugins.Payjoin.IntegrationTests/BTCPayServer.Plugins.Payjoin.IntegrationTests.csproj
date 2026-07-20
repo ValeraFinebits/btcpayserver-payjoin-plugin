@@ -36,5 +36,9 @@
     <ProjectReference Include="..\BTCPayServer.Plugins.Payjoin\BTCPayServer.Plugins.Payjoin.csproj" />
     <ProjectReference Include="..\btcpayserver\BTCPayServer.Tests\BTCPayServer.Tests.csproj" />
   </ItemGroup>
-
+  <ItemGroup>
+    <!-- AngleSharp 0.17.1 comes in transitively through the btcpayserver submodule, which pins it;
+         the upgrade has to happen there. Suppress only this advisory so new ones still fail the build. -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-pgww-w46g-26qg" />
+  </ItemGroup>
 </Project>
