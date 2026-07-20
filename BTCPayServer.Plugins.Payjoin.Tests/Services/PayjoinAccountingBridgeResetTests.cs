@@ -16,14 +16,13 @@ public class PayjoinAccountingBridgeResetTests
     private const string FallbackTransactionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     [Fact]
-    public async Task ResetForNewSessionAsyncClearsPriorSessionTrackingOnPendingBridges()
+    public async Task ResetForNewSessionAsyncClearsPriorSessionTrackingOnUnarmedPendingBridges()
     {
         using var context = new TestContext();
         var service = context.CreateService();
         var now = DateTimeOffset.UtcNow;
         await CreateBridgeAsync(service, "invoice-1", now.AddHours(1));
         await service.AttachFallbackAsync("invoice-1", FallbackTransactionId, 0, 900, 900, "CCDD", CancellationToken.None);
-        await service.SetExpectedFinalTransactionAsync("invoice-1", ExpectedTransactionId, 1, 950, CancellationToken.None);
 
         var reset = await service.ResetForNewSessionAsync("invoice-1", 1200, now.AddHours(2), CancellationToken.None);
 
@@ -36,6 +35,34 @@ public class PayjoinAccountingBridgeResetTests
         Assert.Null(reset.ExpectedFinalValueSats);
         Assert.Equal(1200, reset.EffectiveInvoiceValueSats);
         Assert.Equal(now.AddHours(2), reset.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task ResetForNewSessionAsyncPreservesArmedBridgesSoTheOldProposalStillReconciles()
+    {
+        // The previous session already handed a signed proposal to the sender: the expected final
+        // transaction is the only handle that makes that settlement creditable, so recreating the
+        // session must not wipe it. The old accounting flow stays live until the new session
+        // produces its own finalized proposal and overwrites the expectation itself.
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        await CreateBridgeAsync(service, "invoice-1", now.AddHours(1));
+        await service.AttachFallbackAsync("invoice-1", FallbackTransactionId, 0, 900, 900, "CCDD", CancellationToken.None);
+        await service.SetExpectedFinalTransactionAsync("invoice-1", ExpectedTransactionId, 1, 950, CancellationToken.None);
+
+        var reset = await service.ResetForNewSessionAsync("invoice-1", 1200, now.AddHours(2), CancellationToken.None);
+
+        Assert.NotNull(reset);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFinalTransaction, reset!.Status);
+        Assert.Equal(ExpectedTransactionId, reset.ExpectedFinalTransactionId);
+        Assert.Equal(FallbackTransactionId, reset.FallbackTransactionId);
+        Assert.Equal("CCDD", reset.SettlementScript);
+
+        // The old session's final transaction becomes observable afterwards and still reconciles.
+        var reconciled = await service.MarkReconciledAsync("invoice-1", ExpectedTransactionId, 1, 950, now, CancellationToken.None);
+        Assert.Equal(PayjoinAccountingBridgeStatus.Reconciled, reconciled!.Status);
+        Assert.Equal(ExpectedTransactionId, reconciled.ExpectedFinalTransactionId);
     }
 
     [Fact]

@@ -257,7 +257,17 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
         // the rest, leaving the record describing two different sessions at once. Reconciled records are
         // final, and failed or expired records that already awaited a final transaction stay untouched
         // for operator review.
-        var isResettablePending = bridge.Status is PayjoinAccountingBridgeStatus.PendingFallback or PayjoinAccountingBridgeStatus.PendingFinalTransaction;
+        //
+        // A pending bridge that is already armed is the exception: its expected final transaction
+        // describes a signed proposal the previous session handed to the sender, which can still
+        // confirm, and that expectation is the only thing that makes the settlement creditable (the
+        // settlement output is not an invoice address the platform tracks on its own). The old
+        // accounting flow therefore stays live through session recreation, and the new session's own
+        // writes take the record over stage by stage: attaching its fallback replaces the fallback
+        // data, committing outputs replaces the settlement script, and finalizing its proposal
+        // replaces the expected final transaction.
+        var isResettablePending = (bridge.Status is PayjoinAccountingBridgeStatus.PendingFallback or PayjoinAccountingBridgeStatus.PendingFinalTransaction) &&
+                                  bridge.ExpectedFinalTransactionId is null;
         var isResettableExpired = bridge.Status == PayjoinAccountingBridgeStatus.Expired && bridge.ExpectedFinalTransactionId is null;
         if (!isResettablePending && !isResettableExpired)
         {
@@ -265,8 +275,7 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
         }
 
         var hasPriorSessionData = bridge.FallbackTransactionId is not null ||
-                                  bridge.SettlementScript is not null ||
-                                  bridge.ExpectedFinalTransactionId is not null;
+                                  bridge.SettlementScript is not null;
         if (!hasPriorSessionData && bridge.Status != PayjoinAccountingBridgeStatus.Expired)
         {
             return ToState(bridge);
