@@ -14,7 +14,6 @@ using NBitcoin.Payment;
 using NBitpayClient;
 using NBXplorer.Models;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
 

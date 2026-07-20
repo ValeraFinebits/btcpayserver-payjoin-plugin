@@ -3,7 +3,6 @@ using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Tests;
 using NBitpayClient;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
 
