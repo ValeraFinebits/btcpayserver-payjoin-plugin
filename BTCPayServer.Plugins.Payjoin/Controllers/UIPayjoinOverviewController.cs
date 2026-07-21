@@ -21,6 +21,7 @@ public class UIPayjoinOverviewController : Controller
     private readonly PayjoinAvailabilityService _availabilityService;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly IAuthorizationService _authorizationService;
+    private readonly PayjoinBridgeAttentionService _bridgeAttentionService;
     private IStringLocalizer StringLocalizer { get; }
 
     private const string BitcoinCode = "BTC";
@@ -30,12 +31,14 @@ public class UIPayjoinOverviewController : Controller
         PayjoinAvailabilityService availabilityService,
         BTCPayNetworkProvider networkProvider,
         IAuthorizationService authorizationService,
+        PayjoinBridgeAttentionService bridgeAttentionService,
         IStringLocalizer stringLocalizer)
     {
         _storeSettingsRepository = storeSettingsRepository;
         _availabilityService = availabilityService;
         _networkProvider = networkProvider;
         _authorizationService = authorizationService;
+        _bridgeAttentionService = bridgeAttentionService;
         StringLocalizer = stringLocalizer;
     }
 
@@ -55,8 +58,39 @@ public class UIPayjoinOverviewController : Controller
         }
 
         var currentStoreStatus = await BuildCurrentStoreStatusAsync(currentStore).ConfigureAwait(false);
+        var attentionBridges = await _bridgeAttentionService.GetRequiringAttentionAsync(currentStore.Id, HttpContext.RequestAborted).ConfigureAwait(false);
+        var canRetryBridges = (await _authorizationService.AuthorizeAsync(User, currentStore.Id, Policies.CanModifyStoreSettings).ConfigureAwait(false)).Succeeded;
         ViewData.SetLayoutModel(new LayoutModel("PayjoinV2", "Async Payjoin"));
-        return View(new PayjoinOverviewViewModel(currentStoreStatus));
+        return View(new PayjoinOverviewViewModel(currentStoreStatus, attentionBridges.Items, attentionBridges.TotalCount, canRetryBridges));
+    }
+
+    [HttpPost("bridges/{invoiceId}/retry")]
+    public async Task<IActionResult> RetryBridge(string invoiceId)
+    {
+        var currentStore = HttpContext.GetNavStoreData();
+        if (currentStore is null)
+        {
+            TempData[WellKnownTempData.ErrorMessage] = StringLocalizer["You need to select a store first."].Value;
+            return RedirectToAction("Index", "UIHome");
+        }
+
+        var canModifyStoreSettings = (await _authorizationService.AuthorizeAsync(User, currentStore.Id, Policies.CanModifyStoreSettings).ConfigureAwait(false)).Succeeded;
+        if (!canModifyStoreSettings)
+        {
+            return Forbid();
+        }
+
+        var retried = await _bridgeAttentionService.TryRetryAsync(invoiceId, currentStore.Id, HttpContext.RequestAborted).ConfigureAwait(false);
+        if (!retried)
+        {
+            TempData[WellKnownTempData.ErrorMessage] = StringLocalizer["The settlement record could not be retried."].Value;
+        }
+        else
+        {
+            TempData[WellKnownTempData.SuccessMessage] = StringLocalizer["Settlement reconciliation will be retried for invoice {0}.", invoiceId].Value;
+        }
+
+        return RedirectToAction(nameof(Index));
     }
 
     private async Task<CurrentStorePayjoinStatusViewModel?> BuildCurrentStoreStatusAsync(StoreData? currentStore)
@@ -124,12 +158,25 @@ public class UIPayjoinOverviewController : Controller
 
 public class PayjoinOverviewViewModel
 {
-    public PayjoinOverviewViewModel(CurrentStorePayjoinStatusViewModel? currentStore)
+    public PayjoinOverviewViewModel(
+        CurrentStorePayjoinStatusViewModel? currentStore,
+        IReadOnlyCollection<PayjoinBridgeAttentionItem> attentionBridges,
+        int attentionBridgesTotalCount,
+        bool canRetryBridges)
     {
         CurrentStore = currentStore;
+        AttentionBridges = attentionBridges;
+        AttentionBridgesTotalCount = attentionBridgesTotalCount;
+        CanRetryBridges = canRetryBridges;
     }
 
     public CurrentStorePayjoinStatusViewModel? CurrentStore { get; }
+
+    public IReadOnlyCollection<PayjoinBridgeAttentionItem> AttentionBridges { get; }
+
+    public int AttentionBridgesTotalCount { get; }
+
+    public bool CanRetryBridges { get; }
 }
 
 public sealed class CurrentStorePayjoinStatusViewModel

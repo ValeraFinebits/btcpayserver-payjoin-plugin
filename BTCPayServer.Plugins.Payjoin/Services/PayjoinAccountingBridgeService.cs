@@ -34,6 +34,10 @@ internal sealed record PayjoinAccountingBridgeState(
     public bool HasEffectiveInvoiceValue => EffectiveInvoiceValueSats.HasValue;
 }
 
+internal sealed record PayjoinAccountingBridgeAttentionResult(
+    IReadOnlyList<PayjoinAccountingBridgeState> Bridges,
+    int TotalCount);
+
 internal sealed record CreatePayjoinAccountingBridgeRequest(
     string InvoiceId,
     string StoreId,
@@ -67,11 +71,25 @@ internal interface IPayjoinAccountingBridgeService
 
     Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken);
 
-    Task<int> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken);
+
+    Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken);
+
+    Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken);
 }
 
 internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeService
 {
+    // A bridge that already knows its expected final transaction represents a proposal the sender may
+    // broadcast at any moment, so it outlives the invoice monitoring deadline by this grace period.
+    // That absorbs confirmations and transient reconciliation failures landing near the deadline
+    // instead of retiring the bridge while its settlement can still be recorded.
+    internal static readonly TimeSpan ArmedBridgeGracePeriod = TimeSpan.FromHours(6);
+
+    // The attention list is bounded so one store cannot render an unbounded table; the total count
+    // travels alongside it so the UI can tell operators when older records are not shown.
+    internal const int AttentionListLimit = 50;
+
     private readonly PayjoinPluginDbContextFactory _dbContextFactory;
     private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
 
@@ -149,10 +167,11 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
     public async Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
         using var context = _dbContextFactory.CreateContext();
+        var armedDeadline = now - ArmedBridgeGracePeriod;
         var bridges = await context.AccountingBridges
             .AsNoTracking()
             .Where(x => (x.Status == PayjoinAccountingBridgeStatus.PendingFallback || x.Status == PayjoinAccountingBridgeStatus.PendingFinalTransaction) &&
-                        (x.ExpiresAt == null || x.ExpiresAt > now))
+                        (x.ExpiresAt == null || (x.ExpectedFinalTransactionId == null ? x.ExpiresAt > now : x.ExpiresAt > armedDeadline)))
             .OrderBy(x => x.CreatedAt)
             .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -234,18 +253,19 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
             cancellationToken);
     }
 
-    public async Task<int> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
         using var context = _dbContextFactory.CreateContext();
+        var armedDeadline = now - ArmedBridgeGracePeriod;
         var expired = await context.AccountingBridges
             .Where(x => (x.Status == PayjoinAccountingBridgeStatus.PendingFallback || x.Status == PayjoinAccountingBridgeStatus.PendingFinalTransaction) &&
                         x.ExpiresAt != null &&
-                        x.ExpiresAt <= now)
+                        (x.ExpectedFinalTransactionId == null ? x.ExpiresAt <= now : x.ExpiresAt <= armedDeadline))
             .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);
         if (expired.Length == 0)
         {
-            return 0;
+            return [];
         }
 
         foreach (var bridge in expired)
@@ -255,7 +275,59 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
         }
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return expired.Length;
+        return expired.Select(ToState).ToArray();
+    }
+
+    public async Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken)
+    {
+        using var context = _dbContextFactory.CreateContext();
+        var query = context.AccountingBridges
+            .AsNoTracking()
+            .Where(x => x.StoreId == storeId &&
+                        (x.Status == PayjoinAccountingBridgeStatus.Failed ||
+                         (x.Status == PayjoinAccountingBridgeStatus.Expired && x.ExpectedFinalTransactionId != null)));
+        var totalCount = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+        var bridges = await query
+            .OrderByDescending(x => x.UpdatedAt)
+            .Take(AttentionListLimit)
+            .ToArrayAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return new PayjoinAccountingBridgeAttentionResult(bridges.Select(ToState).ToArray(), totalCount);
+    }
+
+    public async Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        using var context = _dbContextFactory.CreateContext();
+        var bridge = await TryLoadByInvoiceIdAsync(context, invoiceId, cancellationToken).ConfigureAwait(false);
+        // Retry eligibility matches what GetRequiringAttentionAsync surfaces: failed bridges,
+        // and expired bridges that are still armed with an expected final transaction. An
+        // expired unarmed bridge has nothing left to reconcile once its invoice monitoring
+        // window closed, so it stays terminal.
+        if (bridge is null ||
+            !string.Equals(bridge.StoreId, storeId, StringComparison.Ordinal) ||
+            (bridge.Status != PayjoinAccountingBridgeStatus.Failed &&
+             (bridge.Status != PayjoinAccountingBridgeStatus.Expired || bridge.ExpectedFinalTransactionId is null)))
+        {
+            return null;
+        }
+
+        if (bridge.ExpectedFinalTransactionId is null)
+        {
+            // The grace period exists to outlive the invoice monitoring deadline while a known
+            // final transaction confirms. A failed unarmed bridge has no such transaction, so
+            // it keeps its original deadline and expires naturally if that deadline has passed.
+            bridge.Status = PayjoinAccountingBridgeStatus.PendingFallback;
+        }
+        else
+        {
+            bridge.Status = PayjoinAccountingBridgeStatus.PendingFinalTransaction;
+            bridge.ExpiresAt = now + ArmedBridgeGracePeriod;
+        }
+
+        bridge.FailureMessage = null;
+        bridge.UpdatedAt = now;
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return ToState(bridge);
     }
 
     private async Task<PayjoinAccountingBridgeState?> UpdateAsync(string invoiceId, Action<PayjoinAccountingBridgeData> update, CancellationToken cancellationToken)

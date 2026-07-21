@@ -22,6 +22,9 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     private static readonly Action<ILogger, string, Exception?> LogPayjoinAccountingBridgeAwaitingPaymentSettlement =
         LoggerMessage.Define<string>(LogLevel.Debug, new EventId(4, nameof(LogPayjoinAccountingBridgeAwaitingPaymentSettlement)),
             "Payjoin accounting bridge remains pending for {InvoiceId} until the reconciled payment settles.");
+    private static readonly Action<ILogger, string, string, Exception?> LogPayjoinAccountingArmedBridgeExpired =
+        LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(5, nameof(LogPayjoinAccountingArmedBridgeExpired)),
+            "Payjoin accounting bridge for {InvoiceId} expired while final transaction {TransactionId} was still awaited; it is listed for review on the Async Payjoin page and can be retried from there.");
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IPayjoinReceiverSessionProcessor _sessionProcessor;
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
@@ -52,7 +55,15 @@ public sealed class PayjoinReceiverPoller : BackgroundService
 
     private async Task ReconcilePendingBridgesAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
-        await _accountingBridgeService.ExpirePendingAsync(now, cancellationToken).ConfigureAwait(false);
+        var expiredBridges = await _accountingBridgeService.ExpirePendingAsync(now, cancellationToken).ConfigureAwait(false);
+        foreach (var expiredBridge in expiredBridges)
+        {
+            if (expiredBridge.ExpectedFinalTransactionId is not null)
+            {
+                LogPayjoinAccountingArmedBridgeExpired(_logger, expiredBridge.InvoiceId, expiredBridge.ExpectedFinalTransactionId, null);
+            }
+        }
+
         var bridges = await _accountingBridgeService.GetPendingAsync(now, cancellationToken).ConfigureAwait(false);
         foreach (var bridge in bridges)
         {

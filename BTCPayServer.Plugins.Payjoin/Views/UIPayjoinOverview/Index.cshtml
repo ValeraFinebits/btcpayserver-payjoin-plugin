@@ -163,3 +163,61 @@ else if (store.Status.Severity == "danger")
         </div>
     </div>
 </div>
+@if (Model.AttentionBridges.Count > 0)
+{
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h4 class="card-title mb-2" text-translate="true">Settlement records needing attention</h4>
+                    <p class="text-muted" text-translate="true">These invoices have an Async Payjoin settlement record that stopped before reconciliation completed. Review the invoice and retry reconciliation once the underlying issue is resolved.</p>
+                    @if (Model.AttentionBridgesTotalCount > Model.AttentionBridges.Count)
+                    {
+                        <p class="text-muted">@StringLocalizer["Showing the {0} most recently updated of {1} records.", Model.AttentionBridges.Count, Model.AttentionBridgesTotalCount]</p>
+                    }
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th text-translate="true">Invoice</th>
+                                    <th text-translate="true">Status</th>
+                                    <th text-translate="true">Expected transaction</th>
+                                    <th text-translate="true">Details</th>
+                                    <th text-translate="true">Last update</th>
+                                    @if (Model.CanRetryBridges)
+                                    {
+                                        <th></th>
+                                    }
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var bridge in Model.AttentionBridges)
+                                {
+                                    <tr>
+                                        <td><a href="~/invoices/@bridge.InvoiceId">@bridge.InvoiceId</a></td>
+                                        <td>
+                                            <span class="badge @(bridge.IsFailed ? "bg-danger" : "bg-warning text-dark")">
+                                                @(bridge.IsFailed ? StringLocalizer["Failed"].Value : StringLocalizer["Expired"].Value)
+                                            </span>
+                                        </td>
+                                        <td class="text-break"><code>@bridge.ExpectedFinalTransactionId</code></td>
+                                        <td class="text-break">@bridge.FailureMessage</td>
+                                        <td>@bridge.UpdatedAt.ToBrowserDate()</td>
+                                        @if (Model.CanRetryBridges)
+                                        {
+                                            <td class="text-end">
+                                                <form method="post" asp-action="RetryBridge" asp-route-invoiceId="@bridge.InvoiceId">
+                                                    <button type="submit" class="btn btn-sm btn-outline-secondary" text-translate="true">Retry</button>
+                                                </form>
+                                            </td>
+                                        }
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
