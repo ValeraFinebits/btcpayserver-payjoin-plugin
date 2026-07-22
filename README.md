@@ -7,7 +7,7 @@ A [BTCPay Server](https://github.com/btcpayserver) plugin that adds [Async Payjo
 
 ## Prerequisites
 
-- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 - [Rust 1.85+](https://rustup.rs/)
 - Git
 
