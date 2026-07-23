@@ -53,6 +53,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
     private readonly PaymentMethodHandlerDictionary _handlers;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly IPayjoinWalletTransactionReader _transactionReader;
+    private readonly IPayjoinTransactionLabeler _transactionLabeler;
     private readonly ILogger<PayjoinAccountingPaymentService> _logger;
 
     public PayjoinAccountingPaymentService(
@@ -63,6 +64,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         PaymentMethodHandlerDictionary handlers,
         BTCPayNetworkProvider networkProvider,
         IPayjoinWalletTransactionReader transactionReader,
+        IPayjoinTransactionLabeler transactionLabeler,
         ILogger<PayjoinAccountingPaymentService> logger)
     {
         _invoiceLookup = invoiceLookup;
@@ -72,6 +74,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         _handlers = handlers;
         _networkProvider = networkProvider;
         _transactionReader = transactionReader;
+        _transactionLabeler = transactionLabeler;
         _logger = logger;
     }
 
@@ -92,6 +95,18 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             LogPayjoinAccountingFinalTransactionUnavailable(_logger, bridge.ExpectedFinalTransactionId, bridge.InvoiceId, null);
             return null;
         }
+
+        var finalTransactionId = finalTx.Transaction.GetHash();
+
+        // TODO: This tags every settled payjoin as "Async Payjoin" (v2/BIP 77), but the receiver is
+        // backwards-compatible with v1 (BIP 78): a v1 sender is processed by the same session, arms the
+        // bridge, and lands here too - so v1 payjoins are currently mislabeled as v2. Distinguish them by
+        // the sender's reply key (present = v2, absent = v1), recorded in the rust-payjoin session event
+        // RetrievedOriginalPayload.reply_key (payjoin/src/core/receive/v2/session.rs). That flag is not yet
+        // exposed through the FFI SessionHistory (only FallbackTx/PjUri/Status). Once available, gate the
+        // label: v2 -> "Async Payjoin", v1 -> the platform's plain "payjoin" label (Attachment.Payjoin()).
+        var walletId = new WalletId(bridge.StoreId, accountingContext.Network.CryptoCode);
+        await _transactionLabeler.LabelAsyncPayjoinAsync(walletId, finalTransactionId, bridge.InvoiceId, cancellationToken).ConfigureAwait(false);
 
         var outputIndex = ResolveFinalOutputIndex(finalTx.Transaction, bridge);
         if (outputIndex is null)
@@ -115,7 +130,6 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             return null;
         }
 
-        var finalTransactionId = finalTx.Transaction.GetHash();
         var finalTransactionRbf = finalTx.Transaction.RBF;
         var finalOutPoint = new OutPoint(finalTransactionId, outputIndex.Value);
 
