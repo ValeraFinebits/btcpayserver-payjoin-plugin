@@ -1,9 +1,11 @@
 using BTCPayServer.Payments;
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using Payjoin;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
@@ -266,8 +268,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
 
         try
         {
-            using var wantsInputs = ApplySettlementOutputs(proposal, persister, settlementOutputs);
-            await PersistSettlementScriptAsync(invoiceId, settlementOutputs, stoppingToken).ConfigureAwait(false);
+            using var wantsInputs = ApplySettlementOutputs(proposal, invoiceId, settlementOutputs);
             LogPayjoinReceiverPreparedSettlementOutputs(_logger, invoiceId, null);
             await ProcessWantsInputsAsync(wantsInputs, persister, receiverScript, storeId, invoiceId, reservationExpiresAt, stoppingToken).ConfigureAwait(false);
         }
@@ -313,11 +314,13 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         CancellationToken stoppingToken)
     {
         var preserveReceiverScript = proposal.OutputSubstitution() == OutputSubstitution.Disabled;
+        var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(invoiceId, stoppingToken).ConfigureAwait(false);
         var settlementOutputs = await _outputBuilder.TryCreateSettlementOutputsAsync(
             storeId,
             invoiceId,
             receiverScript,
             preserveReceiverScript,
+            bridge?.EffectiveInvoiceValueSats,
             stoppingToken).ConfigureAwait(false);
         if (settlementOutputs is not null)
         {
@@ -329,16 +332,45 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         return null;
     }
 
-    private static WantsInputs ApplySettlementOutputs(WantsOutputs proposal, JsonReceiverSessionPersister persister, PayjoinReceiverOutputBuilder.OutputReplacement settlementOutputs)
+    private WantsInputs ApplySettlementOutputs(WantsOutputs proposal, string invoiceId, PayjoinReceiverOutputBuilder.OutputReplacement settlementOutputs)
     {
         using var modified = proposal.ReplaceReceiverOutputs(settlementOutputs.ReplacementOutputs, settlementOutputs.SettlementScript);
         using var transition = modified.CommitOutputs();
-        return transition.Save(persister);
+
+        // The committed-outputs event and the settlement script/amount the accounting side needs to
+        // recognize and credit that settlement are written in one database transaction, so a restart
+        // cannot leave the session advanced past output commitment with the accounting record missing
+        // the script it must look for.
+        var capturingPersister = new CapturingReceiverSessionPersister();
+        var wantsInputs = transition.Save(capturingPersister);
+        try
+        {
+            PersistCommittedOutputs(invoiceId, capturingPersister.Events, settlementOutputs);
+            return wantsInputs;
+        }
+        catch
+        {
+            // Nothing was persisted, so the next tick replays back into WantsOutputs and rebuilds.
+            wantsInputs.Dispose();
+            throw;
+        }
     }
 
-    private async Task PersistSettlementScriptAsync(string invoiceId, PayjoinReceiverOutputBuilder.OutputReplacement settlementOutputs, CancellationToken stoppingToken)
+    internal void PersistCommittedOutputs(
+        string invoiceId,
+        IReadOnlyList<string> events,
+        PayjoinReceiverOutputBuilder.OutputReplacement settlementOutputs)
     {
-        await _accountingBridgeService.SetSettlementScriptAsync(invoiceId, Convert.ToHexString(settlementOutputs.SettlementScript), stoppingToken).ConfigureAwait(false);
+        var settlementScriptHex = Convert.ToHexString(settlementOutputs.SettlementScript);
+        var settlementAmountSats = checked((long)settlementOutputs.SettlementAmountSats);
+        _sessionStore.AppendEventsWithAccountingUpdate(
+            invoiceId,
+            events,
+            bridge =>
+            {
+                bridge.SettlementScript = settlementScriptHex;
+                bridge.EffectiveInvoiceValueSats = settlementAmountSats;
+            });
     }
 
     private async Task<ReceiverInputContribution?> TryCreateInputContributionAsync(

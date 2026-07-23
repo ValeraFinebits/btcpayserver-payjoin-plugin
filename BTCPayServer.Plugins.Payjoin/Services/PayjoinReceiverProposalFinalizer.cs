@@ -1,3 +1,4 @@
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Services.Wallets;
 using NBitcoin;
 using Payjoin;
@@ -14,17 +15,20 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
     private readonly IPayjoinReceiverRelayRequestSender _relayRequestSender;
     private readonly IPayjoinReceiverProposalSigner _proposalSigner;
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
+    private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly BTCPayNetworkProvider _networkProvider;
 
     public PayjoinReceiverProposalFinalizer(
         IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinReceiverProposalSigner proposalSigner,
         IPayjoinAccountingBridgeService accountingBridgeService,
+        PayjoinReceiverSessionStore sessionStore,
         BTCPayNetworkProvider networkProvider)
     {
         _relayRequestSender = relayRequestSender;
         _proposalSigner = proposalSigner;
         _accountingBridgeService = accountingBridgeService;
+        _sessionStore = sessionStore;
         _networkProvider = networkProvider;
     }
 
@@ -50,10 +54,67 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
     {
         var signer = await _proposalSigner.CreateContributedInputSignerAsync(context.StoreId, receiverCoins, cancellationToken).ConfigureAwait(false);
         using var transition = proposal.FinalizeProposal(signer);
-        using var payjoinProposal = transition.Save(context.Persister);
+        await FinalizeCoreAsync(context, transition.Save, cancellationToken).ConfigureAwait(false);
+    }
 
-        await EnsureExpectedFinalTransactionAsync(context, payjoinProposal, cancellationToken).ConfigureAwait(false);
-        await PostAsync(context, payjoinProposal, cancellationToken).ConfigureAwait(false);
+    // Takes the transition's save step as a delegate over the generated proposal interface so the
+    // persist-then-post flow can be exercised in tests, where native handles cannot be constructed.
+    internal async Task FinalizeCoreAsync(
+        PayjoinReceiverProposalFinalizationContext context,
+        Func<CapturingReceiverSessionPersister, IPayjoinProposal> saveTransition,
+        CancellationToken cancellationToken)
+    {
+        // The finalize event and the expected final transaction are written in one database
+        // transaction: once the session can hand the proposal to the sender, the accounting side
+        // already knows which transaction to reconcile against. The replay path below stays as a
+        // defensive backfill.
+        var capturingPersister = new CapturingReceiverSessionPersister();
+        var payjoinProposal = saveTransition(capturingPersister);
+        try
+        {
+            var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false);
+            if (bridge is null)
+            {
+                _sessionStore.AppendEventsWithAccountingUpdate(context.InvoiceId, capturingPersister.Events, updateBridge: null);
+            }
+            else
+            {
+                var btcPayNetwork = _networkProvider.GetNetwork<BTCPayNetwork>(context.CryptoCode)
+                    ?? throw new InvalidOperationException($"Network '{context.CryptoCode}' is not available.");
+                var finalTransaction = PSBT.Parse(payjoinProposal.Psbt(), btcPayNetwork.NBitcoinNetwork).GetGlobalTransaction();
+                var finalTransactionId = finalTransaction.GetHash().ToString();
+                var expectedFinalOutput = TryGetSettlementOutput(bridge, finalTransaction);
+                var expectedFinalValueSats = expectedFinalOutput?.ValueSats ?? bridge.EffectiveInvoiceValueSats ?? bridge.FallbackValueSats;
+                _sessionStore.AppendEventsWithAccountingUpdate(
+                    context.InvoiceId,
+                    capturingPersister.Events,
+                    bridgeData =>
+                    {
+                        bridgeData.ExpectedFinalTransactionId = finalTransactionId;
+                        bridgeData.ExpectedFinalOutputIndex = expectedFinalOutput?.Index;
+                        bridgeData.ExpectedFinalValueSats = expectedFinalValueSats;
+                        if (bridgeData.Status == PayjoinAccountingBridgeStatus.PendingFallback)
+                        {
+                            bridgeData.Status = PayjoinAccountingBridgeStatus.PendingFinalTransaction;
+                        }
+                    });
+            }
+        }
+        catch
+        {
+            // Nothing was persisted, so the next tick replays back into the provisional state.
+            (payjoinProposal as IDisposable)?.Dispose();
+            throw;
+        }
+
+        try
+        {
+            await PostAsync(context, payjoinProposal, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            (payjoinProposal as IDisposable)?.Dispose();
+        }
     }
 
     public async Task EnsureExpectedFinalTransactionAsync(
@@ -85,13 +146,13 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
             context.InvoiceId,
             finalTransactionId,
             expectedFinalOutput?.Index,
-            bridge.EffectiveInvoiceValueSats ?? expectedFinalOutput?.ValueSats ?? bridge.FallbackValueSats,
+            expectedFinalOutput?.ValueSats ?? bridge.EffectiveInvoiceValueSats ?? bridge.FallbackValueSats,
             cancellationToken).ConfigureAwait(false);
     }
 
     public async Task PostAsync(
         PayjoinReceiverProposalFinalizationContext context,
-        PayjoinProposal proposal,
+        IPayjoinProposal proposal,
         CancellationToken cancellationToken)
     {
         var relayResponse = await _relayRequestSender.SendAsync(

@@ -58,7 +58,9 @@ public class PayjoinReceiverProposalFinalizerTests
         Assert.Equal("invoice-1", call.InvoiceId);
         Assert.Equal(finalTransaction.GetHash().ToString(), call.ExpectedFinalTransactionId);
         Assert.Equal(1, call.ExpectedFinalOutputIndex);
-        Assert.Equal(1234, call.ExpectedFinalValueSats);
+        // The settlement output's value from the proposal itself wins over the pinned effective
+        // invoice value: it is the exact value reconciliation should later observe on-chain.
+        Assert.Equal(20_000, call.ExpectedFinalValueSats);
     }
 
     [Fact]
@@ -87,6 +89,9 @@ public class PayjoinReceiverProposalFinalizerTests
             new UnusedRelayRequestSender(),
             new UnusedProposalSigner(),
             bridgeService,
+            // EnsureExpectedFinalTransactionAsync records through the bridge service only; the
+            // session store participates in the finalize paths, which these tests do not drive.
+            sessionStore: null!,
             CreateNetworkProvider());
     }
 
