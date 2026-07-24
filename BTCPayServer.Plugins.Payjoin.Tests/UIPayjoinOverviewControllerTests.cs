@@ -186,6 +186,8 @@ public class UIPayjoinOverviewControllerTests
             var controller = new UIPayjoinOverviewController(
                 storeSettingsRepository,
                 availabilityService,
+                null!,
+                null!,
                 networkProvider,
                 authorizationService,
                 new PayjoinBridgeAttentionService(BridgeService),
