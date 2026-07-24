@@ -9,7 +9,11 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinReceiverRelayClient : IPayjoinReceiverRelayClient
 {
-    private static readonly TimeSpan RelayRequestTimeout = TimeSpan.FromSeconds(10);
+    // Exceeds the payjoin directory's ~30s long-poll window so an empty mailbox returns a 202 instead of timing out client-side.
+    // TODO: Make this timeout (and the assumed directory long-poll window) configurable per store/directory. It is hardcoded
+    // against the payjoin-mailroom default of 30s, so a directory configured with a longer window would silently push empty
+    // polls back into client-side timeouts and relay quarantine - reintroducing the receiver-pickup stall.
+    private static readonly TimeSpan RelayRequestTimeout = TimeSpan.FromSeconds(45);
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly TimeSpan _relayRequestTimeout;

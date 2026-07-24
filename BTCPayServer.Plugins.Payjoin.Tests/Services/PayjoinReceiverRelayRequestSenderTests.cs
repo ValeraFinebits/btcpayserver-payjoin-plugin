@@ -133,6 +133,51 @@ public class PayjoinReceiverRelayRequestSenderTests
         await settingsRepository.Received(2).GetAsync("store-1").ConfigureAwait(true);
     }
 
+    [Fact]
+    public async Task SendAsyncParksRelayAfterItTimesOutSoLaterPollsRouteAroundIt()
+    {
+        var relay = new SystemUri("https://relay-1.example/");
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        settingsRepository.GetAsync("store-1").Returns(Task.FromResult(new PayjoinStoreSettings
+        {
+            OhttpRelayUrls = [relay]
+        }));
+
+        var pollAttempts = 0;
+        var relayClient = Substitute.For<IPayjoinReceiverRelayClient>();
+        relayClient
+            .SendAsync(Arg.Any<SystemUri>(), "application/http", Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                pollAttempts++;
+                return Task.FromException<byte[]>(new PayjoinReceiverRelayTimeoutException(TimeSpan.FromSeconds(45), new OperationCanceledException()));
+            });
+
+        var manager = new PayjoinMailroomManager(
+            NullLogger<PayjoinMailroomManager>.Instance,
+            TimeSpan.FromMinutes(10),
+            (_, _, _, _) => Task.FromResult(PayjoinOhttpKeysFetchResult.RetryableFailure(new HttpRequestException("unused"))));
+        var sender = new PayjoinReceiverRelayRequestSender(settingsRepository, manager, relayClient);
+
+        await Assert.ThrowsAsync<PayjoinReceiverRelayTimeoutException>(() => sender.SendAsync(
+            "store-1",
+            "invoice-1",
+            relayUri => new TestRequestContext(relayUri),
+            context => (new SystemUri(context.RelayUri), "application/http", [0x01]),
+            CancellationToken.None)).ConfigureAwait(true);
+        Assert.Equal(1, pollAttempts);
+
+        await Assert.ThrowsAsync<PayjoinReceiverRelayTimeoutException>(() => sender.SendAsync(
+            "store-1",
+            "invoice-1",
+            relayUri => new TestRequestContext(relayUri),
+            context => (new SystemUri(context.RelayUri), "application/http", [0x02]),
+            CancellationToken.None)).ConfigureAwait(true);
+        Assert.True(
+            pollAttempts == 1,
+            $"Expected the parked relay to be skipped on the next poll, but it was polled {pollAttempts} time(s).");
+    }
+
     private sealed class TestRequestContext(string relayUri) : IDisposable
     {
         public string RelayUri { get; } = relayUri;

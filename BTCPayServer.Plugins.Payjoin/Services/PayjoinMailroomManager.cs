@@ -57,6 +57,12 @@ internal sealed class PayjoinMailroomManager
             new EventId(6, nameof(SelectBootstrapRouteAsync)),
             "Unable to select an OHTTP relay for invoice {InvoiceId}; configuration contains {DirectoryCount} directories and {RelayCount} relays.");
 
+    private static readonly Action<ILogger, string, TimeSpan, Exception?> LogRelayTemporarilyUnavailable =
+        LoggerMessage.Define<string, TimeSpan>(
+            LogLevel.Warning,
+            new EventId(7, nameof(MarkRelayTemporarilyUnavailable)),
+            "Payjoin OHTTP relay {OhttpRelayUrl} is temporarily unavailable and will be skipped for {QuarantineDuration}.");
+
     private readonly ILogger<PayjoinMailroomManager> _logger;
     private readonly TimeSpan _failedRelayCacheDuration;
     private readonly Func<SystemUri, string, string, CancellationToken, Task<PayjoinOhttpKeysFetchResult>> _fetchKeysAsync;
@@ -171,6 +177,7 @@ internal sealed class PayjoinMailroomManager
     {
         ArgumentNullException.ThrowIfNull(relayUrl);
         _temporarilyUnavailableRelays[CreateRelayKey(relayUrl)] = DateTimeOffset.UtcNow;
+        LogRelayTemporarilyUnavailable(_logger, relayUrl.AbsoluteUri, _failedRelayCacheDuration, null);
     }
 
     private static IReadOnlyList<SystemUri> OrderUrls(IReadOnlyList<SystemUri> urls)

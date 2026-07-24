@@ -21,12 +21,29 @@ internal static class PayjoinCliIntegrationTestSupport
         BitcoindNodeOptions? options,
         CancellationToken cancellationToken)
     {
+        return await CreateAndPayInvoiceWithInvoiceIdAsync(tester, merchant, network, options, TimeSpan.Zero, cancellationToken).ConfigureAwait(true);
+    }
+
+    public static async Task<(string InvoiceId, Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceWithInvoiceIdAsync(
+        ServerTester tester,
+        TestAccount merchant,
+        BTCPayNetwork network,
+        BitcoindNodeOptions? options,
+        TimeSpan preSendReceiverPollDelay,
+        CancellationToken cancellationToken)
+    {
         var payjoinContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, merchant, network, cancellationToken).ConfigureAwait(true);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, payjoinContext.InvoiceId, cancellationToken).ConfigureAwait(true);
 
         var receiverDiagnosticsBeforeSend = await PayjoinReceiverTestHelper.GetReceiverSideDiagnosticsAsync(tester, payjoinContext.InvoiceId, cancellationToken).ConfigureAwait(true);
         using var senderWallet = await PayjoinCliSenderWallet.CreateInitializedAsync(tester, network, options, cancellationToken).ConfigureAwait(true);
         using var payjoinCliPayer = new PayjoinCliPayer(senderWallet);
+
+        if (preSendReceiverPollDelay > TimeSpan.Zero)
+        {
+            await Task.Delay(preSendReceiverPollDelay, cancellationToken).ConfigureAwait(true);
+        }
+
         PayjoinCliPaymentResult paymentResult;
         try
         {
