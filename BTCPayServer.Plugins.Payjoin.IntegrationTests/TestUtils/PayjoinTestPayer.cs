@@ -13,7 +13,7 @@ namespace BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 internal sealed class PayjoinTestPayer
 {
     private static readonly TimeSpan ProposalPollDelay = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan RelayRequestTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan RelayRequestTimeout = TimeSpan.FromSeconds(30);
     private const int MaxProposalPollAttempts = 100;
     private const int RecommendedFeeContributionRate = 250;
     private const decimal ExplicitFeeRateSatoshiPerByte = 1.0m;
