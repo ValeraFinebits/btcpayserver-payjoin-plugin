@@ -4,14 +4,15 @@ using Microsoft.Extensions.Logging;
 using NBitcoin;
 using Payjoin;
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using PayjoinUri = Payjoin.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinUriSessionService
 {
+    private const string ReceiverSessionBuildFailedReason = "receiver session build failed";
     private static readonly Action<ILogger, string, Exception?> LogReceiverBuilderFailure =
         LoggerMessage.Define<string>(
             LogLevel.Error,
@@ -58,7 +59,7 @@ public sealed class PayjoinUriSessionService
         _logger = logger;
     }
 
-    public async Task<string> BuildAsync(
+    internal async Task<PayjoinUriResult> BuildAsync(
         string cryptoCode,
         string destination,
         decimal due,
@@ -79,35 +80,35 @@ public sealed class PayjoinUriSessionService
 
         if (!enablePayjoin)
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "payjoin is disabled by store settings");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.DisabledByStore, "payjoin is disabled by store settings");
         }
 
         if (storeSettings is null)
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "store settings are unavailable");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, "store settings are unavailable");
         }
 
         var directoryUrls = storeSettings.GetEffectiveDirectoryUrls();
         if (directoryUrls.Count == 0)
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "directory URLs are missing");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, "directory URLs are missing");
         }
 
         var ohttpRelayUrls = storeSettings.GetEffectiveOhttpRelayUrls();
 
         if (ohttpRelayUrls.Count == 0)
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP relay URLs are missing");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, "OHTTP relay URLs are missing");
         }
 
         if (due <= 0m)
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "invoice amount is not positive");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.InvoiceNotPayable, "invoice amount is not positive");
         }
 
         if (!await _availabilityService.HasConfirmedReceiverInputsAsync(storeId, cryptoCode, network, cancellationToken).ConfigureAwait(false))
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, "no confirmed receiver inputs are available");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, "no confirmed receiver inputs are available");
         }
 
         try
@@ -137,7 +138,7 @@ public sealed class PayjoinUriSessionService
 
                 if (selectedRelay is null)
                 {
-                    return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP keys are unavailable from all configured relays");
+                    return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, "OHTTP keys are unavailable from all configured relays");
                 }
 
                 // The accounting reset must precede session persistence. A crash between the two
@@ -167,24 +168,24 @@ public sealed class PayjoinUriSessionService
             using var history = replay.SessionHistory();
             using var pjUri = history.PjUri();
             var payjoinUri = pjUri.AsString();
+
             if (string.IsNullOrWhiteSpace(payjoinUri))
             {
-                return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, "payjoin URI generation returned an empty value");
+                return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, "payjoin URI generation returned an empty value");
             }
 
-            return payjoinUri;
+            if (!HasSupportedPayjoinEndpoint(payjoinUri))
+            {
+                return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, "payjoin URI does not advertise payjoin support");
+            }
+
+            return PayjoinUriResult.Active(payjoinUri);
         }
-        catch (ReceiverReplayException e)
+        catch (Exception e) when (e is ReceiverReplayException or UniffiException)
         {
             _receiverSessionStore.RemoveSession(invoiceId);
             LogReceiverBuilderFailure(_logger, invoiceId, e);
-            return bip21;
-        }
-        catch (UniffiException e)
-        {
-            _receiverSessionStore.RemoveSession(invoiceId);
-            LogReceiverBuilderFailure(_logger, invoiceId, e);
-            return bip21;
+            return PayjoinUriResult.Unavailable(bip21, PayjoinAvailabilityStatus.TemporarilyUnavailable, ReceiverSessionBuildFailedReason);
         }
     }
 
@@ -254,15 +255,37 @@ public sealed class PayjoinUriSessionService
         }
     }
 
-    private string LogExpectedFallbackAndReturnBip21(string bip21, string invoiceId, string reason)
+    internal static bool HasSupportedPayjoinEndpoint(string paymentUrl)
     {
-        LogExpectedPayjoinFallback(_logger, invoiceId, reason, null);
-        return bip21;
+        try
+        {
+            using var parsedUri = PayjoinUri.Parse(paymentUrl);
+            using var _ = parsedUri.CheckPjSupported();
+            return true;
+        }
+        catch (PjParseException)
+        {
+            return false;
+        }
+        catch (PjNotSupported)
+        {
+            return false;
+        }
+        catch (UniffiException)
+        {
+            return false;
+        }
     }
 
-    private string LogUnexpectedFallbackAndReturnBip21(string bip21, string invoiceId, string reason)
+    private PayjoinUriResult LogExpectedFallbackAndReturnBip21(string bip21, string invoiceId, PayjoinAvailabilityStatus status, string reason)
+    {
+        LogExpectedPayjoinFallback(_logger, invoiceId, reason, null);
+        return PayjoinUriResult.Unavailable(bip21, status, reason);
+    }
+
+    private PayjoinUriResult LogUnexpectedFallbackAndReturnBip21(string bip21, string invoiceId, PayjoinAvailabilityStatus status, string reason)
     {
         LogUnexpectedPayjoinFallback(_logger, invoiceId, reason, null);
-        return bip21;
+        return PayjoinUriResult.Unavailable(bip21, status, reason);
     }
 }

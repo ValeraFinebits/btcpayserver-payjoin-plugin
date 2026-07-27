@@ -24,6 +24,52 @@ public class UIPayJoinControllerTests
         Assert.Null(response.TransactionId);
     }
 
+    private static async Task<GetCheckoutBip21Response> GetCheckoutResponseAsync(GetBip21Response serviceResponse)
+    {
+        var paymentUrlService = Substitute.For<IPayjoinInvoicePaymentUrlService>();
+        paymentUrlService.GetInvoicePaymentUrlAsync("invoice-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<GetBip21Response?>(serviceResponse));
+        using var controller = new UIPayJoinController(null!, null!, null!, null!, null!, null!, paymentUrlService, null!);
+
+        var result = await controller.GetInvoicePaymentUrl("invoice-1", TestContext.Current.CancellationToken).ConfigureAwait(true);
+
+        var okResult = Assert.IsType<OkObjectResult>(result.Result);
+        return Assert.IsType<GetCheckoutBip21Response>(okResult.Value);
+    }
+
+    [Theory]
+    [InlineData(PayjoinAvailabilityStatus.TemporarilyUnavailable)]
+    [InlineData(PayjoinAvailabilityStatus.MerchantRequirementsUnmet)]
+    [InlineData(PayjoinAvailabilityStatus.DisabledByStore)]
+    [InlineData(PayjoinAvailabilityStatus.InvoiceNotPayable)]
+    public async Task GetInvoicePaymentUrlCollapsesEveryUnavailableStatus(PayjoinAvailabilityStatus status)
+    {
+        var response = await GetCheckoutResponseAsync(new GetBip21Response
+        {
+            Bip21 = "bitcoin:bcrt1qexample?amount=0.10000000",
+            Status = status,
+            UnavailableReason = "no confirmed receiver inputs are available"
+        });
+
+        Assert.Equal(PayjoinCheckoutAvailabilityStatus.Unavailable, response.Status);
+        Assert.Equal("bitcoin:bcrt1qexample?amount=0.10000000", response.Bip21);
+    }
+
+    [Fact]
+    public async Task GetInvoicePaymentUrlKeepsActiveStatus()
+    {
+        const string bip21 = "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj";
+
+        var response = await GetCheckoutResponseAsync(new GetBip21Response
+        {
+            Bip21 = bip21,
+            Status = PayjoinAvailabilityStatus.Active
+        });
+
+        Assert.Equal(PayjoinCheckoutAvailabilityStatus.Active, response.Status);
+        Assert.Equal(bip21, response.Bip21);
+    }
+
     [Fact]
     public void RunTestPaymentUsesCheatModeRoute()
     {
@@ -76,7 +122,7 @@ public class UIPayJoinControllerTests
             .Returns(Task.FromResult<GetBip21Response?>(new GetBip21Response
             {
                 Bip21 = "not-a-valid-uri",
-                PayjoinEnabled = true
+                Status = PayjoinAvailabilityStatus.Active
             }));
         using var controller = new UIPayJoinController(null!, null!, null!, null!, null!, null!, paymentUrlService, null!);
 

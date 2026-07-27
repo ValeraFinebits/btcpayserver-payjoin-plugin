@@ -74,13 +74,15 @@ internal static class PayjoinIntegrationTestSupport
 
     public static void AssertPlainBip21(GetBip21Response bip21Response)
     {
-        Assert.False(bip21Response.PayjoinEnabled);
+        Assert.NotEqual(PayjoinAvailabilityStatus.Active, bip21Response.Status);
+        Assert.False(string.IsNullOrWhiteSpace(bip21Response.UnavailableReason));
         Assert.DoesNotContain("pj=", bip21Response.Bip21, StringComparison.OrdinalIgnoreCase);
     }
 
     public static void AssertPayjoinBip21(GetBip21Response bip21Response)
     {
-        Assert.True(bip21Response.PayjoinEnabled);
+        Assert.Equal(PayjoinAvailabilityStatus.Active, bip21Response.Status);
+        Assert.Null(bip21Response.UnavailableReason);
         Assert.Contains("pj=", bip21Response.Bip21, StringComparison.OrdinalIgnoreCase);
     }
 

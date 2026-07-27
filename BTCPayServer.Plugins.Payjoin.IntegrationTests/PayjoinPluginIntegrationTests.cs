@@ -6,6 +6,7 @@ using BTCPayServer.Payments;
 using BTCPayServer.Payments.PayJoin.Sender;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
+using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
@@ -14,6 +15,7 @@ using NBitcoin;
 using NBitcoin.Payment;
 using NBitpayClient;
 using NBXplorer.Models;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
@@ -695,6 +697,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
+        Assert.Equal(PayjoinAvailabilityStatus.DisabledByStore, bip21Response.Status);
     }
 
     [Fact]
@@ -713,6 +716,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
+        Assert.Equal(PayjoinAvailabilityStatus.MerchantRequirementsUnmet, bip21Response.Status);
     }
 
     [Fact]
@@ -731,6 +735,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
+        Assert.Equal(PayjoinAvailabilityStatus.MerchantRequirementsUnmet, bip21Response.Status);
     }
 
     [Fact]
@@ -750,6 +755,67 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var (_, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
+        Assert.Equal(PayjoinAvailabilityStatus.TemporarilyUnavailable, bip21Response.Status);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task PaymentUrlEndpointServesCamelCaseNamesAndCollapsedStatusOverHttp()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new Invoice
+        {
+            Price = 0.1m,
+            Currency = PayjoinConstants.BitcoinCode,
+            FullNotifications = true
+        }).WaitAsync(cts.Token).ConfigureAwait(true);
+
+        var payload = await GetPaymentUrlJsonAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
+
+        Assert.Equal(["bip21", "status"], payload.Properties().Select(property => property.Name));
+        Assert.Equal("Active", payload["status"]!.Value<string>());
+        Assert.Contains("pj=", payload["bip21"]!.Value<string>()!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task PaymentUrlEndpointCollapsesUnavailableStatusOverHttp()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new Invoice
+        {
+            Price = 0.1m,
+            Currency = PayjoinConstants.BitcoinCode,
+            FullNotifications = true
+        }).WaitAsync(cts.Token).ConfigureAwait(true);
+
+        var payload = await GetPaymentUrlJsonAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
+
+        Assert.Equal(["bip21", "status"], payload.Properties().Select(property => property.Name));
+        Assert.Equal("Unavailable", payload["status"]!.Value<string>());
+        Assert.DoesNotContain("pj=", payload["bip21"]!.Value<string>()!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<JObject> GetPaymentUrlJsonAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
+    {
+        var endpoint = new Uri($"plugins/payjoin/invoices/{invoiceId}/payment-url", UriKind.Relative);
+        using var response = await tester.PayTester.HttpClient
+            .GetAsync(endpoint, cancellationToken)
+            .ConfigureAwait(true);
+
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(true);
+        return JObject.Parse(body);
     }
 
     [Fact]

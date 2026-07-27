@@ -3,7 +3,6 @@ using BTCPayServer.Client.Models;
 using BTCPayServer.Models.InvoicingModels;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
-using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Services;
 using Microsoft.AspNetCore.Mvc.Routing;
 using Newtonsoft.Json.Linq;
@@ -79,31 +78,6 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
         model.AdditionalData[PlainBitcoinUrlQrKey] = JToken.FromObject(model.InvoiceBitcoinUrlQR ?? string.Empty);
         model.AdditionalData[PayjoinPaymentUrlEndpointKey] = JToken.FromObject(paymentUrlEndpoint);
         model.AdditionalData[PayjoinV2EnabledKey] = JToken.FromObject(payjoinV2Enabled);
-    }
-
-    internal static void ApplyPayjoinPaymentUrl(CheckoutModel model, GetBip21Response paymentUrl, bool payjoinV2Enabled)
-    {
-        ArgumentNullException.ThrowIfNull(model);
-        ArgumentNullException.ThrowIfNull(paymentUrl);
-
-        if (!paymentUrl.PayjoinEnabled)
-        {
-            return;
-        }
-
-        model.AdditionalData ??= new Dictionary<string, JToken>();
-        var plainUrl = model.InvoiceBitcoinUrl ?? string.Empty;
-        var plainUrlQr = model.InvoiceBitcoinUrlQR ?? string.Empty;
-        var payjoinUrl = MergePayjoinIntoPaymentUrl(plainUrl, paymentUrl.Bip21);
-        var payjoinUrlQr = MergePayjoinIntoPaymentUrl(plainUrlQr, paymentUrl.Bip21);
-
-        model.AdditionalData[PlainBitcoinUrlKey] = JToken.FromObject(plainUrl);
-        model.AdditionalData[PlainBitcoinUrlQrKey] = JToken.FromObject(plainUrlQr);
-        model.AdditionalData[PayjoinBitcoinUrlKey] = JToken.FromObject(payjoinUrl);
-        model.AdditionalData[PayjoinBitcoinUrlQrKey] = JToken.FromObject(payjoinUrlQr);
-        model.AdditionalData[PayjoinV2EnabledKey] = JToken.FromObject(payjoinV2Enabled);
-        model.InvoiceBitcoinUrl = payjoinUrl;
-        model.InvoiceBitcoinUrlQR = payjoinUrlQr;
     }
 
     internal static string MergePayjoinIntoPaymentUrl(string baseUrl, string payjoinUrl)

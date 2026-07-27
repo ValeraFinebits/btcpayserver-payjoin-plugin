@@ -60,7 +60,7 @@ public class UIPayJoinController : Controller
 
     [AllowAnonymous]
     [HttpGet("invoices/{invoiceId}/payment-url")]
-    public async Task<ActionResult<GetBip21Response>> GetInvoicePaymentUrl(string invoiceId, CancellationToken cancellationToken)
+    public async Task<ActionResult<GetCheckoutBip21Response>> GetInvoicePaymentUrl(string invoiceId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(invoiceId))
         {
@@ -73,7 +73,18 @@ public class UIPayJoinController : Controller
             return NotFound();
         }
 
-        return Ok(paymentUrl);
+        return Ok(ToCheckoutResponse(paymentUrl));
+    }
+
+    private static GetCheckoutBip21Response ToCheckoutResponse(GetBip21Response paymentUrl)
+    {
+        return new GetCheckoutBip21Response
+        {
+            Bip21 = paymentUrl.Bip21,
+            Status = paymentUrl.Status == PayjoinAvailabilityStatus.Active
+                ? PayjoinCheckoutAvailabilityStatus.Active
+                : PayjoinCheckoutAvailabilityStatus.Unavailable
+        };
     }
 
     // TODO: Remove this test endpoint.
@@ -98,6 +109,11 @@ public class UIPayJoinController : Controller
         if (invoicePaymentUrl is null)
         {
             return RunTestPaymentFailure("paymentUrl not available for invoice");
+        }
+
+        if (invoicePaymentUrl.Status != PayjoinAvailabilityStatus.Active)
+        {
+            return RunTestPaymentFailure(invoicePaymentUrl.UnavailableReason ?? "payjoin is not available for invoice");
         }
 
         if (!System.Uri.TryCreate(invoicePaymentUrl.Bip21, UriKind.Absolute, out var canonicalPaymentUrl))

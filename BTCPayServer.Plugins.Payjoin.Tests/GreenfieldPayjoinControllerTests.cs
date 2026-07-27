@@ -10,8 +10,8 @@ using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Routing;
-using NSubstitute;
 using Newtonsoft.Json.Linq;
+using NSubstitute;
 using System.Reflection;
 using Xunit;
 
@@ -77,7 +77,7 @@ public class GreenfieldPayjoinControllerTests
             .Returns(Task.FromResult<GetBip21Response?>(new GetBip21Response
             {
                 Bip21 = bip21,
-                PayjoinEnabled = true
+                Status = PayjoinAvailabilityStatus.Active
             }));
         var controller = new GreenfieldPayjoinController(null!, paymentUrlService, invoiceLookup, null!, null!);
 
@@ -85,7 +85,7 @@ public class GreenfieldPayjoinControllerTests
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var response = Assert.IsType<GetBip21Response>(ok.Value);
-        Assert.True(response.PayjoinEnabled);
+        Assert.Equal(PayjoinAvailabilityStatus.Active, response.Status);
         Assert.Equal(bip21, response.Bip21);
         Assert.Contains("pjos=0", response.Bip21, StringComparison.Ordinal);
         Assert.Contains("pj=", response.Bip21, StringComparison.OrdinalIgnoreCase);
@@ -109,7 +109,7 @@ public class GreenfieldPayjoinControllerTests
             .Returns(Task.FromResult<GetBip21Response?>(new GetBip21Response
             {
                 Bip21 = "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj",
-                PayjoinEnabled = true
+                Status = PayjoinAvailabilityStatus.Active
             }));
         var controller = new GreenfieldPayjoinController(null!, paymentUrlService, invoiceLookup, null!, null!);
 

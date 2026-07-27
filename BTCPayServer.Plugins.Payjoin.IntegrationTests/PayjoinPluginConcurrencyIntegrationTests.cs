@@ -1,4 +1,5 @@
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
+using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Tests;
 using NBitpayClient;
@@ -46,12 +47,12 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
     [InlineData(8, 32)]
     [InlineData(8, 48)]
     [Trait("Integration", "Integration")]
-    public async Task ConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinEnabled(
+    public async Task ConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinActive(
         int receiverInputCount,
         int concurrentInvoiceCount)
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester($"{nameof(ConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinEnabled)}-{receiverInputCount}-{concurrentInvoiceCount}", newDb: true);
+        using var tester = CreateServerTester($"{nameof(ConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinActive)}-{receiverInputCount}-{concurrentInvoiceCount}", newDb: true);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
         var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
@@ -66,7 +67,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await AssertConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinEnabledAsync(
+        await AssertConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinActiveAsync(
             tester,
             merchant,
             concurrentInvoiceCount,
@@ -80,12 +81,12 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
     [InlineData(24, 8)]
     [InlineData(32, 16)]
     [Trait("Integration", "Integration")]
-    public async Task ConcurrentPayjoinUriInitializationUnderBurstLoadKeepsInvoicesPayjoinEnabled(
+    public async Task ConcurrentPayjoinUriInitializationUnderBurstLoadKeepsInvoicesPayjoinActive(
         int concurrentInvoiceCount,
         int bip21RequestsPerInvoice)
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester($"{nameof(ConcurrentPayjoinUriInitializationUnderBurstLoadKeepsInvoicesPayjoinEnabled)}-{concurrentInvoiceCount}-{bip21RequestsPerInvoice}", newDb: true);
+        using var tester = CreateServerTester($"{nameof(ConcurrentPayjoinUriInitializationUnderBurstLoadKeepsInvoicesPayjoinActive)}-{concurrentInvoiceCount}-{bip21RequestsPerInvoice}", newDb: true);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
         var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
@@ -100,7 +101,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
 
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        await AssertConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinEnabledAsync(
+        await AssertConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinActiveAsync(
             tester,
             merchant,
             concurrentInvoiceCount,
@@ -426,7 +427,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         return string.Join(Environment.NewLine, diagnostics);
     }
 
-    private static async Task AssertConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinEnabledAsync(
+    private static async Task AssertConcurrentPayjoinUriInitializationKeepsInvoicesPayjoinActiveAsync(
         ServerTester tester,
         TestAccount merchant,
         int concurrentInvoiceCount,
@@ -455,7 +456,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
                 }))).ConfigureAwait(true);
 
         var plainBip21InvoiceIds = bip21Responses
-            .Where(x => !x.Response.PayjoinEnabled)
+            .Where(x => x.Response.Status != PayjoinAvailabilityStatus.Active)
             .Select(x => x.InvoiceId)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
