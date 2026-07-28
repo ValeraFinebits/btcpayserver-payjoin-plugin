@@ -6,7 +6,6 @@ using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
-using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 using NBXplorer;
@@ -271,6 +270,24 @@ public class PayjoinAccountingPaymentServiceTests
         PayjoinAccountingPaymentService.EnsureObservedSettlementValueMatchesExpected(bridge, 999);
     }
 
+    [Fact]
+    public async Task ReconcileTagsTheSettlementTransactionAsAsyncPayjoinOnceObservable()
+    {
+        using var fixture = EndToEndFixture.Create();
+
+        var beforeObservable = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+        Assert.Null(beforeObservable);
+        Assert.Empty(fixture.Labeler.Calls);
+
+        fixture.SetFinalTransactionConfirmations(0);
+        await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+
+        var call = Assert.Single(fixture.Labeler.Calls);
+        Assert.Equal(new WalletId(fixture.Bridge.StoreId, PayjoinConstants.BitcoinCode), call.WalletId);
+        Assert.Equal(fixture.FinalOutPoint.Hash, call.TransactionId);
+        Assert.Equal(fixture.Bridge.InvoiceId, call.InvoiceId);
+    }
+
     private static uint? InvokeResolveFinalOutputIndex(Transaction finalTransaction, PayjoinAccountingBridgeState bridge)
     {
         return PayjoinAccountingPaymentService.ResolveFinalOutputIndex(finalTransaction, bridge);
@@ -325,7 +342,8 @@ public class PayjoinAccountingPaymentServiceTests
             Transaction finalTransaction,
             RecordingStalePaidOverCorrectionService staleCorrections,
             EventCounter invoiceNeedUpdateEvents,
-            EventAggregator eventAggregator)
+            EventAggregator eventAggregator,
+            RecordingTransactionLabeler transactionLabeler)
         {
             Service = service;
             World = world;
@@ -338,6 +356,7 @@ public class PayjoinAccountingPaymentServiceTests
             _staleCorrections = staleCorrections;
             _invoiceNeedUpdateEvents = invoiceNeedUpdateEvents;
             _eventAggregator = eventAggregator;
+            Labeler = transactionLabeler;
         }
 
         private readonly RecordingStalePaidOverCorrectionService _staleCorrections;
@@ -350,6 +369,8 @@ public class PayjoinAccountingPaymentServiceTests
         }
 
         public PayjoinAccountingPaymentService Service { get; }
+
+        public RecordingTransactionLabeler Labeler { get; }
 
         public InMemoryPaymentWorld World { get; }
 
@@ -459,6 +480,7 @@ public class PayjoinAccountingPaymentServiceTests
                 ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
 
             var transactionReader = new ScriptedWalletTransactionReader();
+            var transactionLabeler = new RecordingTransactionLabeler();
             var staleCorrections = new RecordingStalePaidOverCorrectionService();
             var eventAggregator = new EventAggregator(new Logs());
             var invoiceNeedUpdateEvents = new EventCounter();
@@ -472,6 +494,7 @@ public class PayjoinAccountingPaymentServiceTests
                 new PaymentMethodHandlerDictionary([handler]),
                 networkProvider,
                 transactionReader,
+                transactionLabeler,
                 NullLogger<PayjoinAccountingPaymentService>.Instance);
 
             return new EndToEndFixture(
@@ -485,7 +508,8 @@ public class PayjoinAccountingPaymentServiceTests
                 finalTransaction,
                 staleCorrections,
                 invoiceNeedUpdateEvents,
-                eventAggregator);
+                eventAggregator,
+                transactionLabeler);
         }
 
         private sealed class EventCounter
@@ -550,6 +574,17 @@ public class PayjoinAccountingPaymentServiceTests
         public Task<TransactionResult?> GetTransactionAsync(BTCPayNetwork network, uint256 transactionId, CancellationToken cancellationToken)
         {
             return Task.FromResult(Result is not null && Result.TransactionHash == transactionId ? Result : null);
+        }
+    }
+
+    private sealed class RecordingTransactionLabeler : IPayjoinTransactionLabeler
+    {
+        public List<(WalletId WalletId, uint256 TransactionId, string InvoiceId)> Calls { get; } = [];
+
+        public Task LabelAsyncPayjoinAsync(WalletId walletId, uint256 transactionId, string invoiceId, CancellationToken cancellationToken)
+        {
+            Calls.Add((walletId, transactionId, invoiceId));
+            return Task.CompletedTask;
         }
     }
 

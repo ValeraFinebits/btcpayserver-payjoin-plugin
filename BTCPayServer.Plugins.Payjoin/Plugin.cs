@@ -12,7 +12,7 @@ public class Plugin : BaseBTCPayServerPlugin
 {
     public override IBTCPayServerPlugin.PluginDependency[] Dependencies { get; } =
     {
-        new IBTCPayServerPlugin.PluginDependency { Identifier = nameof(BTCPayServer), Condition = ">=2.0.0" }
+        new IBTCPayServerPlugin.PluginDependency { Identifier = nameof(BTCPayServer), Condition = ">=2.4.0" }
     };
 
     public override void Execute(IServiceCollection applicationBuilder)
@@ -46,6 +46,7 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinStalePaidOverCorrectionService, PayjoinStalePaidOverCorrectionService>();
         applicationBuilder.AddSingleton<IPayjoinPlatformPaymentRecorder, PayjoinPlatformPaymentRecorder>();
         applicationBuilder.AddSingleton<IPayjoinWalletTransactionReader, PayjoinWalletTransactionReader>();
+        applicationBuilder.AddSingleton<IPayjoinTransactionLabeler, PayjoinTransactionLabeler>();
         applicationBuilder.AddSingleton(provider => new PayjoinBridgeAttentionService(
             provider.GetRequiredService<IPayjoinAccountingBridgeService>()));
         applicationBuilder.AddSingleton<IPayjoinAccountingPaymentService, PayjoinAccountingPaymentService>();
