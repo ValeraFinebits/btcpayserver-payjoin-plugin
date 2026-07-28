@@ -6,55 +6,9 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinSegwitAssumptionTests
 {
-    [Fact]
-    public void HasTxidUnstableInputDetectsLegacyInputsSigningThroughTheScriptSig()
-    {
-        using var key = new Key();
-        var tx = Network.RegTest.CreateTransaction();
-        tx.Inputs.Add(new OutPoint(uint256.One, 0));
-        tx.Inputs[0].ScriptSig = new Script(Op.GetPushOp(new byte[71]), Op.GetPushOp(key.PubKey.ToBytes()));
-
-        Assert.True(PayjoinReceiverSessionProcessor.HasTxidUnstableInput(tx));
-    }
-
-    [Fact]
-    public void HasTxidUnstableInputDetectsNestedSegwitInputsDespiteTheirWitness()
-    {
-        // P2SH-P2WPKH finalizes with a witness AND a redeem-script push in the scriptSig; the
-        // push is part of the txid preimage, so the witness alone must not count as stable.
-        using var key = new Key();
-        var redeemScript = key.PubKey.WitHash.ScriptPubKey;
-        var tx = Network.RegTest.CreateTransaction();
-        tx.Inputs.Add(new OutPoint(uint256.One, 0));
-        tx.Inputs[0].ScriptSig = new Script(Op.GetPushOp(redeemScript.ToBytes()));
-        tx.Inputs[0].WitScript = new WitScript(Op.GetPushOp(new byte[71]), Op.GetPushOp(key.PubKey.ToBytes()));
-
-        Assert.True(PayjoinReceiverSessionProcessor.HasTxidUnstableInput(tx));
-    }
-
-    [Fact]
-    public void HasTxidUnstableInputAcceptsNativeSegwitInputs()
-    {
-        using var key = new Key();
-        var tx = Network.RegTest.CreateTransaction();
-        tx.Inputs.Add(new OutPoint(uint256.One, 0));
-        tx.Inputs[0].WitScript = new WitScript(Op.GetPushOp(new byte[71]), Op.GetPushOp(key.PubKey.ToBytes()));
-
-        Assert.False(PayjoinReceiverSessionProcessor.HasTxidUnstableInput(tx));
-    }
-
-    [Fact]
-    public void HasTxidUnstableInputDetectsAMixOfNativeAndScriptSigInputs()
-    {
-        using var key = new Key();
-        var tx = Network.RegTest.CreateTransaction();
-        tx.Inputs.Add(new OutPoint(uint256.One, 0));
-        tx.Inputs[0].WitScript = new WitScript(Op.GetPushOp(new byte[71]), Op.GetPushOp(key.PubKey.ToBytes()));
-        tx.Inputs.Add(new OutPoint(uint256.One, 1));
-        tx.Inputs[1].ScriptSig = new Script(Op.GetPushOp(new byte[71]));
-
-        Assert.True(PayjoinReceiverSessionProcessor.HasTxidUnstableInput(tx));
-    }
+    // Sender-side txid stability (legacy and nested-SegWit inputs rewriting the txid through the
+    // scriptSig) is decided by rust-payjoin's ProposalTxidIsStable, which carries its own test
+    // matrix for the legacy, nested, native, and mixed cases upstream.
 
     [Theory]
     [InlineData("p2wpkh", true)]

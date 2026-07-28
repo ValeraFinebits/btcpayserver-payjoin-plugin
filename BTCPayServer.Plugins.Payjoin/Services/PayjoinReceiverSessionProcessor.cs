@@ -244,6 +244,20 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         PayjoinReceiverStateContext context,
         CancellationToken cancellationToken)
     {
+        if (!proposal.ProposalTxidIsStable())
+        {
+            // A sender input that finalizes with a non-empty scriptSig (legacy, or nested SegWit
+            // with its redeem-script push) changes the txid preimage when the sender signs the
+            // payjoin proposal, so the final transaction id differs from anything derived on the
+            // receiver side and settlement reconciliation could never match it. The session ends
+            // here, before outputs are committed or inputs contributed; if the sender broadcasts
+            // the original, the invoice is still credited through the platform's own address
+            // tracking.
+            LogPayjoinReceiverTxidUnstableSenderInput(_logger, context.InvoiceId, null);
+            RemoveSession(context.InvoiceId, "sender inputs that finalize through the scriptSig are not supported");
+            return Task.CompletedTask;
+        }
+
         return ProcessWantsOutputsAsync(
             proposal,
             context.Persister,
@@ -471,19 +485,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         }
 
         var fallbackTx = Transaction.Load(fallbackBytes, network);
-        if (HasTxidUnstableInput(fallbackTx))
-        {
-            // A sender input that finalizes with a non-empty scriptSig (legacy, or nested SegWit
-            // with its redeem-script push) changes the txid preimage when the sender signs the
-            // payjoin proposal, so the final transaction id differs from anything derived on the
-            // receiver side and settlement reconciliation could never match it. The session ends
-            // here, before anything is contributed; if the sender broadcasts the original, the
-            // invoice is still credited through the platform's own address tracking.
-            LogPayjoinReceiverTxidUnstableSenderInput(_logger, session.InvoiceId, null);
-            RemoveSession(session.InvoiceId, "sender inputs that finalize through the scriptSig are not supported");
-            return;
-        }
-
         var fallbackOutputMatch = ResolveFallbackReceiverOutput(fallbackTx, receiverScript);
         if (!fallbackOutputMatch.Success)
         {
@@ -514,17 +515,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             effectiveInvoiceValueSats,
             null,
             cancellationToken).ConfigureAwait(false);
-    }
-
-    internal static bool HasTxidUnstableInput(Transaction transaction)
-    {
-        // The txid preimage covers each input's scriptSig but not its witness, so only inputs
-        // that finalize with an empty scriptSig (native SegWit) keep the txid stable between the
-        // proposal the receiver sees and the transaction the sender broadcasts. Legacy inputs
-        // sign entirely through the scriptSig, and nested SegWit pushes its redeem script there,
-        // so both rewrite the txid. Witness data alone proves nothing: a nested input carries a
-        // witness and still changes the txid.
-        return transaction.Inputs.Any(input => input.ScriptSig is not null && input.ScriptSig.Length > 0);
     }
 
     internal static FallbackReceiverOutputMatch ResolveFallbackReceiverOutput(Transaction fallbackTransaction, byte[] receiverScript)
