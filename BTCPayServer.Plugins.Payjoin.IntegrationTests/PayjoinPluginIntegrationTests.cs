@@ -1,6 +1,7 @@
 using BTCPayServer.BIP78.Sender;
 using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
+using BTCPayServer.HostedServices;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.PayJoin.Sender;
 using BTCPayServer.Plugins.Payjoin.Data;
@@ -999,6 +1000,39 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         Assert.Fail($"Expected invoice '{invoiceId}' state to become '{expectedStatus}' with exception '{expectedExceptionStatus}'.");
         return null!;
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task EffectivePayjoinV1IsReportedForAFundedHotWalletStore()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var merchant = context.Merchant;
+
+        var storeRepository = tester.PayTester.GetService<StoreRepository>();
+        var store = await storeRepository.FindStore(merchant.StoreId).ConfigureAwait(true);
+        Assert.NotNull(store);
+        var blob = store!.GetStoreBlob();
+        blob.PayJoinEnabled = true;
+        store.SetStoreBlob(blob);
+        await storeRepository.UpdateStore(store).ConfigureAwait(true);
+
+        using var controller = new UIPayjoinOverviewController(
+            null!,
+            null!,
+            tester.PayTester.GetService<PaymentMethodHandlerDictionary>(),
+            tester.PayTester.GetService<NBXplorerDashboard>(),
+            null!,
+            null!,
+            null!,
+            null!);
+
+        var refreshed = await storeRepository.FindStore(merchant.StoreId).ConfigureAwait(true);
+        Assert.NotNull(refreshed);
+
+        Assert.True(controller.IsPayjoinV1Effective(refreshed!, context.Network));
     }
 
 }
