@@ -3,6 +3,7 @@ using BTCPayServer.Payments;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
+using NBitcoin;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -53,6 +54,20 @@ public sealed class PayjoinAvailabilityService
         }
 
         // TODO: Decide whether receiver contribution should ever fall back to unconfirmed merchant coins instead of requiring confirmed inputs before advertising payjoin.
-        return await wallet.GetUnspentCoins(derivationScheme.AccountDerivation, true, cancellationToken).ConfigureAwait(false);
+        var coins = await wallet.GetUnspentCoins(derivationScheme.AccountDerivation, true, cancellationToken).ConfigureAwait(false);
+
+        // The receiver input path constructs PSBT inputs from the witness UTXO alone (no
+        // non_witness_utxo, redeem or witness scripts), which is only valid for natively segwit
+        // coins. Offering anything else produces inputs the library rejects, so candidates are
+        // limited here - which also keeps checkout from advertising payjoin a legacy-funded wallet
+        // cannot actually serve.
+        return coins.Where(coin => IsSupportedReceiverCoin(coin.ScriptPubKey)).ToArray();
+    }
+
+    internal static bool IsSupportedReceiverCoin(Script scriptPubKey)
+    {
+        return scriptPubKey.IsScriptType(ScriptType.P2WPKH) ||
+               scriptPubKey.IsScriptType(ScriptType.P2WSH) ||
+               scriptPubKey.IsScriptType(ScriptType.Taproot);
     }
 }

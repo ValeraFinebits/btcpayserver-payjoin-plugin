@@ -272,13 +272,13 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
                 current.Dispose();
             }
         }
-        catch (BuildSenderException ex)
+        catch (SenderInputException ex)
         {
             throw new RunTestPaymentExecutionException($"Sender build failed: {ex.Message}", ex);
         }
-        catch (SenderPersistedException.ResponseException ex)
+        catch (SenderPersistedException ex) when (SenderResponseOf(ex) is { } senderResponse)
         {
-            throw new RunTestPaymentExecutionException($"Sender rejected by receiver: {FormatSenderResponseException(ex.v1)}", ex);
+            throw new RunTestPaymentExecutionException($"Sender rejected by receiver: {FormatSenderResponseException(senderResponse)}", ex);
         }
         catch (HttpRequestException ex)
         {
@@ -440,6 +440,16 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
         }
 
         throw new RunTestPaymentExecutionException("No OHTTP relays configured for test payment.");
+    }
+
+    private static global::Payjoin.ResponseException? SenderResponseOf(SenderPersistedException exception)
+    {
+        return exception switch
+        {
+            SenderPersistedException.Fatal { v1: SenderException.Response response } => response.v1,
+            SenderPersistedException.Transient { v1: SenderException.Response response } => response.v1,
+            _ => null
+        };
     }
 
     private static string FormatSenderResponseException(global::Payjoin.ResponseException responseException)

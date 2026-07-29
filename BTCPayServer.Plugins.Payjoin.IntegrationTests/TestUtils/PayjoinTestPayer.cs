@@ -138,7 +138,7 @@ internal sealed class PayjoinTestPayer
             paymentAmount = Money.Satoshis(checked((long)amountSats.Value)).ToDecimal(MoneyUnit.BTC);
             using var _ = parsedUri.CheckPjSupported();
         }
-        catch (PjParseException ex)
+        catch (UriParseException ex)
         {
             throw new InvalidOperationException($"Invalid BIP21 URI '{paymentUrl}': {ex.Message}", ex);
         }
@@ -233,9 +233,9 @@ internal sealed class PayjoinTestPayer
             }
             proposalPsbtBase64 = await PollForProposalAsync(current, senderPersister, ohttpRelayUrls, cancellationToken).ConfigureAwait(false);
         }
-        catch (SenderPersistedException.ResponseException ex)
+        catch (SenderPersistedException ex) when (SenderResponseOf(ex) is { } senderResponse)
         {
-            throw CreateSenderResponseFailure(ex);
+            throw CreateSenderResponseFailure(ex, senderResponse);
         }
 
         if (string.IsNullOrWhiteSpace(proposalPsbtBase64))
@@ -355,11 +355,21 @@ internal sealed class PayjoinTestPayer
         throw new InvalidOperationException($"All configured OHTTP relays failed for payer store '{_payer.StoreId}'. LastError='{lastError?.Message}'", lastError);
     }
 
-    private InvalidOperationException CreateSenderResponseFailure(SenderPersistedException.ResponseException ex)
+    private InvalidOperationException CreateSenderResponseFailure(SenderPersistedException ex, global::Payjoin.ResponseException senderResponse)
     {
         return new InvalidOperationException(
-            $"Payjoin receiver rejected the proposal for payer store '{_payer.StoreId}': {FormatSenderResponseException(ex.v1)}",
+            $"Payjoin receiver rejected the proposal for payer store '{_payer.StoreId}': {FormatSenderResponseException(senderResponse)}",
             ex);
+    }
+
+    private static global::Payjoin.ResponseException? SenderResponseOf(SenderPersistedException exception)
+    {
+        return exception switch
+        {
+            SenderPersistedException.Fatal { v1: SenderException.Response response } => response.v1,
+            SenderPersistedException.Transient { v1: SenderException.Response response } => response.v1,
+            _ => null
+        };
     }
 
     private static string FormatSenderResponseException(global::Payjoin.ResponseException responseException)

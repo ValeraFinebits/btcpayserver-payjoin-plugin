@@ -170,7 +170,7 @@ public class PayjoinReceiverProposalFinalizerTests
         public RequestResponse CreatePostRequest(string ohttpRelay) => throw new NotSupportedException();
         public PayjoinProposalTransition ProcessResponse(byte[] body, ClientResponse ohttpContext) => throw new NotSupportedException();
         public string Psbt() => psbt;
-        public PayjoinOutPoint[] UtxosToBeLocked() => throw new NotSupportedException();
+        public bool ProposalTxidIsStable() => throw new NotSupportedException();
     }
 
     private sealed class ThrowingProposal : IPayjoinProposal
@@ -179,7 +179,7 @@ public class PayjoinReceiverProposalFinalizerTests
         public RequestResponse CreatePostRequest(string ohttpRelay) => throw new NotSupportedException();
         public PayjoinProposalTransition ProcessResponse(byte[] body, ClientResponse ohttpContext) => throw new NotSupportedException();
         public string Psbt() => throw new NotSupportedException();
-        public PayjoinOutPoint[] UtxosToBeLocked() => throw new NotSupportedException();
+        public bool ProposalTxidIsStable() => throw new NotSupportedException();
     }
 
     private sealed class UnusedRelayRequestSender : IPayjoinReceiverRelayRequestSender

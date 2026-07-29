@@ -407,7 +407,7 @@ public class PayjoinSettlementFlowTests
         public RequestResponse CreatePostRequest(string ohttpRelay) => throw new NotSupportedException();
         public PayjoinProposalTransition ProcessResponse(byte[] body, ClientResponse ohttpContext) => throw new NotSupportedException();
         public string Psbt() => psbt;
-        public PayjoinOutPoint[] UtxosToBeLocked() => throw new NotSupportedException();
+        public bool ProposalTxidIsStable() => throw new NotSupportedException();
     }
 
     private sealed class NoOpSessionProcessor : IPayjoinReceiverSessionProcessor
