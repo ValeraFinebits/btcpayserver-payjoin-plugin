@@ -127,7 +127,6 @@ public sealed class PayjoinUriSessionService
                 }
             }
 
-            var createdFreshSession = false;
             if (session is null)
             {
                 var selectedRelay = await _mailroomManager.SelectBootstrapRouteAsync(
@@ -141,6 +140,13 @@ public sealed class PayjoinUriSessionService
                     return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, "OHTTP keys are unavailable from all configured relays");
                 }
 
+                // The accounting reset must precede session persistence. A crash between the two
+                // steps then leaves a reset bridge without a session, and the retry simply resets
+                // again (the reset is idempotent) before creating one. The reverse order left a
+                // persisted session whose retry found it, skipped the reset, and carried the
+                // previous session's accounting data forward.
+                await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, resetForNewSession: true, cancellationToken).ConfigureAwait(false);
+
                 var bootstrapPersister = new CapturingReceiverSessionPersister();
                 InitializeSession(destination, due, selectedRelay.DirectoryUrl.AbsoluteUri, selectedRelay.OhttpKeys, monitoringExpiresAt, bootstrapPersister);
                 session = _receiverSessionStore.CreateSession(
@@ -149,14 +155,16 @@ public sealed class PayjoinUriSessionService
                     storeId,
                     monitoringExpiresAt,
                     bootstrapPersister.Load());
-                createdFreshSession = true;
+            }
+            else
+            {
+                await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, resetForNewSession: false, cancellationToken).ConfigureAwait(false);
             }
 
             var persister = _receiverSessionStore.CreatePersister(session);
 
             using var replay = PayjoinMethods.ReplayReceiverEventLog(persister);
             using var history = replay.SessionHistory();
-            await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, createdFreshSession, cancellationToken).ConfigureAwait(false);
             using var pjUri = history.PjUri();
             var payjoinUri = pjUri.AsString();
             if (string.IsNullOrWhiteSpace(payjoinUri))
@@ -223,7 +231,7 @@ public sealed class PayjoinUriSessionService
         string cryptoCode,
         decimal due,
         DateTimeOffset monitoringExpiresAt,
-        bool createdFreshSession,
+        bool resetForNewSession,
         CancellationToken cancellationToken)
     {
         var effectiveInvoiceValueSats = due > 0m
@@ -240,7 +248,7 @@ public sealed class PayjoinUriSessionService
                 EffectiveInvoiceValueSats: effectiveInvoiceValueSats),
             cancellationToken).ConfigureAwait(false);
 
-        if (createdFreshSession)
+        if (resetForNewSession)
         {
             await _accountingBridgeService.ResetForNewSessionAsync(invoiceId, effectiveInvoiceValueSats, monitoringExpiresAt, cancellationToken).ConfigureAwait(false);
         }

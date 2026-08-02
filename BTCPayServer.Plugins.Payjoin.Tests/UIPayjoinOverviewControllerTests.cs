@@ -136,7 +136,7 @@ public class UIPayjoinOverviewControllerTests
         public TestContext(bool canModifyStoreSettings = true)
         {
             _canModifyStoreSettings = canModifyStoreSettings;
-            BridgeService = new PayjoinAccountingBridgeService(_dbContextFactory, new PostgresPayjoinUniqueConstraintViolationDetector());
+            BridgeService = new PayjoinAccountingBridgeService(_dbContextFactory, new PostgresPayjoinUniqueConstraintViolationDetector(), new PayjoinSessionBuildLock());
         }
 
         public PayjoinAccountingBridgeService BridgeService { get; }

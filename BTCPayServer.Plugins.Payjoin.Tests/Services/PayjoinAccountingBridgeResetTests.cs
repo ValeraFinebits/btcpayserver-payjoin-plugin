@@ -121,6 +121,59 @@ public class PayjoinAccountingBridgeResetTests
         Assert.Equal(created.ExpiresAt, reset.ExpiresAt);
     }
 
+    [Fact]
+    public async Task ExpirePendingAsyncCannotOverwriteARevivalPerformedUnderTheSessionBuildLock()
+    {
+        // The recreation flow revives a bridge while holding the invoice's session build lock.
+        // Expiry takes the same lock per invoice and re-checks the deadline inside it, so an expiry
+        // pass whose candidate snapshot predates the revival must skip instead of marking the
+        // revived bridge Expired.
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        await CreateBridgeAsync(service, "invoice-race", now.AddMinutes(-1));
+        await service.AttachFallbackAsync("invoice-race", FallbackTransactionId, 0, 900, 900, "CCDD", CancellationToken.None);
+
+        Task<System.Collections.Generic.IReadOnlyCollection<PayjoinAccountingBridgeState>> expiryTask;
+        using (await context.SessionBuildLock.AcquireAsync("invoice-race", CancellationToken.None).ConfigureAwait(true))
+        {
+            expiryTask = service.ExpirePendingAsync(now, CancellationToken.None);
+            await service.ResetForNewSessionAsync("invoice-race", 1200, now.AddHours(2), CancellationToken.None);
+        }
+
+        var expired = await expiryTask.ConfigureAwait(true);
+
+        Assert.Empty(expired);
+        var state = await service.TryGetByInvoiceIdAsync("invoice-race", CancellationToken.None);
+        Assert.NotNull(state);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, state!.Status);
+        Assert.Equal(now.AddHours(2), state.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task ResetForNewSessionAsyncIsIdempotentAcrossACrashRetry()
+    {
+        // Session creation resets the bridge before it persists the session, so a crash between the
+        // two steps makes the retry reset again. The second reset must leave the same state behind.
+        using var context = new TestContext();
+        var service = context.CreateService();
+        var now = DateTimeOffset.UtcNow;
+        await CreateBridgeAsync(service, "invoice-retry", now.AddHours(1));
+        await service.AttachFallbackAsync("invoice-retry", FallbackTransactionId, 0, 900, 900, "CCDD", CancellationToken.None);
+
+        var first = await service.ResetForNewSessionAsync("invoice-retry", 1200, now.AddHours(2), CancellationToken.None);
+        var second = await service.ResetForNewSessionAsync("invoice-retry", 1200, now.AddHours(2), CancellationToken.None);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, second!.Status);
+        Assert.Null(second.FallbackTransactionId);
+        Assert.Null(second.SettlementScript);
+        Assert.Null(second.ExpectedFinalTransactionId);
+        Assert.Equal(first!.ExpiresAt, second.ExpiresAt);
+        Assert.Equal(1200, second.EffectiveInvoiceValueSats);
+    }
+
     private static Task<PayjoinAccountingBridgeState> CreateBridgeAsync(
         PayjoinAccountingBridgeService service,
         string invoiceId,
@@ -144,7 +197,9 @@ public class PayjoinAccountingBridgeResetTests
         private readonly TestDbContextFactory _dbContextFactory = new();
         private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
-        public PayjoinAccountingBridgeService CreateService() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+        public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
+
+        public PayjoinAccountingBridgeService CreateService() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
 
         public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
 
