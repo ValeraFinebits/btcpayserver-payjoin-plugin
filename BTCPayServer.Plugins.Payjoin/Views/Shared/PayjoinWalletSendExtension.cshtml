@@ -1,0 +1,61 @@
+@* Injected into the core wallet send screen (onchain-wallet-send). Watches the destination
+   field for a BIP 77 payjoin URI and offers the async sender flow, which survives the
+   receiver being offline; the core flow only speaks the synchronous v1 protocol. *@
+<div id="payjoin-async-offer" class="alert alert-info d-none mt-3">
+    <span text-translate="true">
+        This destination supports async payjoin. The core send flow pays it as a plain
+        transaction; the async flow completes the payjoin in the background, and the receiver
+        does not need to be online now.
+    </span>
+    <a id="payjoin-async-offer-link" href="#" class="alert-link" text-translate="true">Send as async payjoin</a>
+</div>
+<script>
+    (function () {
+        function extractStoreId() {
+            var match = window.location.pathname.match(/\/wallets\/S-(.+)-[A-Z0-9]+(\/|$)/);
+            return match ? match[1] : null;
+        }
+
+        function looksLikeAsyncPayjoin(value) {
+            if (!value) {
+                return false;
+            }
+
+            // A BIP 77 pj endpoint is a directory URL whose session parameters travel in a
+            // URI fragment. A v1 endpoint has no fragment.
+            var pjMatch = value.match(/[?&]pj=([^&]+)/i);
+            if (!pjMatch) {
+                return false;
+            }
+
+            var endpoint = decodeURIComponent(pjMatch[1]);
+            return endpoint.indexOf('#') !== -1;
+        }
+
+        function update() {
+            var offer = document.getElementById('payjoin-async-offer');
+            var link = document.getElementById('payjoin-async-offer-link');
+            var storeId = extractStoreId();
+            if (!offer || !link || !storeId) {
+                return;
+            }
+
+            var destinationField = document.querySelector('textarea[name$="DestinationAddress"], input[name$="DestinationAddress"]');
+            var value = destinationField ? destinationField.value.trim() : '';
+            if (looksLikeAsyncPayjoin(value)) {
+                link.href = '/stores/' + encodeURIComponent(storeId) + '/payjoin/send?bip21=' + encodeURIComponent(value);
+                offer.classList.remove('d-none');
+            } else {
+                offer.classList.add('d-none');
+            }
+        }
+
+        document.addEventListener('input', function (ev) {
+            if (ev.target && typeof ev.target.name === 'string' && ev.target.name.indexOf('DestinationAddress') !== -1) {
+                update();
+            }
+        });
+        document.addEventListener('DOMContentLoaded', update);
+        update();
+    })();
+</script>

@@ -1,0 +1,72 @@
+@using BTCPayServer.Abstractions.Extensions
+@using BTCPayServer.Abstractions.Models
+@using Microsoft.AspNetCore.Mvc.TagHelpers
+@model BTCPayServer.Plugins.Payjoin.Models.PayjoinSenderViewModel
+@{
+    ViewData.SetLayoutModel(new LayoutModel("PayjoinSend", "Send Async Payjoin").SetCategory(WellKnownCategories.Store));
+}
+
+<div class="sticky-header">
+    <h2 text-translate="true">Send Async Payjoin</h2>
+</div>
+
+<partial name="_StatusMessage" />
+
+<div class="row">
+    <div class="col-xxl-constrain col-xl-8">
+        <p class="text-muted" text-translate="true">
+            Paste a BIP 21 payment URI that advertises payjoin support. The store's hot wallet
+            funds and signs the payment, and the session completes in the background: it delivers
+            the payjoin when the receiver responds, and it broadcasts the plain payment when the
+            payjoin window closes. Nothing is broadcast before one of the two happens.
+        </p>
+        <form method="post">
+            <div class="form-group">
+                <label asp-for="Bip21" class="form-label" text-translate="true">Payment URI</label>
+                <textarea asp-for="Bip21" class="form-control font-monospace" rows="3" placeholder="bitcoin:...?amount=...&pj=..."></textarea>
+            </div>
+            <div class="form-group">
+                <label asp-for="FeeRateSatPerVb" class="form-label" text-translate="true">Fee rate (sat/vB, optional)</label>
+                <input asp-for="FeeRateSatPerVb" class="form-control" style="max-width:12ch" />
+                <div class="form-text" text-translate="true">Empty uses the wallet's recommended fee rate.</div>
+            </div>
+            <button type="submit" class="btn btn-primary" text-translate="true">Start payjoin payment</button>
+        </form>
+    </div>
+</div>
+
+@if (Model.Sessions.Count > 0)
+{
+    <h3 class="mt-5" text-translate="true">Sender sessions</h3>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th text-translate="true">Created</th>
+                    <th text-translate="true">Destination</th>
+                    <th class="text-end" text-translate="true">Amount (sats)</th>
+                    <th text-translate="true">Status</th>
+                    <th text-translate="true">Transaction</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var session in Model.Sessions)
+                {
+                    <tr>
+                        <td>@session.CreatedAt.ToBrowserDate()</td>
+                        <td class="font-monospace text-truncate" style="max-width:16ch">@session.DestinationAddress</td>
+                        <td class="text-end">@session.AmountSats</td>
+                        <td>
+                            @session.Status
+                            @if (session.FailureMessage is not null)
+                            {
+                                <div class="text-muted small">@session.FailureMessage</div>
+                            }
+                        </td>
+                        <td class="font-monospace text-truncate" style="max-width:16ch">@(session.BroadcastTransactionId ?? "-")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
