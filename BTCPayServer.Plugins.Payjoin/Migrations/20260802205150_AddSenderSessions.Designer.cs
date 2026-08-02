@@ -3,6 +3,7 @@ using System;
 using BTCPayServer.Plugins.Payjoin;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,14 +12,16 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace BTCPayServer.Plugins.Payjoin.Migrations
 {
     [DbContext(typeof(PayjoinPluginDbContext))]
-    partial class PayjoinPluginDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260802205150_AddSenderSessions")]
+    partial class AddSenderSessions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
                 .HasDefaultSchema("BTCPayServer.Plugins.Payjoin")
-                .HasAnnotation("ProductVersion", "10.0.11")
+                .HasAnnotation("ProductVersion", "10.0.10")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -213,10 +216,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("DestructiveWriteStamp")
-                        .IsConcurrencyToken()
-                        .HasColumnType("integer");
-
                     b.Property<bool>("InitializedPollAfterCloseRequestConsumed")
                         .HasColumnType("boolean");
 
@@ -225,9 +224,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.Property<DateTimeOffset>("MonitoringExpiresAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("PayjoinUri")
-                        .HasColumnType("text");
 
                     b.Property<string>("ReceiverAddress")
                         .IsRequired()
