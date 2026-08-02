@@ -75,6 +75,29 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinInvoiceLookup, PayjoinInvoiceLookup>();
         applicationBuilder.AddSingleton<PayjoinInvoicePaymentUrlService>();
         applicationBuilder.AddSingleton<IPayjoinInvoicePaymentUrlService>(provider => provider.GetRequiredService<PayjoinInvoicePaymentUrlService>());
+        applicationBuilder.AddSingleton(provider => new PayjoinSenderSessionStore(
+            provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
+            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+        applicationBuilder.AddSingleton(provider => new PayjoinSenderService(
+            provider.GetRequiredService<BTCPayNetworkProvider>(),
+            provider.GetRequiredService<BTCPayServer.Services.Stores.StoreRepository>(),
+            provider.GetRequiredService<BTCPayServer.Services.Invoices.PaymentMethodHandlerDictionary>(),
+            provider.GetRequiredService<ExplorerClientProvider>(),
+            provider.GetRequiredService<BTCPayServer.Services.IFeeProviderFactory>(),
+            provider.GetRequiredService<PayjoinSenderSessionStore>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderService>>()));
+        applicationBuilder.AddSingleton<IPayjoinSenderSessionProcessor>(provider => new PayjoinSenderSessionProcessor(
+            provider.GetRequiredService<PayjoinSenderSessionStore>(),
+            provider.GetRequiredService<IPayjoinStoreSettingsRepository>(),
+            provider.GetRequiredService<IPayjoinReceiverRelayClient>(),
+            provider.GetRequiredService<BTCPayNetworkProvider>(),
+            provider.GetRequiredService<BTCPayServer.Services.Stores.StoreRepository>(),
+            provider.GetRequiredService<BTCPayServer.Services.Invoices.PaymentMethodHandlerDictionary>(),
+            provider.GetRequiredService<ExplorerClientProvider>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderSessionProcessor>>()));
+        applicationBuilder.AddHostedService(provider => new PayjoinSenderPoller(
+            provider.GetRequiredService<IPayjoinSenderSessionProcessor>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderPoller>>()));
         applicationBuilder.AddHostedService<PluginMigrationRunner>();
         applicationBuilder.AddHostedService(provider => new PayjoinReceiverPoller(
             provider.GetRequiredService<PayjoinReceiverSessionStore>(),
