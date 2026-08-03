@@ -182,11 +182,25 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         }
 
         // The library already validated the proposal against the original during
-        // ProcessResponse. The wallet signs only its own inputs: SignAll matches inputs
-        // against the store's derivation scheme, so the receiver's contributed input is
-        // never touched here.
+        // ProcessResponse. The proposal arrives without HD keypaths (the receiver's
+        // prepare_psbt strips them), so NBXplorer first restores the wallet metadata for
+        // our inputs; SignAll then signs only inputs that match the store's derivation
+        // scheme, and the receiver's contributed input is never touched here.
         var proposalPsbt = PSBT.Parse(progress.PsbtBase64, network.NBitcoinNetwork);
         var (derivationScheme, accountKey, rootedKeyPath) = await ResolveSigningContextAsync(session.StoreId, network, cancellationToken).ConfigureAwait(false);
+        var explorerClient = _explorerClientProvider.GetExplorerClient(network);
+        var updateResponse = await explorerClient.UpdatePSBTAsync(
+            new NBXplorer.Models.UpdatePSBTRequest
+            {
+                PSBT = proposalPsbt,
+                DerivationScheme = derivationScheme.AccountDerivation
+            },
+            cancellationToken).ConfigureAwait(false);
+        if (updateResponse?.PSBT is not null)
+        {
+            proposalPsbt = updateResponse.PSBT;
+        }
+
         proposalPsbt = proposalPsbt.SignAll(derivationScheme.AccountDerivation, accountKey, rootedKeyPath);
         if (!proposalPsbt.TryFinalize(out var errors))
         {
