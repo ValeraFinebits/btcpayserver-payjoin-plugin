@@ -68,11 +68,11 @@ public class PayjoinUriSessionServiceStatusTests
     }
 
     [Fact]
-    public async Task MissingStoreSettingsMapToMerchantRequirementsUnmet()
+    public async Task MissingStoreSettingsMapToTemporarilyUnavailable()
     {
         var result = await BuildAsync(storeSettings: null);
 
-        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, "store settings are unavailable");
+        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.TemporarilyUnavailable, "store settings are unavailable");
     }
 
     [Fact]

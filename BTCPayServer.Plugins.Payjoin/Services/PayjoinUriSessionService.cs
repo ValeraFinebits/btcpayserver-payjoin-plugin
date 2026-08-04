@@ -85,7 +85,7 @@ public sealed class PayjoinUriSessionService
 
         if (storeSettings is null)
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, "store settings are unavailable");
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, "store settings are unavailable");
         }
 
         var directoryUrls = storeSettings.GetEffectiveDirectoryUrls();

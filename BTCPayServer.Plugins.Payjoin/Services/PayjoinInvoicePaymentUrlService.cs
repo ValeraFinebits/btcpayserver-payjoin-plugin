@@ -90,7 +90,7 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
 
                 return CreateResponse(PayjoinUriResult.Unavailable(
                     fallbackPaymentUrl,
-                    PayjoinAvailabilityStatus.MerchantRequirementsUnmet,
+                    PayjoinAvailabilityStatus.TemporarilyUnavailable,
                     "store settings are unavailable"));
             }
 

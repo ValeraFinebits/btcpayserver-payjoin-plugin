@@ -225,7 +225,7 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
               "unavailableReason": {
                 "type": "string",
                 "nullable": true,
-                "description": "Human-readable reason why PayJoin is unavailable. Null when status is Active."
+                "description": "Human-readable reason why PayJoin is unavailable. Null when status is Active. Do not branch on this text; branch on the status field. These strings are English prose and may change at any time."
               }
             }
           }
