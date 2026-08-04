@@ -74,6 +74,8 @@ internal interface IPayjoinAccountingBridgeService
     Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken);
 
     Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken);
+
+    Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken);
 }
 
 internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeService
@@ -90,13 +92,16 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
 
     private readonly PayjoinPluginDbContextFactory _dbContextFactory;
     private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
+    private readonly PayjoinSessionBuildLock _sessionBuildLock;
 
     public PayjoinAccountingBridgeService(
         PayjoinPluginDbContextFactory dbContextFactory,
-        IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector)
+        IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector,
+        PayjoinSessionBuildLock sessionBuildLock)
     {
         _dbContextFactory = dbContextFactory;
         _uniqueConstraintViolationDetector = uniqueConstraintViolationDetector;
+        _sessionBuildLock = sessionBuildLock;
     }
 
     public async Task<PayjoinAccountingBridgeState> CreateOrGetAsync(CreatePayjoinAccountingBridgeRequest request, CancellationToken cancellationToken)
@@ -240,29 +245,109 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
             cancellationToken);
     }
 
-    public async Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    public async Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken)
     {
         using var context = _dbContextFactory.CreateContext();
+        var bridge = await TryLoadByInvoiceIdAsync(context, invoiceId, cancellationToken).ConfigureAwait(false);
+        if (bridge is null)
+        {
+            return null;
+        }
+
+        // A freshly created receiver session produces its own fallback, settlement script and final
+        // transaction, so tracking data from a previous session on the same invoice no longer applies:
+        // the fallback-attach guard would hold on to the old fallback while later writes would overwrite
+        // the rest, leaving the record describing two different sessions at once. Reconciled records are
+        // final, and failed or expired records that already awaited a final transaction stay untouched
+        // for operator review.
+        //
+        // A pending bridge that is already armed is the exception: its expected final transaction
+        // describes a signed proposal the previous session handed to the sender, which can still
+        // confirm, and that expectation is the only thing that makes the settlement creditable (the
+        // settlement output is not an invoice address the platform tracks on its own). The old
+        // accounting flow therefore stays live through session recreation, and the new session's own
+        // writes take the record over stage by stage: attaching its fallback replaces the fallback
+        // data, committing outputs replaces the settlement script, and finalizing its proposal
+        // replaces the expected final transaction.
+        var isResettablePending = (bridge.Status is PayjoinAccountingBridgeStatus.PendingFallback or PayjoinAccountingBridgeStatus.PendingFinalTransaction) &&
+                                  bridge.ExpectedFinalTransactionId is null;
+        var isResettableExpired = bridge.Status == PayjoinAccountingBridgeStatus.Expired && bridge.ExpectedFinalTransactionId is null;
+        if (!isResettablePending && !isResettableExpired)
+        {
+            return ToState(bridge);
+        }
+
+        var hasPriorSessionData = bridge.FallbackTransactionId is not null ||
+                                  bridge.SettlementScript is not null;
+        if (!hasPriorSessionData && bridge.Status != PayjoinAccountingBridgeStatus.Expired)
+        {
+            return ToState(bridge);
+        }
+
+        bridge.FallbackTransactionId = null;
+        bridge.FallbackOutputIndex = null;
+        bridge.FallbackValueSats = null;
+        bridge.SettlementScript = null;
+        bridge.ExpectedFinalTransactionId = null;
+        bridge.ExpectedFinalOutputIndex = null;
+        bridge.ExpectedFinalValueSats = null;
+        bridge.EffectiveInvoiceValueSats = effectiveInvoiceValueSats ?? bridge.EffectiveInvoiceValueSats;
+        bridge.FailureMessage = null;
+        bridge.Status = PayjoinAccountingBridgeStatus.PendingFallback;
+        bridge.ExpiresAt = expiresAt ?? bridge.ExpiresAt;
+        bridge.UpdatedAt = DateTimeOffset.UtcNow;
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return ToState(bridge);
+    }
+
+    public async Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
         var armedDeadline = now - ArmedBridgeGracePeriod;
-        var expired = await context.AccountingBridges
-            .Where(x => (x.Status == PayjoinAccountingBridgeStatus.PendingFallback || x.Status == PayjoinAccountingBridgeStatus.PendingFinalTransaction) &&
-                        x.ExpiresAt != null &&
-                        (x.ExpectedFinalTransactionId == null ? x.ExpiresAt <= now : x.ExpiresAt <= armedDeadline))
-            .ToArrayAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (expired.Length == 0)
+        string[] candidateInvoiceIds;
+        using (var context = _dbContextFactory.CreateContext())
+        {
+            candidateInvoiceIds = await context.AccountingBridges
+                .AsNoTracking()
+                .Where(x => (x.Status == PayjoinAccountingBridgeStatus.PendingFallback || x.Status == PayjoinAccountingBridgeStatus.PendingFinalTransaction) &&
+                            x.ExpiresAt != null &&
+                            (x.ExpectedFinalTransactionId == null ? x.ExpiresAt <= now : x.ExpiresAt <= armedDeadline))
+                .Select(x => x.InvoiceId)
+                .ToArrayAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (candidateInvoiceIds.Length == 0)
         {
             return [];
         }
 
-        foreach (var bridge in expired)
+        // Expiry writes race session recreation: ResetForNewSessionAsync revives a bridge under the
+        // invoice's session build lock, and an expiry write from a snapshot taken before that revival
+        // would mark the revived bridge Expired, cutting it off from reconciliation. Taking the same
+        // per-invoice lock and re-checking the deadline inside it makes the interleaving safe in both
+        // orders: if the revival won, the re-check sees the new deadline and skips; if expiry won, the
+        // reset revives an Expired bridge, which is its designed path.
+        var expired = new List<PayjoinAccountingBridgeState>(candidateInvoiceIds.Length);
+        foreach (var invoiceId in candidateInvoiceIds)
         {
+            using var sessionBuildLock = await _sessionBuildLock.AcquireAsync(invoiceId, cancellationToken).ConfigureAwait(false);
+            using var context = _dbContextFactory.CreateContext();
+            var bridge = await TryLoadByInvoiceIdAsync(context, invoiceId, cancellationToken).ConfigureAwait(false);
+            if (bridge is null ||
+                bridge.Status is not (PayjoinAccountingBridgeStatus.PendingFallback or PayjoinAccountingBridgeStatus.PendingFinalTransaction) ||
+                bridge.ExpiresAt is null ||
+                bridge.ExpiresAt > (bridge.ExpectedFinalTransactionId is null ? now : armedDeadline))
+            {
+                continue;
+            }
+
             bridge.Status = PayjoinAccountingBridgeStatus.Expired;
             bridge.UpdatedAt = now;
+            await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            expired.Add(ToState(bridge));
         }
 
-        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return expired.Select(ToState).ToArray();
+        return expired;
     }
 
     public async Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken)

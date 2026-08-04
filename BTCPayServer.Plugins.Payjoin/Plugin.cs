@@ -42,7 +42,8 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinReceiverInputSelector, PayjoinReceiverInputSelector>();
         applicationBuilder.AddSingleton<IPayjoinAccountingBridgeService>(provider => new PayjoinAccountingBridgeService(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
-            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>(),
+            provider.GetRequiredService<PayjoinSessionBuildLock>()));
         applicationBuilder.AddSingleton<IPayjoinStalePaidOverCorrectionService, PayjoinStalePaidOverCorrectionService>();
         applicationBuilder.AddSingleton<IPayjoinPlatformPaymentRecorder, PayjoinPlatformPaymentRecorder>();
         applicationBuilder.AddSingleton<IPayjoinWalletTransactionReader, PayjoinWalletTransactionReader>();

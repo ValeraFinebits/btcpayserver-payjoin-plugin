@@ -208,7 +208,9 @@ public class PayjoinAccountingBridgeServiceTests
         private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
         private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
-        public PayjoinAccountingBridgeService CreateService() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+        public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
+
+        public PayjoinAccountingBridgeService CreateService() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
 
         public void Dispose()
         {
