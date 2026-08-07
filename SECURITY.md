@@ -26,7 +26,7 @@ Include as much detail as possible:
 
 After you submit a report:
 
-1. You will receive an acknowledgement within **72 hours**.
+1. You will receive an acknowledgment within **72 hours**.
 2. We will investigate and keep you informed of the progress.
 3. Once a fix is ready, we will coordinate a disclosure timeline with you.
 4. A public security advisory will be published after the fix is released.
