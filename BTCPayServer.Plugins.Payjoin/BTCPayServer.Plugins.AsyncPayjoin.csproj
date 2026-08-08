@@ -11,7 +11,7 @@
   <PropertyGroup>
     <Product>Async Payjoin</Product>
     <Description>Async Payjoin (Payjoin V2, BIP 77) plugin for BTCPay Server.</Description>
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
   </PropertyGroup>
 
   <!-- Plugin development properties -->
