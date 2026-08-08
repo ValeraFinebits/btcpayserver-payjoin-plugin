@@ -151,11 +151,11 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
             using var _ = parsedUri.CheckPjSupported();
             return true;
         }
-        catch (UriParseException)
+        catch (PjNotSupported)
         {
             return false;
         }
-        catch (PjNotSupported)
+        catch (PjParseException)
         {
             return false;
         }

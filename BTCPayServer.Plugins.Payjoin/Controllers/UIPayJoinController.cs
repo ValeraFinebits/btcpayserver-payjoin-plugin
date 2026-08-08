@@ -145,13 +145,13 @@ public class UIPayJoinController : Controller
             paymentAmount = Money.Satoshis(checked((long)amountSats.Value)).ToDecimal(MoneyUnit.BTC);
             using var _ = parsedUri.CheckPjSupported();
         }
-        catch (UriParseException ex)
-        {
-            return RunTestPaymentFailure($"Invalid BIP21 URI: {ex.Message}");
-        }
         catch (PjNotSupported ex)
         {
             return RunTestPaymentFailure($"Payjoin not available in URI: {ex.Message}");
+        }
+        catch (PjParseException ex)
+        {
+            return RunTestPaymentFailure($"Invalid BIP21 URI: {ex.Message}");
         }
 
         BitcoinAddress paymentAddressValue;
