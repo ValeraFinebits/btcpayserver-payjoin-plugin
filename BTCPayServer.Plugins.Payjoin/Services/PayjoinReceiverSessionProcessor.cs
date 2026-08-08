@@ -246,20 +246,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         PayjoinReceiverStateContext context,
         CancellationToken cancellationToken)
     {
-        if (!proposal.ProposalTxidIsStable())
-        {
-            // A sender input that finalizes with a non-empty scriptSig (legacy, or nested SegWit
-            // with its redeem-script push) changes the txid preimage when the sender signs the
-            // payjoin proposal, so the final transaction id differs from anything derived on the
-            // receiver side and settlement reconciliation could never match it. The session ends
-            // here, before outputs are committed or inputs contributed; if the sender broadcasts
-            // the original, the invoice is still credited through the platform's own address
-            // tracking.
-            LogPayjoinReceiverTxidUnstableSenderInput(_logger, context.InvoiceId, null);
-            RemoveSession(context.InvoiceId, "sender inputs that finalize through the scriptSig are not supported");
-            return Task.CompletedTask;
-        }
-
         return ProcessWantsOutputsAsync(
             proposal,
             context.Persister,

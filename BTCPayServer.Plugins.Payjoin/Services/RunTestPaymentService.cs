@@ -9,7 +9,6 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using static Payjoin.SenderPersistedException;
 using PayjoinUri = Payjoin.Uri;
 using SystemUri = System.Uri;
 
@@ -446,8 +445,7 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
     {
         return exception switch
         {
-            SenderPersistedException.Fatal { v1: SenderException.Response response } => response.v1,
-            SenderPersistedException.Transient { v1: SenderException.Response response } => response.v1,
+            SenderPersistedException.ResponseException responseException => responseException.v1,
             _ => null
         };
     }
