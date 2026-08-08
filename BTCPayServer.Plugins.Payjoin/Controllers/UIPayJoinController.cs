@@ -188,11 +188,11 @@ public class UIPayJoinController : Controller
             paymentAmount = Money.Satoshis(checked((long)amountSats.Value)).ToDecimal(MoneyUnit.BTC);
             using var _ = parsedUri.CheckPjSupported();
         }
-        catch (PjNotSupported ex)
+        catch (Exception ex) when (PayjoinExceptionCompatibility.IsUnsupportedException(ex))
         {
             return RunTestPaymentFailure($"Payjoin not available in URI: {ex.Message}");
         }
-        catch (PjParseException ex)
+        catch (Exception ex) when (PayjoinExceptionCompatibility.IsParseException(ex))
         {
             return RunTestPaymentFailure($"Invalid BIP21 URI: {ex.Message}");
         }

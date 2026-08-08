@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using PayjoinUri = Payjoin.Uri;
@@ -443,9 +444,16 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
 
     private static global::Payjoin.ResponseException? SenderResponseOf(SenderPersistedException exception)
     {
-        return exception switch
+        var exceptionType = exception.GetType();
+        var valueMember = (MemberInfo?)exceptionType.GetProperty("v1", BindingFlags.Instance | BindingFlags.Public)
+            ?? exceptionType.GetField("v1", BindingFlags.Instance | BindingFlags.Public);
+
+        return valueMember switch
         {
-            SenderPersistedException.ResponseException responseException => responseException.v1,
+            PropertyInfo property when typeof(global::Payjoin.ResponseException).IsAssignableFrom(property.PropertyType) =>
+                property.GetValue(exception) as global::Payjoin.ResponseException,
+            FieldInfo field when typeof(global::Payjoin.ResponseException).IsAssignableFrom(field.FieldType) =>
+                field.GetValue(exception) as global::Payjoin.ResponseException,
             _ => null
         };
     }
