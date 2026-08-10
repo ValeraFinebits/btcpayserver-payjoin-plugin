@@ -121,7 +121,7 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
               "PayJoin"
             ],
             "summary": "Get invoice PayJoin payment URL",
-            "description": "Create or reuse the active PayJoin receiver session for a payable invoice and return its BIP21 payment URL.",
+            "description": "Return the BIP21 payment URL for a payable invoice, creating or reusing a PayJoin receiver session when PayJoin is available. Always branch on the status field rather than assuming the URL carries a PayJoin endpoint: any status other than Active returns a plain BIP21 URL. Note a non-Active status does not guarantee that no receiver session exists - some failures are detected after the session has been created, and it then remains until the invoice monitoring window expires.",
             "operationId": "PayJoin_GetInvoicePaymentUrl",
             "parameters": [
               {
@@ -133,7 +133,7 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
             ],
             "responses": {
               "200": {
-                "description": "PayJoin-capable BIP21 payment URL for the invoice",
+                "description": "BIP21 payment URL for the invoice. PayJoin-capable only when status is Active; every other status returns a plain BIP21 URL.",
                 "content": {
                   "application/json": {
                     "schema": {
@@ -204,16 +204,28 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
             "additionalProperties": false,
             "required": [
               "bip21",
-              "payjoinEnabled"
+              "status"
             ],
             "properties": {
               "bip21": {
                 "type": "string",
-                "description": "BIP21 payment URL. When PayJoin is enabled this includes pjos and pj parameters."
+                "description": "BIP21 payment URL. It includes the pjos and pj parameters when status is Active, and is a plain BIP21 URL for every other status."
               },
-              "payjoinEnabled": {
-                "type": "boolean",
-                "description": "Whether the returned BIP21 URL contains a supported PayJoin endpoint."
+              "status": {
+                "type": "string",
+                "enum": [
+                  "Active",
+                  "DisabledByStore",
+                  "MerchantRequirementsUnmet",
+                  "TemporarilyUnavailable",
+                  "InvoiceNotPayable"
+                ],
+                "description": "PayJoin availability for this invoice. Active means the returned BIP21 URL contains a supported PayJoin endpoint; any other value means the URL is plain BIP21. Replaces the former payjoinEnabled boolean, which has been removed: a client that must support both server versions can treat the presence of this field as the signal, and must not read a missing payjoinEnabled as 'PayJoin unavailable'."
+              },
+              "unavailableReason": {
+                "type": "string",
+                "nullable": true,
+                "description": "Human-readable reason why PayJoin is unavailable. Null when status is Active. Do not branch on this text; branch on the status field. These strings are English prose and may change at any time."
               }
             }
           }

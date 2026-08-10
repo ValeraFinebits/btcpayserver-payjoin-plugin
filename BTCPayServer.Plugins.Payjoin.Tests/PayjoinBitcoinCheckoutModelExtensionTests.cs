@@ -1,5 +1,4 @@
 using BTCPayServer.Models.InvoicingModels;
-using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Xunit;
 
@@ -55,57 +54,6 @@ public class PayjoinBitcoinCheckoutModelExtensionTests
         var merged = PayjoinBitcoinCheckoutModelExtension.MergePayjoinIntoPaymentUrl(baseUrl, payjoinFallbackUrl);
 
         Assert.Equal("bitcoin:BCRT1QEXAMPLE?amount=0.10000000&lightning=LNBCRT123", merged);
-    }
-
-    [Fact]
-    public void ApplyPayjoinPaymentUrlKeepsPlainAndPayjoinUrlsForCheckoutToggle()
-    {
-        var model = new CheckoutModel
-        {
-            InvoiceBitcoinUrl = "bitcoin:bcrt1qexample?amount=0.10000000&lightning=lnbcrt123",
-            InvoiceBitcoinUrlQR = "bitcoin:BCRT1QEXAMPLE?amount=0.10000000&lightning=LNBCRT123"
-        };
-        var paymentUrl = new GetBip21Response
-        {
-            PayjoinEnabled = true,
-            Bip21 = "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj"
-        };
-
-        PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinPaymentUrl(model, paymentUrl, true);
-
-        Assert.Equal(
-            "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj&lightning=lnbcrt123",
-            model.InvoiceBitcoinUrl);
-        Assert.Equal(
-            "bitcoin:BCRT1QEXAMPLE?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj&lightning=LNBCRT123",
-            model.InvoiceBitcoinUrlQR);
-        Assert.Equal(
-            "bitcoin:bcrt1qexample?amount=0.10000000&lightning=lnbcrt123",
-            model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey].ToObject<string>());
-        Assert.Equal(
-            "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj&lightning=lnbcrt123",
-            model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey].ToObject<string>());
-        Assert.True(model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinV2EnabledKey].ToObject<bool>());
-    }
-
-    [Fact]
-    public void ApplyPayjoinPaymentUrlLeavesPlainCheckoutModelWhenPayjoinUnavailable()
-    {
-        var model = new CheckoutModel
-        {
-            InvoiceBitcoinUrl = "bitcoin:bcrt1qexample?amount=0.10000000",
-            InvoiceBitcoinUrlQR = "bitcoin:BCRT1QEXAMPLE?amount=0.10000000"
-        };
-        var paymentUrl = new GetBip21Response
-        {
-            PayjoinEnabled = false,
-            Bip21 = "bitcoin:bcrt1qexample?amount=0.10000000"
-        };
-
-        PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinPaymentUrl(model, paymentUrl, true);
-
-        Assert.Equal("bitcoin:bcrt1qexample?amount=0.10000000", model.InvoiceBitcoinUrl);
-        Assert.Empty(model.AdditionalData);
     }
 
     [Fact]

@@ -86,6 +86,16 @@
         return segment.split('=', 1)[0].toLowerCase() === key.toLowerCase();
     }
 
+    function parseAmount(url) {
+        const segment = extractQueryParameter(url, 'amount');
+        if (!segment) {
+            return null;
+        }
+
+        const value = Number.parseFloat(segment.slice(segment.indexOf('=') + 1));
+        return Number.isFinite(value) ? value : null;
+    }
+
     function mergePayjoinIntoPaymentUrl(baseUrl, payjoinUrl) {
         if (!baseUrl) {
             return payjoinUrl;
@@ -96,12 +106,12 @@
         }
 
         const endpointParameter = extractQueryParameter(payjoinUrl, 'pj');
-        const outputSubstitutionParameter = extractQueryParameter(payjoinUrl, 'pjos');
         const payjoinParameters = [];
-        if (outputSubstitutionParameter) {
-            payjoinParameters.push(outputSubstitutionParameter);
-        }
         if (endpointParameter) {
+            const outputSubstitutionParameter = extractQueryParameter(payjoinUrl, 'pjos');
+            if (outputSubstitutionParameter) {
+                payjoinParameters.push(outputSubstitutionParameter);
+            }
             payjoinParameters.push(endpointParameter);
         }
 
@@ -121,21 +131,57 @@
         return segments.length === 0 ? prefix : prefix + '?' + segments.join('&');
     }
 
-    function applyFetchedPaymentUrl(model, response) {
-        const bip21 = response && (response.bip21 || response.Bip21);
-        const payjoinEnabled = response && (response.payjoinEnabled === true || response.PayjoinEnabled === true);
-        if (!bip21 || !payjoinEnabled) {
+    function normalizePaymentUrlResponse(payload) {
+        if (!payload) {
+            return null;
+        }
+
+        const bip21 = typeof payload.bip21 !== 'undefined' ? payload.bip21 : payload.Bip21;
+        const availabilityStatus = typeof payload.status !== 'undefined' ? payload.status : payload.Status;
+
+        if (typeof bip21 === 'undefined' || typeof availabilityStatus === 'undefined') {
+            console.error('PayJoin payment URL response has unexpected field names', Object.keys(payload));
+            return null;
+        }
+
+        if (typeof payload.bip21 === 'undefined' || typeof payload.status === 'undefined') {
+            console.warn('PayJoin payment URL response used PascalCase field names; the host serializer no longer matches what this plugin was tested against');
+        }
+
+        return {
+            bip21: bip21,
+            availabilityStatus: availabilityStatus
+        };
+    }
+
+    function applyFetchedPaymentUrl(model, paymentUrlResponse) {
+        if (!paymentUrlResponse ||
+            !paymentUrlResponse.bip21 ||
+            paymentUrlResponse.availabilityStatus !== 'Active') {
             return;
         }
 
+        const bip21 = paymentUrlResponse.bip21;
         const vm = getCheckoutVm();
         if (!vm || !vm.srvModel || vm.srvModel.invoiceId !== model.invoiceId) {
             return;
         }
 
+        const plainUrl = vm.srvModel.payjoinPlainBitcoinUrl;
+        const plainUrlQr = vm.srvModel.payjoinPlainBitcoinUrlQR;
+
+        if (!plainUrl || !plainUrlQr) {
+            return;
+        }
+
+        if (parseAmount(bip21) !== parseAmount(plainUrl)) {
+            console.warn('PayJoin payment URL discarded: the receiver session expects a different amount than the invoice now asks for');
+            return;
+        }
+
         const nextModel = Object.assign({}, vm.srvModel, {
-            payjoinPaymentUrl: mergePayjoinIntoPaymentUrl(model.payjoinPlainBitcoinUrl, bip21),
-            payjoinPaymentUrlQR: mergePayjoinIntoPaymentUrl(model.payjoinPlainBitcoinUrlQR, bip21)
+            payjoinPaymentUrl: mergePayjoinIntoPaymentUrl(plainUrl, bip21),
+            payjoinPaymentUrlQR: mergePayjoinIntoPaymentUrl(plainUrlQr, bip21)
         });
 
         replaceSrvModel(vm, nextModel);
@@ -159,7 +205,7 @@
             headers: { 'Accept': 'application/json' }
         })
             .then(response => response.ok ? response.json() : null)
-            .then(response => applyFetchedPaymentUrl(model, response))
+            .then(response => applyFetchedPaymentUrl(model, normalizePaymentUrlResponse(response)))
             .catch(error => console.error('PayJoin payment URL fetch failed', error))
             .finally(function () {
                 scheduleTick();

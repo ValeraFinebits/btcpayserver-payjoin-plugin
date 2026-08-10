@@ -3,12 +3,10 @@ using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Services.Invoices;
 using Microsoft.Extensions.Logging;
-using Payjoin;
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
-using PayjoinUri = Payjoin.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -19,6 +17,11 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
             LogLevel.Error,
             new EventId(1, nameof(LogPayjoinPaymentUrlFallback)),
             "Payjoin payment URL generation failed for {InvoiceId}. Falling back to plain BIP21.");
+    private static readonly Action<ILogger, string, Exception?> LogMissingStoreSettings =
+        LoggerMessage.Define<string>(
+            LogLevel.Warning,
+            new EventId(2, nameof(LogMissingStoreSettings)),
+            "Payjoin store settings were unavailable for invoice {InvoiceId}. Falling back to plain BIP21.");
 
     private readonly InvoiceRepository _invoiceRepository;
     private readonly BTCPayNetworkProvider _networkProvider;
@@ -80,7 +83,15 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
             var storeSettings = await _storeSettingsRepository.GetAsync(invoice.StoreId).ConfigureAwait(false);
             if (storeSettings is null)
             {
-                return CreatePlainBip21Response(fallbackPaymentUrl);
+                if (_logger is not null)
+                {
+                    LogMissingStoreSettings(_logger, invoice.Id, null);
+                }
+
+                return CreateResponse(PayjoinUriResult.Unavailable(
+                    fallbackPaymentUrl,
+                    PayjoinAvailabilityStatus.TemporarilyUnavailable,
+                    "store settings are unavailable"));
             }
 
             return await BuildPaymentUrlAsync(
@@ -103,11 +114,14 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
                 LogPayjoinPaymentUrlFallback(_logger, invoice.Id, ex);
             }
 
-            return CreatePlainBip21Response(fallbackPaymentUrl);
+            return CreateResponse(PayjoinUriResult.Unavailable(
+                fallbackPaymentUrl,
+                PayjoinAvailabilityStatus.TemporarilyUnavailable,
+                "payjoin payment URL generation failed"));
         }
     }
 
-    private async Task<GetBip21Response?> BuildPaymentUrlAsync(
+    private async Task<GetBip21Response> BuildPaymentUrlAsync(
         string invoiceId,
         string storeId,
         DateTimeOffset monitoringExpiresAt,
@@ -116,7 +130,7 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
         PayjoinStoreSettings storeSettings,
         CancellationToken cancellationToken)
     {
-        var paymentUrl = await _payjoinUriSessionService.BuildAsync(
+        var result = await _payjoinUriSessionService.BuildAsync(
             PayjoinConstants.BitcoinCode,
             destination,
             due,
@@ -127,37 +141,16 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
             monitoringExpiresAt,
             cancellationToken).ConfigureAwait(false);
 
-        return new GetBip21Response
-        {
-            Bip21 = paymentUrl,
-            PayjoinEnabled = IsPayjoinEnabled(paymentUrl)
-        };
+        return CreateResponse(result);
     }
 
-    private static GetBip21Response CreatePlainBip21Response(string fallbackPaymentUrl)
+    internal static GetBip21Response CreateResponse(PayjoinUriResult result)
     {
         return new GetBip21Response
         {
-            Bip21 = fallbackPaymentUrl,
-            PayjoinEnabled = false
+            Bip21 = result.PaymentUrl,
+            Status = result.Status,
+            UnavailableReason = result.Reason
         };
-    }
-
-    private static bool IsPayjoinEnabled(string paymentUrl)
-    {
-        try
-        {
-            using var parsedUri = PayjoinUri.Parse(paymentUrl);
-            using var _ = parsedUri.CheckPjSupported();
-            return true;
-        }
-        catch (UriParseException)
-        {
-            return false;
-        }
-        catch (PjNotSupported)
-        {
-            return false;
-        }
     }
 }
