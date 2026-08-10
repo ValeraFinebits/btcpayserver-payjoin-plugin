@@ -27,6 +27,7 @@ public class PayjoinStoreSettingsViewModel : PayjoinStoreSettingsInput
             OhttpRelayUrls = settings.GetEffectiveOhttpRelayUrls(),
             OhttpRelayUrlsText = FormatOhttpRelayUrlsText(settings.GetEffectiveOhttpRelayUrls()),
             ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme,
+            MaxFeeRateSatPerVb = settings.MaxFeeRateSatPerVb,
             LayoutModel = layoutModel
         };
     }

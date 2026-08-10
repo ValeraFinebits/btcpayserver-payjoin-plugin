@@ -22,6 +22,7 @@ public class PayjoinUriSessionServiceStatusTests
             null!,
             null!,
             null!,
+            null!,
             NullLogger<PayjoinUriSessionService>.Instance);
     }
 

@@ -21,6 +21,15 @@ public class PayjoinStoreSettings
 
     public const bool DefaultPayjoinV2Enabled = true;
 
+    /// <summary>
+    /// Bounds for <see cref="MaxFeeRateSatPerVb"/>. Every path that accepts or derives the cap
+    /// applies these, so the UI form, the API model, and the estimate-driven fallback cannot
+    /// disagree about what a valid fee rate is.
+    /// </summary>
+    public const long MinFeeRateSatPerVb = 1;
+
+    public const long MaxFeeRateSatPerVbLimit = 100_000;
+
     public static IReadOnlyList<Uri> DefaultDirectoryUrls { get; } = Array.AsReadOnly(DefaultDirectoryUrlValues);
 
     public static IReadOnlyList<Uri> DefaultOhttpRelayUrls { get; } = Array.AsReadOnly(DefaultOhttpRelayUrlValues);
@@ -32,6 +41,12 @@ public class PayjoinStoreSettings
     public IReadOnlyList<Uri>? OhttpRelayUrls { get; set; } = DefaultOhttpRelayUrls;
 
     public string? ColdWalletDerivationScheme { get; set; }
+
+    /// <summary>
+    /// Maximum effective fee rate the receiver session accepts, in sat/vB. When unset, the cap is
+    /// derived from the platform's fee estimation.
+    /// </summary>
+    public long? MaxFeeRateSatPerVb { get; set; }
 
     public IReadOnlyList<Uri> GetEffectiveDirectoryUrls()
     {

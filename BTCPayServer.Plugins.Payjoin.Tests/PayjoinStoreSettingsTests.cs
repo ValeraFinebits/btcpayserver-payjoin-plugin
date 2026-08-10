@@ -4,6 +4,7 @@ using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.ComponentModel.DataAnnotations;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -171,6 +172,25 @@ public class PayjoinStoreSettingsTests
 
         Assert.Contains(data.GetInvalidDirectoryUrls(), static url => url is null);
         Assert.Contains(data.GetInvalidOhttpRelayUrls(), static url => url is null);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(100_001)]
+    public void DataRejectsFeeRatesOutsideTheSharedBounds(long feeRateSatPerVb)
+    {
+        var data = new PayjoinStoreSettingsData { MaxFeeRateSatPerVb = feeRateSatPerVb };
+        var validationResults = new List<ValidationResult>();
+
+        var isValid = Validator.TryValidateObject(
+            data,
+            new ValidationContext(data),
+            validationResults,
+            validateAllProperties: true);
+
+        Assert.False(isValid);
+        var validationResult = Assert.Single(validationResults);
+        Assert.Contains(nameof(PayjoinStoreSettingsData.MaxFeeRateSatPerVb), validationResult.MemberNames);
     }
 
     [Fact]

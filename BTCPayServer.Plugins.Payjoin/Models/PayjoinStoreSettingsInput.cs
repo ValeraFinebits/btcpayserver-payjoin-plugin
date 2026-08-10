@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Linq;
 
 namespace BTCPayServer.Plugins.Payjoin.Models;
@@ -22,6 +23,10 @@ public abstract class PayjoinStoreSettingsInput
 
     public string? ColdWalletDerivationScheme { get; set; }
 
+    [Range(PayjoinStoreSettings.MinFeeRateSatPerVb, PayjoinStoreSettings.MaxFeeRateSatPerVbLimit,
+        ErrorMessage = "The maximum fee rate must be between 1 and 100000 sat/vB.")]
+    public long? MaxFeeRateSatPerVb { get; set; }
+
     internal IReadOnlyList<Uri> GetEffectiveDirectoryUrls()
     {
         return ParseDirectoryUrlsText(DirectoryUrlsText, DirectoryUrls);
@@ -42,7 +47,8 @@ public abstract class PayjoinStoreSettingsInput
             PayjoinV2Enabled = PayjoinV2Enabled,
             DirectoryUrls = directoryUrls,
             OhttpRelayUrls = ohttpRelayUrls,
-            ColdWalletDerivationScheme = coldWalletDerivationScheme ?? ColdWalletDerivationScheme
+            ColdWalletDerivationScheme = coldWalletDerivationScheme ?? ColdWalletDerivationScheme,
+            MaxFeeRateSatPerVb = MaxFeeRateSatPerVb
         };
         settings.NormalizeUrlSettings();
         return settings;
