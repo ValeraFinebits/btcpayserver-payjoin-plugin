@@ -11,4 +11,6 @@ public sealed class GetBip21Response
     public required PayjoinAvailabilityStatus Status { get; init; }
 
     public string? UnavailableReason { get; init; }
+
+    public bool Retryable { get; init; }
 }

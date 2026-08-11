@@ -1,26 +1,21 @@
-using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Logging;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Wallets;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBXplorer;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using System.Collections.Concurrent;
 using Xunit;
 using HasReplyableError = Payjoin.HasReplyableError;
 using Initialized = Payjoin.Initialized;
 using IPayjoinProposal = Payjoin.IPayjoinProposal;
-using ReceiveSession = Payjoin.ReceiveSession;
 using MaybeInputsOwned = Payjoin.MaybeInputsOwned;
 using MaybeInputsSeen = Payjoin.MaybeInputsSeen;
 using OutputsUnknown = Payjoin.OutputsUnknown;
-using PayjoinProposal = Payjoin.PayjoinProposal;
 using ProvisionalProposal = Payjoin.ProvisionalProposal;
+using ReceiveSession = Payjoin.ReceiveSession;
 using UncheckedOriginalPayload = Payjoin.UncheckedOriginalPayload;
 using WantsFeeRange = Payjoin.WantsFeeRange;
 using WantsInputs = Payjoin.WantsInputs;
@@ -84,7 +79,7 @@ public class PayjoinReceiverSessionProcessorTests
     public async Task ProcessTickAsyncDoesNotOwnExpiredReservationCleanup()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-expired-cleanup");
         var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 1);
@@ -106,7 +101,7 @@ public class PayjoinReceiverSessionProcessorTests
     public async Task ProcessTickAsyncIsolatesInvalidOperationFailuresPerSession()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var failingSession = CreateSession(store, "invoice-failing");
         var survivingSession = CreateSession(store, "invoice-surviving");
@@ -125,11 +120,29 @@ public class PayjoinReceiverSessionProcessorTests
     }
 
     [Fact]
+    public async Task ProcessTickAsyncIsolatesDatabaseConcurrencyFailuresPerSession()
+    {
+        using var testContext = new SessionStoreFixture();
+        var store = testContext.CreateStore();
+        var failingSession = CreateSession(store, "invoice-db-conflict");
+        var survivingSession = CreateSession(store, "invoice-db-surviving");
+        var guard = new DbConflictGuard(failingSession.InvoiceId);
+        var processor = CreateProcessor(store, guard);
+
+        await processor.ProcessTickAsync(CancellationToken.None);
+
+        Assert.Contains(failingSession.InvoiceId, guard.VisitedInvoiceIds);
+        Assert.Contains(survivingSession.InvoiceId, guard.VisitedInvoiceIds);
+        Assert.True(store.TryGetSession(failingSession.InvoiceId, out _));
+        Assert.True(store.TryGetSession(survivingSession.InvoiceId, out _));
+    }
+
+    [Fact]
     public async Task ProcessTickAsyncRecordsTheExpectedFinalTransactionBeforeRepostingAReplayedProposal()
     {
         // Arrange: the session replays straight to the PayjoinProposal state, as it does when a
         // previous run stopped between finalizing the proposal and completing the bridge write.
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         CreateSession(store, "invoice-replayed-proposal");
         var guard = new ReplayedStateGuard(() => new ReceiveSession.PayjoinProposal(null!));
@@ -182,7 +195,7 @@ public class PayjoinReceiverSessionProcessorTests
 
     private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
-        return store.CreateSession(
+        return store.GetOrCreateSession(
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -298,6 +311,22 @@ public class PayjoinReceiverSessionProcessorTests
         public Task<PaymentEntity?> ReconcileWithFinalTransactionAsync(PayjoinAccountingBridgeState bridge, CancellationToken cancellationToken) => Task.FromResult<PaymentEntity?>(null);
     }
 
+    private sealed class DbConflictGuard(string failingInvoiceId) : IPayjoinReceiverSessionGuard
+    {
+        public ConcurrentBag<string> VisitedInvoiceIds { get; } = [];
+
+        public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
+        {
+            VisitedInvoiceIds.Add(session.InvoiceId);
+            if (string.Equals(session.InvoiceId, failingInvoiceId, StringComparison.Ordinal))
+            {
+                throw new DbUpdateConcurrencyException("Simulated concurrent session write.");
+            }
+
+            return Task.FromResult<PayjoinReceiverSessionGuardResult?>(null);
+        }
+    }
+
     private sealed class SelectiveGuard(string failingInvoiceId) : IPayjoinReceiverSessionGuard
     {
         public ConcurrentBag<string> VisitedInvoiceIds { get; } = [];
@@ -311,46 +340,6 @@ public class PayjoinReceiverSessionProcessorTests
             }
 
             return Task.FromResult<PayjoinReceiverSessionGuardResult?>(null);
-        }
-    }
-
-    private sealed class TestContext : IDisposable
-    {
-        private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
-        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
-
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
-
-        public void Dispose()
-        {
-            using var db = _dbContextFactory.CreateContext();
-            db.Database.EnsureDeleted();
-        }
-    }
-
-    private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
-    {
-        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
-        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
-
-        public TestPayjoinPluginDbContextFactory()
-            : base(Options.Create(new DatabaseOptions
-            {
-                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
-            }))
-        {
-            var databaseName = $"payjoin-session-processor-tests-{Guid.NewGuid():N}";
-            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
-                .Options;
-
-            using var db = CreateContext();
-            db.Database.EnsureCreated();
-        }
-
-        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
-        {
-            return new PayjoinPluginDbContext(_dbContextOptions);
         }
     }
 }

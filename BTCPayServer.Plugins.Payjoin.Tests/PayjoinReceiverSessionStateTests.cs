@@ -107,18 +107,12 @@ public class PayjoinReceiverSessionStateTests
         long? contributedInputOutputIndex = null,
         string[]? events = null)
     {
-        var now = DateTimeOffset.UtcNow;
-        return new PayjoinReceiverSessionState(
-            "invoice-1",
-            "store-1",
-            "bcrt1qexampleaddress0000000000000000000000000",
-            now.AddMinutes(5),
-            now,
-            updatedAt ?? now,
-            isCloseRequested,
-            closeInvoiceStatus,
-            closeRequestedAt,
-            initializedPollAfterCloseRequestConsumed,
+        return TestSessionStates.Create(
+            updatedAt: updatedAt,
+            isCloseRequested: isCloseRequested,
+            closeInvoiceStatus: closeInvoiceStatus,
+            closeRequestedAt: closeRequestedAt,
+            initializedPollAfterCloseRequestConsumed: initializedPollAfterCloseRequestConsumed,
             contributedInputTransactionId: contributedInputTransactionId,
             contributedInputOutputIndex: contributedInputOutputIndex,
             events: events);

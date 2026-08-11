@@ -37,7 +37,11 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
         ArgumentNullException.ThrowIfNull(describeRequest);
 
         var storeSettings = await _storeSettingsRepository.GetAsync(storeId).ConfigureAwait(false);
-        ArgumentNullException.ThrowIfNull(storeSettings);
+        if (storeSettings is null)
+        {
+            throw new PayjoinStoreSettingsUnavailableException(
+                $"Payjoin settings for store '{storeId}' could not be read.");
+        }
 
         var relayUrls = storeSettings.GetEffectiveOhttpRelayUrls();
         if (relayUrls.Count == 0)

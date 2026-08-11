@@ -185,7 +185,7 @@ public class UIPayjoinOverviewControllerTests
         public UIPayjoinOverviewController CreateController()
         {
             var storeSettingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
-            storeSettingsRepository.GetAsync(StoreId).Returns(Task.FromResult(new PayjoinStoreSettings
+            storeSettingsRepository.GetAsync(StoreId).Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings
             {
                 PayjoinV2Enabled = _payjoinV2Enabled
             }));
