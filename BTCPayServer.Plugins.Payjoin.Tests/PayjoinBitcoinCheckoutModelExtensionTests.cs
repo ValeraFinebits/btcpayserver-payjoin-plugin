@@ -61,6 +61,32 @@ public class PayjoinBitcoinCheckoutModelExtensionTests
     }
 
     [Theory]
+    [InlineData("pj")]
+    [InlineData("pj=")]
+    [InlineData("pj=https%3A%2F%2Fexample.com%2Fone&pj=https%3A%2F%2Fexample.com%2Fone")]
+    [InlineData("pj=https%3A%2F%2Fexample.com%2Fone&pj=https%3A%2F%2Fexample.com%2Ftwo")]
+    [InlineData("pjos=0&pjos=1&pj=https%3A%2F%2Fexample.com%2Fpj")]
+    [InlineData("pjos&pj=https%3A%2F%2Fexample.com%2Fpj")]
+    [InlineData("pjos=&pj=https%3A%2F%2Fexample.com%2Fpj")]
+    public void ApplyPayjoinPaymentUrlPublishesNothingForMalformedOrDuplicateParameters(string query)
+    {
+        using var key = new Key();
+        var address = key.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        var model = new CheckoutModel
+        {
+            InvoiceBitcoinUrl = $"bitcoin:{address}?amount=0.10000000",
+            InvoiceBitcoinUrlQR = $"bitcoin:{address.ToUpperInvariant()}?amount=0.10000000"
+        };
+
+        PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinPaymentUrl(
+            model,
+            $"bitcoin:{address}?amount=0.1&{query}");
+
+        Assert.False(model.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey));
+        Assert.False(model.AdditionalData.ContainsKey(PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlQrKey));
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]

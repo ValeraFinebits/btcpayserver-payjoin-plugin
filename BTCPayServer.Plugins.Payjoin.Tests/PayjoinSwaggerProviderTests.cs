@@ -39,4 +39,15 @@ public class PayjoinSwaggerProviderTests
             Enum.GetNames<PayjoinAvailabilityStatus>().OrderBy(name => name, StringComparer.Ordinal),
             documented.OrderBy(name => name, StringComparer.Ordinal));
     }
+
+    [Fact]
+    public async Task PaymentUrlSchemaRequiresRetryable()
+    {
+        var swagger = await new PayjoinSwaggerProvider().Fetch();
+
+        var required = Assert.IsType<JArray>(
+            swagger["components"]?["schemas"]?["PayjoinPaymentUrlData"]?["required"]);
+
+        Assert.Contains("retryable", required.Values<string>());
+    }
 }

@@ -88,6 +88,28 @@ public class PayjoinReplayedUriVerdictTests
         Assert.Null(fault);
     }
 
+    [Theory]
+    [InlineData("pj")]
+    [InlineData("pj=")]
+    [InlineData("pj=https%3A%2F%2Fexample.com%2Fone&pj=https%3A%2F%2Fexample.com%2Fone")]
+    [InlineData("pj=https%3A%2F%2Fexample.com%2Fone&pj=https%3A%2F%2Fexample.com%2Ftwo")]
+    [InlineData("pjos=0&pjos=1&pj=https%3A%2F%2Fexample.com%2Fpj")]
+    [InlineData("pjos&pj=https%3A%2F%2Fexample.com%2Fpj")]
+    [InlineData("pjos=&pj=https%3A%2F%2Fexample.com%2Fpj")]
+    public void MalformedOrDuplicatePayjoinParametersAreRejected(string query)
+    {
+        using var key = new Key();
+        var address = key.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var invoiceBip21 = CreateInvoiceBip21();
+        var sessionUri = $"bitcoin:{address}?amount=0.1&{query}";
+
+        var verdict = PayjoinBip21.JudgeReplayedUri(sessionUri, invoiceBip21, out var merged, out var fault);
+
+        Assert.Equal(PayjoinReplayedUriVerdict.NoPayjoinEndpoint, verdict);
+        Assert.Equal(invoiceBip21, merged);
+        Assert.Null(fault);
+    }
+
     [Fact]
     public void MergeOntoAnUnparseableInvoiceBip21IsRejected()
     {

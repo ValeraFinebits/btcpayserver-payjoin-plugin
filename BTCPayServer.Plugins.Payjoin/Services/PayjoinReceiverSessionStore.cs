@@ -228,9 +228,8 @@ public sealed class PayjoinReceiverSessionStore
         }
     }
 
-    internal bool TryRemoveSessionUnlessNegotiating(string invoiceId)
+    internal bool TryRemoveSessionUnlessNegotiating(string invoiceId) => WriteWithConcurrencyRetry(context =>
     {
-        using var context = _pluginDbContextFactory.CreateContext();
         var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
         if (sessionData is null)
         {
@@ -246,25 +245,10 @@ public sealed class PayjoinReceiverSessionStore
         RemoveAllSessionEvents(context, sessionData);
         RemoveInputReservations(context, invoiceId);
         context.ReceiverSessions.Remove(sessionData);
-
-        try
-        {
-            context.SaveChanges();
-            _mailroomManager?.ClearSessionFailedRelays(invoiceId);
-            return true;
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            using var verifyContext = _pluginDbContextFactory.CreateContext();
-            var removed = !verifyContext.ReceiverSessions.AsNoTracking().Any(x => x.InvoiceId == invoiceId);
-            if (removed)
-            {
-                _mailroomManager?.ClearSessionFailedRelays(invoiceId);
-            }
-
-            return removed;
-        }
-    }
+        context.SaveChanges();
+        _mailroomManager?.ClearSessionFailedRelays(invoiceId);
+        return true;
+    });
 
     public bool RequestClose(string invoiceId, InvoiceStatus invoiceStatus) => WriteWithConcurrencyRetry(context =>
     {
