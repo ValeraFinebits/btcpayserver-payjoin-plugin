@@ -40,6 +40,14 @@ public class UIStorePayjoinController : Controller
         }
 
         var settings = await _settingsRepository.GetAsync(storeId).ConfigureAwait(false);
+        if (settings is null)
+        {
+            TempData[WellKnownTempData.ErrorMessage] =
+                "The saved Async Payjoin settings for this store could not be read, so payjoin is switched off for its checkouts. " +
+                "The form below shows the defaults - review them and save to replace the damaged settings.";
+            settings = new PayjoinStoreSettings();
+        }
+
         var vm = PayjoinStoreSettingsViewModel.FromSettings(
             storeId,
             settings,

@@ -60,7 +60,8 @@ internal sealed class PayjoinFeeRateProvider : IPayjoinFeeRateProvider
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Fee estimation failing for any reason must degrade to the fallback cap, not break session creation.")]
     public async Task<ulong> GetMaxEffectiveFeeRateSatPerVbAsync(string storeId, CancellationToken cancellationToken)
     {
-        var settings = await _storeSettingsRepository.GetAsync(storeId).ConfigureAwait(false);
+        var settings = await _storeSettingsRepository.GetAsync(storeId).ConfigureAwait(false)
+            ?? throw new PayjoinStoreSettingsUnavailableException();
         decimal? estimatedSatPerVb = null;
         if (settings.MaxFeeRateSatPerVb is null or <= 0)
         {

@@ -4,6 +4,7 @@ using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
 
 namespace BTCPayServer.Plugins.Payjoin;
@@ -23,11 +24,13 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddUIExtension("checkout-bitcoin-post-content", "PayJoinBitcoinCheckoutPostContent");
         applicationBuilder.AddUIExtension("checkout-end", "PayJoinBitcoinCheckoutEnd");
         applicationBuilder.AddSingleton<PayjoinAvailabilityService>();
+        applicationBuilder.AddSingleton<PayjoinSessionUriReader>();
         applicationBuilder.AddSingleton<PayjoinBitcoinCheckoutModelExtension>();
         applicationBuilder.AddSingleton<IPayjoinUniqueConstraintViolationDetector, PostgresPayjoinUniqueConstraintViolationDetector>();
         applicationBuilder.AddSingleton(provider => new PayjoinReceiverSessionStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
-            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>(),
+            provider.GetService<ILogger<PayjoinReceiverSessionStore>>()));
         applicationBuilder.AddSingleton(provider => new PayjoinSeenInputStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
             provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));

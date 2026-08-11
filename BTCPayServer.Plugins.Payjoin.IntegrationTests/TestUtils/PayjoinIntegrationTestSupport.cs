@@ -86,9 +86,16 @@ internal static class PayjoinIntegrationTestSupport
         Assert.Contains("pj=", bip21Response.Bip21, StringComparison.OrdinalIgnoreCase);
     }
 
-    public static async Task EnablePayjoinAsync(ServerTester tester, string storeId, Action<PayjoinStoreSettings>? configure = null, CancellationToken cancellationToken = default)
+    public static async Task<PayjoinStoreSettings> ReadStoreSettingsAsync(ServerTester tester, string storeId, CancellationToken cancellationToken = default)
     {
         var settings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
+        Assert.NotNull(settings);
+        return settings!;
+    }
+
+    public static async Task EnablePayjoinAsync(ServerTester tester, string storeId, Action<PayjoinStoreSettings>? configure = null, CancellationToken cancellationToken = default)
+    {
+        var settings = await ReadStoreSettingsAsync(tester, storeId, cancellationToken).ConfigureAwait(true);
         settings.PayjoinV2Enabled = true;
         configure?.Invoke(settings);
         await UpdateStoreSettingsAsync(tester, storeId, settings, cancellationToken).ConfigureAwait(true);
@@ -96,7 +103,7 @@ internal static class PayjoinIntegrationTestSupport
 
     public static async Task DisablePayjoinAsync(ServerTester tester, string storeId, Action<PayjoinStoreSettings>? configure = null, CancellationToken cancellationToken = default)
     {
-        var settings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
+        var settings = await ReadStoreSettingsAsync(tester, storeId, cancellationToken).ConfigureAwait(true);
         settings.PayjoinV2Enabled = false;
         configure?.Invoke(settings);
         await UpdateStoreSettingsAsync(tester, storeId, settings, cancellationToken).ConfigureAwait(true);
@@ -222,7 +229,7 @@ internal static class PayjoinIntegrationTestSupport
         bool mineBlockAfterBroadcast,
         CancellationToken cancellationToken)
     {
-        var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(storeId).WaitAsync(cancellationToken).ConfigureAwait(true);
+        var storeSettings = await ReadStoreSettingsAsync(tester, storeId, cancellationToken).ConfigureAwait(true);
         Assert.NotEmpty(storeSettings.GetEffectiveOhttpRelayUrls());
         var ohttpRelayUrls = storeSettings.GetEffectiveOhttpRelayUrls();
 

@@ -209,7 +209,7 @@ public sealed class RunTestPaymentService : IRunTestPaymentService
     {
         string? proposalPsbtBase64 = null;
 
-        using var parsedUri = PayjoinUri.Parse(paymentUrl.ToString());
+        using var parsedUri = PayjoinUri.Parse(paymentUrl.AbsoluteUri);
         using var pjUri = parsedUri.CheckPjSupported();
         try
         {
