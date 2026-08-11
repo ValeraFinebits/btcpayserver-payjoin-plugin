@@ -159,36 +159,26 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
 
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
         {
-            ThrowIfSaveFailureInjected();
-            RunBeforeNextSaveChangesOnce();
+            PrepareSaveChanges();
             return base.SaveChanges(acceptAllChangesOnSuccess);
         }
 
         public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
         {
-            ThrowIfSaveFailureInjected();
-            RunBeforeNextSaveChangesOnce();
+            PrepareSaveChanges();
             return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         }
 
-        private void ThrowIfSaveFailureInjected()
+        private void PrepareSaveChanges()
         {
+            var beforeSaveChanges = _factory.BeforeNextSaveChanges;
+            _factory.BeforeNextSaveChanges = null;
+            beforeSaveChanges?.Invoke();
+
             if (_factory.FailSaveChanges)
             {
                 throw new DbUpdateException("Injected persistence failure.");
             }
-        }
-
-        private void RunBeforeNextSaveChangesOnce()
-        {
-            var beforeNextSaveChanges = _factory.BeforeNextSaveChanges;
-            if (beforeNextSaveChanges is null)
-            {
-                return;
-            }
-
-            _factory.BeforeNextSaveChanges = null;
-            beforeNextSaveChanges();
         }
 
         public override void Dispose()

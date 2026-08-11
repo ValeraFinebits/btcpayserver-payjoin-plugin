@@ -32,6 +32,7 @@ public class PayjoinGreenfieldContractIntegrationTests : UnitTestBase
         var payload = await GetGreenfieldPaymentUrlJsonAsync(tester, context.Merchant, invoice.Id, cts.Token).ConfigureAwait(true);
 
         Assert.Equal("Active", payload["status"]!.Value<string>());
+        Assert.False(payload["retryable"]!.Value<bool>());
         Assert.True(payload.TryGetValue("unavailableReason", out var unavailableReason));
         Assert.Equal(JTokenType.Null, unavailableReason!.Type);
 
@@ -55,6 +56,7 @@ public class PayjoinGreenfieldContractIntegrationTests : UnitTestBase
         var payload = await GetGreenfieldPaymentUrlJsonAsync(tester, context.Merchant, invoice.Id, cts.Token).ConfigureAwait(true);
 
         Assert.Equal("DisabledByStore", payload["status"]!.Value<string>());
+        Assert.False(payload["retryable"]!.Value<bool>());
         Assert.Equal(
             PayjoinUnavailableReasons.DisabledByStoreSettings,
             payload["unavailableReason"]!.Value<string>());

@@ -12,5 +12,5 @@ public sealed class GetBip21Response
 
     public string? UnavailableReason { get; init; }
 
-    public bool Retryable { get; init; }
+    public required bool Retryable { get; init; }
 }
