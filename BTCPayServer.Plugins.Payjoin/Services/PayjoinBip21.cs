@@ -52,8 +52,6 @@ internal static class PayjoinBip21
             mergeFault = e;
             return PayjoinReplayedUriVerdict.MergeLostEndpoint;
         }
-        if (mergedIsServable)
-        {
     }
 
     internal const string OutputSubstitutionParameterKey = "pjos";
