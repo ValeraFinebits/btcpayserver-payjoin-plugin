@@ -136,13 +136,23 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
         var payjoinUri = payjoinSessionUriReader.TryGetExistingPayjoinUri(invoiceId, destination);
         if (payjoinUri is not null)
         {
-            using var parsedSessionUri = global::Payjoin.Uri.Parse(payjoinUri);
-            if (!PayjoinUriSessionService.HasExpectedAmount(parsedSessionUri.AmountSats(), invoiceDue))
+            try
             {
-                return;
-            }
+                using var parsedSessionUri = global::Payjoin.Uri.Parse(payjoinUri);
+                if (!PayjoinUriSessionService.HasExpectedAmount(parsedSessionUri.AmountSats(), invoiceDue))
+                {
+                    return;
+                }
 
-            ApplyPayjoinPaymentUrl(model, payjoinUri);
+                ApplyPayjoinPaymentUrl(model, payjoinUri);
+            }
+            catch (global::Payjoin.UniffiException e)
+            {
+                if (e is IDisposable disposableFault)
+                {
+                    disposableFault.Dispose();
+                }
+            }
         }
     }
 
