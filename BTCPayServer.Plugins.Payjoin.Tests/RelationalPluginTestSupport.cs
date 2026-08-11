@@ -41,6 +41,12 @@ internal sealed class RelationalPluginTestContext : IDisposable
         set => _dbContextFactory.FailSaveChanges = value;
     }
 
+    public Action? BeforeNextSaveChanges
+    {
+        get => _dbContextFactory.BeforeNextSaveChanges;
+        set => _dbContextFactory.BeforeNextSaveChanges = value;
+    }
+
     public void BreakDatabase() => _dbContextFactory.Dispose();
 
     public void Dispose()
@@ -90,6 +96,8 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
     }
 
     public bool FailSaveChanges { get; set; }
+
+    public Action? BeforeNextSaveChanges { get; set; }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The created SQLite connection is owned and disposed by SqliteOwnedPayjoinPluginDbContext.")]
     public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
@@ -151,18 +159,22 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
 
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
         {
-            ThrowIfSaveFailureInjected();
+            PrepareSaveChanges();
             return base.SaveChanges(acceptAllChangesOnSuccess);
         }
 
         public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
         {
-            ThrowIfSaveFailureInjected();
+            PrepareSaveChanges();
             return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         }
 
-        private void ThrowIfSaveFailureInjected()
+        private void PrepareSaveChanges()
         {
+            var beforeSaveChanges = _factory.BeforeNextSaveChanges;
+            _factory.BeforeNextSaveChanges = null;
+            beforeSaveChanges?.Invoke();
+
             if (_factory.FailSaveChanges)
             {
                 throw new DbUpdateException("Injected persistence failure.");

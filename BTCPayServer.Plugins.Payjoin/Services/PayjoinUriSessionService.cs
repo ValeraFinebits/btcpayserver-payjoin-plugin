@@ -183,7 +183,10 @@ public sealed class PayjoinUriSessionService
                 // previous session's accounting data forward.
                 await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, resetForNewSession: true, cancellationToken).ConfigureAwait(false);
 
-                var maxEffectiveFeeRateSatPerVb = await _feeRateProvider.GetMaxEffectiveFeeRateSatPerVbAsync(storeId, cancellationToken).ConfigureAwait(false);
+                var maxEffectiveFeeRateSatPerVb = await _feeRateProvider.GetMaxEffectiveFeeRateSatPerVbAsync(
+                    storeId,
+                    storeSettings.MaxFeeRateSatPerVb,
+                    cancellationToken).ConfigureAwait(false);
                 var bootstrapPersister = new CapturingReceiverSessionPersister();
                 InitializeSession(destination, due, selectedRelay.DirectoryUrl.AbsoluteUri, selectedRelay.OhttpKeys, monitoringExpiresAt, maxEffectiveFeeRateSatPerVb, bootstrapPersister);
                 session = _receiverSessionStore.GetOrCreateSession(
@@ -239,7 +242,6 @@ public sealed class PayjoinUriSessionService
         }
         catch (UniffiException e)
         {
-            var discarded = TryDiscardUnusableSession(invoiceId);
             LogReceiverBuilderFailure(_logger, invoiceId, e);
 
             if (e is IDisposable disposableFault)
@@ -247,6 +249,7 @@ public sealed class PayjoinUriSessionService
                 disposableFault.Dispose();
             }
 
+            var discarded = TryDiscardUnusableSession(invoiceId);
             return discarded
                 ? PayjoinUriResult.Unavailable(bip21, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.ReceiverSessionBuildFailed)
                 : PayjoinUriResult.Unavailable(bip21, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.SessionMidNegotiation);

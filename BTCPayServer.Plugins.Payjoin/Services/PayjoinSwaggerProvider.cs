@@ -207,7 +207,8 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
             "additionalProperties": false,
             "required": [
               "bip21",
-              "status"
+              "status",
+              "retryable"
             ],
             "properties": {
               "bip21": {
@@ -232,7 +233,7 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
               },
               "retryable": {
                 "type": "boolean",
-                "description": "Whether requesting this invoice again could produce a different answer. False when status is Active - there is nothing left to ask for. Note that TemporarilyUnavailable does not imply true: a session can be healthy while the answer is settled for this invoice, in which case retrying cannot change it. Absent on servers older than this field; treat that as true, which was the previous behaviour."
+                "description": "Whether requesting this invoice again could produce a different answer. False when status is Active - there is nothing left to ask for. Note that TemporarilyUnavailable does not imply true: a session can be healthy while the answer is settled for this invoice, in which case retrying cannot change it."
               }
             }
           }

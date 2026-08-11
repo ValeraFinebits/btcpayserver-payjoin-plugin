@@ -15,7 +15,8 @@ public class GetBip21ResponseTests
             var serialized = JObject.Parse(JsonConvert.SerializeObject(new GetBip21Response
             {
                 Bip21 = "bitcoin:bcrt1qexample?amount=0.10000000",
-                Status = status
+                Status = status,
+                Retryable = false
             }));
 
             Assert.Equal(status.ToString(), serialized["Status"]!.Value<string>());
@@ -28,7 +29,8 @@ public class GetBip21ResponseTests
         var serialized = JObject.Parse(JsonConvert.SerializeObject(new GetBip21Response
         {
             Bip21 = "bitcoin:bcrt1qexample?amount=0.10000000",
-            Status = PayjoinAvailabilityStatus.Active
+            Status = PayjoinAvailabilityStatus.Active,
+            Retryable = false
         }));
 
         Assert.DoesNotContain(
