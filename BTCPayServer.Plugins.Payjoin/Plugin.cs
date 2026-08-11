@@ -23,6 +23,7 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddUIExtension("store-nav", "PayjoinStoreNavExtension");
         applicationBuilder.AddUIExtension("checkout-bitcoin-post-content", "PayJoinBitcoinCheckoutPostContent");
         applicationBuilder.AddUIExtension("checkout-end", "PayJoinBitcoinCheckoutEnd");
+        applicationBuilder.AddUIExtension("store-invoices-payments", "PayjoinInvoiceOutcome");
         applicationBuilder.AddSingleton<PayjoinAvailabilityService>();
         applicationBuilder.AddSingleton<PayjoinSessionUriReader>();
         applicationBuilder.AddSingleton<PayjoinBitcoinCheckoutModelExtension>();
@@ -54,6 +55,9 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinTransactionLabeler, PayjoinTransactionLabeler>();
         applicationBuilder.AddSingleton(provider => new PayjoinBridgeAttentionService(
             provider.GetRequiredService<IPayjoinAccountingBridgeService>()));
+        applicationBuilder.AddSingleton(provider => new PayjoinInvoiceOutcomeService(
+            provider.GetRequiredService<IPayjoinAccountingBridgeService>(),
+            provider.GetRequiredService<ILogger<PayjoinInvoiceOutcomeService>>()));
         applicationBuilder.AddSingleton<IPayjoinAccountingPaymentService, PayjoinAccountingPaymentService>();
         applicationBuilder.AddSingleton<IPayjoinReceiverProposalSigner, PayjoinReceiverProposalSigner>();
         applicationBuilder.AddSingleton<IPayjoinReceiverProposalFinalizer, PayjoinReceiverProposalFinalizer>();
