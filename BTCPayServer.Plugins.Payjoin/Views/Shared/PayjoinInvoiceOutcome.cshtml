@@ -1,0 +1,66 @@
+@using BTCPayServer.Client
+@using BTCPayServer.Models.InvoicingModels
+@using BTCPayServer.Plugins.Payjoin.Data
+@using BTCPayServer.Plugins.Payjoin.Services
+@using Microsoft.Extensions.DependencyInjection
+@model InvoiceDetailsModel
+@{
+    var outcomeService = Context.RequestServices.GetService<PayjoinInvoiceOutcomeService>();
+    PayjoinInvoiceOutcome? outcome = null;
+    if (outcomeService is not null)
+    {
+        outcome = await outcomeService.TryGetAsync(Model, Context.RequestAborted);
+    }
+}
+@if (outcome is not null)
+{
+    <div class="invoice-payjoin-outcome mt-3">
+        @switch (outcome.Status)
+        {
+            case PayjoinAccountingBridgeStatus.Reconciled:
+                <p class="info-note text-success mb-0">
+                    <vc:icon symbol="checkmark" />
+                    <span text-translate="true">Settled with Async Payjoin</span>
+                </p>
+                if (!string.IsNullOrEmpty(outcome.SettlementTransactionId))
+                {
+                    <div class="d-flex align-items-center gap-2 text-secondary mt-1">
+                        <span text-translate="true">Settlement transaction</span>
+                        <vc:truncate-center text="@outcome.SettlementTransactionId" classes="truncate-center-id" />
+                    </div>
+                }
+                break;
+            case PayjoinAccountingBridgeStatus.PendingFinalTransaction:
+                <p class="info-note text-secondary mb-0">
+                    <vc:icon symbol="info" />
+                    <span text-translate="true">Async Payjoin in progress</span>
+                </p>
+                break;
+            case PayjoinAccountingBridgeStatus.PendingFallback:
+                <p class="info-note text-secondary mb-0">
+                    <vc:icon symbol="info" />
+                    <span text-translate="true">Async Payjoin offered, not completed yet</span>
+                </p>
+                break;
+            case PayjoinAccountingBridgeStatus.Expired:
+                <p class="info-note text-secondary mb-0">
+                    <vc:icon symbol="info" />
+                    <span text-translate="true">Async Payjoin did not complete; the invoice was paid without it</span>
+                </p>
+                break;
+            case PayjoinAccountingBridgeStatus.Failed:
+                <p class="info-note text-warning mb-0">
+                    <vc:icon symbol="warning" />
+                    <span text-translate="true">Async Payjoin settlement needs attention</span>
+                </p>
+                <a class="d-inline-block mt-1"
+                   asp-area=""
+                   asp-controller="UIPayjoinOverview"
+                   asp-action="Index"
+                   permission="@Policies.CanViewStoreSettings"
+                   permission-resource="@outcome.StoreId"
+                   text-translate="true">Review it on the Async Payjoin page</a>
+                break;
+        }
+    </div>
+}
