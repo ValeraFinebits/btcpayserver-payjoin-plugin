@@ -65,15 +65,16 @@ public class PayjoinUriSessionServiceStatusTests
     {
         var result = await BuildAsync(CreateSettings(), enablePayjoin: false);
 
-        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.DisabledByStore, "payjoin is disabled by store settings");
+        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.DisabledByStore, PayjoinUnavailableReasons.DisabledByStoreSettings);
     }
 
     [Fact]
-    public async Task MissingStoreSettingsMapToTemporarilyUnavailable()
+    public async Task UnreadableStoreSettingsAreTemporaryButNotRetryable()
     {
         var result = await BuildAsync(storeSettings: null);
 
-        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.TemporarilyUnavailable, "store settings are unavailable");
+        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.StoreSettingsUnavailable);
+        Assert.False(result.Retryable);
     }
 
     [Fact]
@@ -81,7 +82,7 @@ public class PayjoinUriSessionServiceStatusTests
     {
         var result = await BuildAsync(CreateSettings(directoryUrls: []));
 
-        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, "directory URLs are missing");
+        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, PayjoinUnavailableReasons.DirectoryUrlsMissing);
     }
 
     [Fact]
@@ -89,7 +90,7 @@ public class PayjoinUriSessionServiceStatusTests
     {
         var result = await BuildAsync(CreateSettings(ohttpRelayUrls: []));
 
-        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, "OHTTP relay URLs are missing");
+        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.MerchantRequirementsUnmet, PayjoinUnavailableReasons.OhttpRelayUrlsMissing);
     }
 
     [Theory]
@@ -99,7 +100,7 @@ public class PayjoinUriSessionServiceStatusTests
     {
         var result = await BuildAsync(CreateSettings(), due: due);
 
-        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.InvoiceNotPayable, "invoice amount is not positive");
+        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.InvoiceNotPayable, PayjoinUnavailableReasons.InvoiceAmountNotPositive);
     }
 
     private static BTCPayNetworkProvider CreateNetworkProvider()

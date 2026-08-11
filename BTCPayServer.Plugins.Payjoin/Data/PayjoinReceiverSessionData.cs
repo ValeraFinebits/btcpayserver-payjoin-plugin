@@ -30,6 +30,10 @@ internal class PayjoinReceiverSessionData
 
     public long? ContributedInputOutputIndex { get; set; }
 
+    public string? PayjoinUri { get; set; }
+
+    public int EventLogRevision { get; set; }
+
     public ICollection<PayjoinReceiverSessionEventData> Events { get; } = [];
 
     public ICollection<PayjoinReceiverInputReservationData> InputReservations { get; } = [];
