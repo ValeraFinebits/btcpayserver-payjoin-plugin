@@ -36,6 +36,9 @@ public class PluginRegistrationTests
         Assert.Contains(uiExtensions, extension =>
             extension.Location == "checkout-end" &&
             extension.Partial == "PayJoinBitcoinCheckoutEnd");
+        Assert.Contains(uiExtensions, extension =>
+            extension.Location == "store-invoices-payments" &&
+            extension.Partial == "PayjoinInvoiceOutcome");
         Assert.Contains(services, descriptor =>
             descriptor.ServiceType == typeof(ISwaggerProvider) &&
             descriptor.ImplementationType == typeof(PayjoinSwaggerProvider));
@@ -55,6 +58,9 @@ public class PluginRegistrationTests
             descriptor.ServiceType == typeof(IPayjoinAttentionRecordSeeder) &&
             descriptor.ImplementationType == typeof(PayjoinAttentionRecordSeeder) &&
             descriptor.Lifetime == ServiceLifetime.Singleton);
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(PayjoinInvoiceOutcomeService) &&
+            descriptor.ImplementationFactory is not null);
     }
 
     [Fact]
