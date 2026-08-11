@@ -2,7 +2,6 @@ using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Data;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.ComponentModel.DataAnnotations;
 using Xunit;
@@ -290,8 +289,34 @@ public class PayjoinStoreSettingsTests
 
         var settings = PayjoinStoreSettingsRepository.ReadSettings(blob);
 
-        Assert.Equal([new Uri("https://example.com/directory")], settings.DirectoryUrls);
+        Assert.NotNull(settings);
+        Assert.Equal([new Uri("https://example.com/directory")], settings!.DirectoryUrls);
         Assert.Equal([new Uri("https://example.com/relay")], settings.OhttpRelayUrls);
+    }
+
+    [Fact]
+    public void ReadSettingsReturnsDefaultsWhenTheStoreNeverConfiguredPayjoin()
+    {
+        Assert.NotNull(PayjoinStoreSettingsRepository.ReadSettings(new StoreBlob()));
+
+        var withOtherKeys = new StoreBlob { AdditionalData = new JObject { ["something.else"] = 1 } };
+        Assert.NotNull(PayjoinStoreSettingsRepository.ReadSettings(withOtherKeys));
+
+        var withNull = new StoreBlob { AdditionalData = new JObject { ["payjoin.settings"] = JValue.CreateNull() } };
+        var fromNull = PayjoinStoreSettingsRepository.ReadSettings(withNull);
+        Assert.NotNull(fromNull);
+        Assert.True(fromNull!.PayjoinV2Enabled);
+    }
+
+    [Fact]
+    public void ReadSettingsReturnsNullWhenTheSavedSettingsCannotBeRead()
+    {
+        var blob = new StoreBlob
+        {
+            AdditionalData = new JObject { ["payjoin.settings"] = new JArray("not", "an", "object") }
+        };
+
+        Assert.Null(PayjoinStoreSettingsRepository.ReadSettings(blob));
     }
 
     [Fact]

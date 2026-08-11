@@ -111,6 +111,26 @@ public class UIPayjoinOverviewController : Controller
 
         var settings = await _storeSettingsRepository.GetAsync(currentStore.Id).ConfigureAwait(false);
         var network = _networkProvider.GetNetwork<BTCPayNetwork>(BitcoinCode);
+
+        if (settings is null)
+        {
+            var v1WithoutSettings = network is not null && IsPayjoinV1Effective(currentStore, network);
+            return new CurrentStorePayjoinStatusViewModel(
+                currentStore.Id,
+                currentStore.StoreName,
+                [],
+                [],
+                false,
+                false,
+                v1WithoutSettings,
+                ResolveDefaultCheckoutMode(false, v1WithoutSettings),
+                ResolveFallbackTarget(false, v1WithoutSettings),
+                new PayjoinCurrentStoreStatus(
+                    "danger",
+                    StringLocalizer["Unavailable"].Value,
+                    StringLocalizer["The saved Async Payjoin settings for this store could not be read, so payjoin is switched off for its checkouts. Save the settings on this page to replace them."].Value));
+        }
+
         var directoryUrls = settings.GetEffectiveDirectoryUrls();
         var ohttpRelayUrls = settings.GetEffectiveOhttpRelayUrls();
 

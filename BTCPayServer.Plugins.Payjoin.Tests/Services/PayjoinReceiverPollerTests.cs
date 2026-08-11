@@ -17,7 +17,7 @@ public class PayjoinReceiverPollerTests
     {
         // Arrange
         var logger = new TestLogger<PayjoinReceiverPoller>();
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var sessionProcessor = new ThrowingOnceSessionProcessor();
         using var poller = new PayjoinReceiverPoller(
             testContext.CreateStore(),
@@ -50,7 +50,7 @@ public class PayjoinReceiverPollerTests
     public async Task ProcessTickOnceAsyncCleansExpiredReservationsBeforeProcessingSessions()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-expired-cleanup");
         var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 1);
@@ -77,7 +77,7 @@ public class PayjoinReceiverPollerTests
     public async Task ProcessTickOnceAsyncRunsAccountingReconciliationAfterSessionProcessing()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var sessionProcessor = new RecordingSessionProcessor();
         var accountingBridgeService = new RecordingAccountingBridgeService();
         var accountingPaymentService = new RecordingAccountingPaymentService();
@@ -102,7 +102,7 @@ public class PayjoinReceiverPollerTests
     public async Task ProcessTickOnceAsyncLogsPendingBridgeWhenReconciliationProducesNoPaymentUpdate()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var logger = new TestLogger<PayjoinReceiverPoller>();
         var sessionProcessor = new RecordingSessionProcessor();
         var accountingBridgeService = new RecordingAccountingBridgeService
@@ -151,7 +151,7 @@ public class PayjoinReceiverPollerTests
     public async Task ProcessTickOnceAsyncKeepsBridgePendingWhenReconciledPaymentIsNotSettled()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var logger = new TestLogger<PayjoinReceiverPoller>();
         var sessionProcessor = new RecordingSessionProcessor();
         var accountingBridgeService = new RecordingAccountingBridgeService
@@ -179,7 +179,7 @@ public class PayjoinReceiverPollerTests
     public async Task ProcessTickOnceAsyncMarksBridgeReconciledWhenReconciledPaymentIsSettled()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var sessionProcessor = new RecordingSessionProcessor();
         var accountingBridgeService = new RecordingAccountingBridgeService
         {
@@ -206,7 +206,7 @@ public class PayjoinReceiverPollerTests
     public async Task ProcessTickOnceAsyncMarksBridgeFailedWhenReconciliationDataIsInvalid()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var logger = new TestLogger<PayjoinReceiverPoller>();
         var sessionProcessor = new RecordingSessionProcessor();
         var accountingBridgeService = new RecordingAccountingBridgeService
@@ -296,8 +296,8 @@ public class PayjoinReceiverPollerTests
         public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
         public Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken) => Task.FromResult(new PayjoinAccountingBridgeAttentionResult([], 0));
-        public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
     }
 
     private sealed class NoOpAccountingPaymentService : IPayjoinAccountingPaymentService
@@ -336,13 +336,13 @@ public class PayjoinReceiverPollerTests
             LastMarkedFailedMessage = failureMessage;
             return Task.FromResult<PayjoinAccountingBridgeState?>(null);
         }
-        public Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken)
         {
             ExpirePendingInvocationCount++;
             return Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
         }
         public Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken) => Task.FromResult(new PayjoinAccountingBridgeAttentionResult([], 0));
+        public Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
     }
 
@@ -422,52 +422,12 @@ public class PayjoinReceiverPollerTests
 
     private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
-        return store.CreateSession(
+        return store.GetOrCreateSession(
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
             DateTimeOffset.UtcNow.AddMinutes(15),
             ["bootstrap-event"]);
-    }
-
-    private sealed class TestContext : IDisposable
-    {
-        private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
-        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
-
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
-
-        public void Dispose()
-        {
-            using var db = _dbContextFactory.CreateContext();
-            db.Database.EnsureDeleted();
-        }
-    }
-
-    private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
-    {
-        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
-        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
-
-        public TestPayjoinPluginDbContextFactory()
-            : base(Options.Create(new global::BTCPayServer.Abstractions.Models.DatabaseOptions
-            {
-                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
-            }))
-        {
-            var databaseName = $"payjoin-poller-tests-{Guid.NewGuid():N}";
-            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
-                .Options;
-
-            using var db = CreateContext();
-            db.Database.EnsureCreated();
-        }
-
-        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
-        {
-            return new PayjoinPluginDbContext(_dbContextOptions);
-        }
     }
 
     private sealed class TestLogger<T> : ILogger<T>

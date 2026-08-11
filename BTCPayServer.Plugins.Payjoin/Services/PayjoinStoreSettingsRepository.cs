@@ -1,7 +1,9 @@
 using BTCPayServer.Data;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Services.Stores;
+using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -12,19 +14,27 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
 {
     private const string Key = "payjoin.settings";
 
-    private readonly StoreRepository _storeRepository;
+    private static readonly Action<ILogger, string, Exception?> LogUnreadableSettings =
+        LoggerMessage.Define<string>(
+            LogLevel.Warning,
+            new EventId(1, nameof(LogUnreadableSettings)),
+            "Payjoin settings for store {StoreId} could not be read and were skipped; re-save them on the store's payjoin page to repair them.");
 
-    public PayjoinStoreSettingsRepository(StoreRepository storeRepository)
+    private readonly StoreRepository _storeRepository;
+    private readonly ILogger<PayjoinStoreSettingsRepository> _logger;
+
+    public PayjoinStoreSettingsRepository(StoreRepository storeRepository, ILogger<PayjoinStoreSettingsRepository> logger)
     {
         _storeRepository = storeRepository;
+        _logger = logger;
     }
 
-    public async Task<PayjoinStoreSettings> GetAsync(string storeId)
+    public async Task<PayjoinStoreSettings?> GetAsync(string storeId)
     {
         var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false);
         if (store is null)
         {
-            return new PayjoinStoreSettings();
+            return null;
         }
 
         return ReadSettings(store.GetStoreBlob());
@@ -36,7 +46,14 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
         var results = new List<(string StoreId, PayjoinStoreSettings Settings)>();
         foreach (var store in stores)
         {
-            results.Add((store.Id, ReadSettings(store.GetStoreBlob())));
+            var settings = ReadSettings(store.GetStoreBlob());
+            if (settings is null)
+            {
+                LogUnreadableSettings(_logger, store.Id, null);
+                continue;
+            }
+
+            results.Add((store.Id, settings));
         }
 
         return results;
@@ -65,28 +82,36 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
         }
 
         var blob = store.GetStoreBlob();
-        blob.AdditionalData ??= new Newtonsoft.Json.Linq.JObject();
-        blob.AdditionalData[Key] = Newtonsoft.Json.Linq.JToken.FromObject(normalizedSettings);
+        blob.AdditionalData ??= new JObject();
+        blob.AdditionalData[Key] = JToken.FromObject(normalizedSettings);
         store.SetStoreBlob(blob);
         await _storeRepository.UpdateStore(store).ConfigureAwait(false);
     }
 
-    internal static PayjoinStoreSettings ReadSettings(StoreBlob blob)
+    internal static PayjoinStoreSettings? ReadSettings(StoreBlob blob)
     {
-        if (blob.AdditionalData is null || !blob.AdditionalData.TryGetValue(Key, out var token) || token is null)
+        if (blob.AdditionalData is null ||
+            !blob.AdditionalData.TryGetValue(Key, out var token) ||
+            token is null ||
+            token.Type == JTokenType.Null)
         {
             return new PayjoinStoreSettings();
         }
 
         try
         {
-            var settings = token.ToObject<PayjoinStoreSettings>() ?? new PayjoinStoreSettings();
+            var settings = token.ToObject<PayjoinStoreSettings>();
+            if (settings is null)
+            {
+                return new PayjoinStoreSettings();
+            }
+
             settings.NormalizeUrlSettings();
             return settings;
         }
         catch (JsonException)
         {
-            return new PayjoinStoreSettings();
+            return null;
         }
     }
 }
