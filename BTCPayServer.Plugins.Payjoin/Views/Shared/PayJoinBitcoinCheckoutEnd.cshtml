@@ -36,41 +36,23 @@
     const payjoinRequestBaseDelayMs = 2000;
     const payjoinRequestMaxDelayMs = 30000;
     const maxPayjoinRequestAttempts = 130;
-    const payjoinRequestGiveUpMs = 300000;
-    // Separate from the attempt ceiling, since each round restarts the attempt budget.
-    const maxPayjoinRequestGiveUpCycles = 12;
     let selectedPaymentMode = null;
     let watchedVm = null;
     let mountPollStartedAt = 0;
 
+    // A checkout document is bound to one invoice; navigating to another creates a new JS context.
     const retryState = {
-        invoiceId: null,
         attempts: 0,
-        // An invoice id, not a bool: a stale request must not block or clear another invoice's marker.
-        inFlightForInvoiceId: null,
+        inFlight: false,
         nextAttemptAt: 0,
         timer: null,
-        giveUpUntil: 0,
-        giveUpCycles: 0,
         stopped: false,
-        pausedForInvoiceId: null,
+        paused: false,
         clearTimer: function () {
             if (this.timer !== null) {
                 window.clearTimeout(this.timer);
                 this.timer = null;
             }
-        },
-        // inFlightForInvoiceId is deliberately NOT reset: it belongs to the request, not the invoice.
-        resetForInvoice: function (invoiceId) {
-            this.invoiceId = invoiceId;
-            this.attempts = 0;
-            this.nextAttemptAt = 0;
-            this.giveUpUntil = 0;
-            this.giveUpCycles = 0;
-            this.stopped = false;
-            this.pausedForInvoiceId = null;
-            this.clearTimer();
-            selectedPaymentMode = null;
         }
     };
 
@@ -93,24 +75,13 @@
             model.payjoinPaymentUrl !== model.payjoinPlainBitcoinUrl;
     }
 
-    function isCurrentInvoice(invoiceId) {
-        const currentModel = getModel();
-        return !!currentModel && currentModel.invoiceId === invoiceId;
-    }
-
     function payjoinRequestDelayMs() {
         return Math.min(
             payjoinRequestBaseDelayMs * Math.pow(2, Math.max(0, retryState.attempts - 1)),
             payjoinRequestMaxDelayMs);
     }
 
-    // A missing model (Vue mid-mount) is NOT a different invoice - treating it so would kill the chain.
-    function hasMovedToAnotherInvoice(invoiceId) {
-        const currentModel = getModel();
-        return !!currentModel && currentModel.invoiceId !== invoiceId;
-    }
-
-    function schedulePayjoinRequestRetry(invoiceId) {
+    function schedulePayjoinRequestRetry() {
         retryState.clearTimer();
 
         if (retryState.stopped) {
@@ -118,7 +89,7 @@
         }
 
         if (document.visibilityState === 'hidden') {
-            retryState.pausedForInvoiceId = invoiceId;
+            retryState.paused = true;
             return;
         }
 
@@ -128,33 +99,25 @@
             return;
         }
 
-        // This timer also waits out the give-up window; nothing else revisits the chain on a schedule.
-        const delay = Math.max(payjoinRequestDelayMs(), retryState.giveUpUntil - Date.now());
+        const delay = payjoinRequestDelayMs();
         retryState.timer = window.setTimeout(function () {
             retryState.timer = null;
             const currentModel = getModel();
-            if (currentModel && currentModel.invoiceId === invoiceId) {
+            if (currentModel) {
                 requestPayjoinPaymentUrl(currentModel);
                 return;
             }
 
-            if (!hasMovedToAnotherInvoice(invoiceId) && document.getElementById('Checkout')) {
-                schedulePayjoinRequestRetry(invoiceId);
+            // A missing model can mean Vue is mid-mount; keep the chain alive while Checkout exists.
+            if (document.getElementById('Checkout')) {
+                schedulePayjoinRequestRetry();
             }
         }, delay);
     }
 
     // Only bootstraps the first session; the merged URL is built server-side into the checkout model.
     function requestPayjoinPaymentUrl(model) {
-        if (model && retryState.invoiceId !== model.invoiceId) {
-            retryState.resetForInvoice(model.invoiceId);
-        }
-
         if (retryState.stopped) {
-            return;
-        }
-
-        if (Date.now() < retryState.giveUpUntil) {
             return;
         }
 
@@ -165,34 +128,20 @@
             !model.payjoinPlainBitcoinUrl ||
             model.payjoinPaymentUrl ||
             model.payjoinV2Enabled === false ||
-            // In flight FOR THIS invoice; the backoff gates every caller, not only the retry timer.
-            retryState.inFlightForInvoiceId === model.invoiceId ||
+            // The backoff and in-flight marker gate every caller, not only the retry timer.
+            retryState.inFlight ||
             Date.now() < retryState.nextAttemptAt) {
             return;
         }
 
         if (document.visibilityState === 'hidden') {
-            retryState.pausedForInvoiceId = model.invoiceId;
+            retryState.paused = true;
             return;
         }
 
-        // A give-up round is spent here; attempts is deliberately NOT reset, or the ceiling never triggers.
-        if (retryState.giveUpUntil !== 0) {
-            retryState.giveUpUntil = 0;
-            retryState.nextAttemptAt = 0;
-            retryState.giveUpCycles++;
-            if (retryState.giveUpCycles >= maxPayjoinRequestGiveUpCycles) {
-                console.warn('PayJoin stopped asking for a payment URL after ' + retryState.giveUpCycles +
-                    ' rounds of a "do not retry" answer; reload the page to try again');
-                retryState.stopped = true;
-                return;
-            }
-        }
-
-        const requestedInvoiceId = model.invoiceId;
-        retryState.inFlightForInvoiceId = requestedInvoiceId;
+        retryState.inFlight = true;
         retryState.attempts++;
-        retryState.pausedForInvoiceId = null;
+        retryState.paused = false;
         fetch(model.payjoinPaymentUrlEndpoint, {
             method: 'GET',
             credentials: 'same-origin',
@@ -206,29 +155,22 @@
                 // 4xx is terminal, 5xx retryable; 404 (invoice not ready yet) and 429 (transient) excluded.
                 const terminalRefusal = response.status >= 400 && response.status < 500 &&
                     response.status !== 404 && response.status !== 429;
-                if (terminalRefusal && isCurrentInvoice(requestedInvoiceId)) {
+                if (terminalRefusal) {
                     console.warn('PayJoin payment URL endpoint refused the request with ' + response.status + '; not retrying');
-                    retryState.giveUpUntil = Date.now() + payjoinRequestGiveUpMs;
+                    retryState.stopped = true;
                 }
 
                 return null;
             })
-            .then(payload => refreshCheckoutModel(model, payload))
+            .then(payload => refreshCheckoutModel(payload))
             .catch(error => console.error('PayJoin payment URL fetch failed', error))
             .finally(function () {
-                // Scoped to our own invoice so a newer invoice's in-flight marker survives.
-                if (retryState.inFlightForInvoiceId === requestedInvoiceId) {
-                    retryState.inFlightForInvoiceId = null;
-                }
-                retryState.nextAttemptAt = Date.now() + payjoinRequestDelayMs();
-
-                if (hasMovedToAnotherInvoice(requestedInvoiceId)) {
-                    return;
-                }
+                retryState.inFlight = false;
 
                 // Rescheduled even on Active: the merged URL may not have reached the model yet.
                 if (!retryState.stopped) {
-                    schedulePayjoinRequestRetry(requestedInvoiceId);
+                    retryState.nextAttemptAt = Date.now() + payjoinRequestDelayMs();
+                    schedulePayjoinRequestRetry();
                 }
             });
     }
@@ -245,7 +187,7 @@
         return value;
     }
 
-    function refreshCheckoutModel(model, payload) {
+    function refreshCheckoutModel(payload) {
         if (!payload) {
             return;
         }
@@ -262,17 +204,17 @@
         }
 
         if (availabilityStatus !== 'Active') {
-            // Missing field = older server (keep retrying); explicit false ends the chain.
+            // Only an explicit false ends the chain; invalid responses remain subject to the attempt ceiling.
             const retryable = readField(payload, 'retryable', false);
-            if (retryable === false && isCurrentInvoice(model.invoiceId)) {
-                retryState.giveUpUntil = Date.now() + payjoinRequestGiveUpMs;
+            if (retryable === false) {
+                retryState.stopped = true;
             }
 
             return;
         }
 
         const vm = getCheckoutVm();
-        if (!vm || !vm.srvModel || vm.srvModel.invoiceId !== model.invoiceId) {
+        if (!vm || !vm.srvModel) {
             return;
         }
 
@@ -562,15 +504,12 @@
 
         sync();
 
-        if (retryState.pausedForInvoiceId === null) {
+        if (!retryState.paused) {
             return;
         }
 
-        const pausedInvoiceId = retryState.pausedForInvoiceId;
-        retryState.pausedForInvoiceId = null;
-        if (isCurrentInvoice(pausedInvoiceId)) {
-            schedulePayjoinRequestRetry(pausedInvoiceId);
-        }
+        retryState.paused = false;
+        schedulePayjoinRequestRetry();
     });
 
     pollForCheckout();

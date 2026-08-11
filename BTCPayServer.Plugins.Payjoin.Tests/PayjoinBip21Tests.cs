@@ -107,41 +107,9 @@ public class PayjoinBip21Tests
     }
 
     [Fact]
-    public void ExtractQueryParameterReturnsTheWholeMatchingSegment()
-    {
-        const string url = "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj";
-
-        Assert.Equal("pj=https%3A%2F%2Fexample.com%2Fpj", PayjoinBip21.ExtractQueryParameter(url, "pj"));
-        Assert.Equal("pjos=0", PayjoinBip21.ExtractQueryParameter(url, "pjos"));
-        Assert.Null(PayjoinBip21.ExtractQueryParameter(url, "lightning"));
-    }
-
-    [Fact]
-    public void ExtractQueryParameterDoesNotMatchOnPrefix()
-    {
-        const string url = "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0";
-
-        Assert.Null(PayjoinBip21.ExtractQueryParameter(url, "pj"));
-    }
-
-    [Fact]
-    public void ExtractQueryParameterReturnsNullWithoutAQuery()
-    {
-        Assert.Null(PayjoinBip21.ExtractQueryParameter("bitcoin:bcrt1qexample", "pj"));
-    }
-
-    [Fact]
-    public void ExtractQueryParameterIgnoresKeyCasing()
-    {
-        const string url = "bitcoin:BCRT1QEXAMPLE?AMOUNT=0.10000000&PJ=HTTPS%3A%2F%2FEXAMPLE.COM%2FPJ";
-
-        Assert.Equal("PJ=HTTPS%3A%2F%2FEXAMPLE.COM%2FPJ", PayjoinBip21.ExtractQueryParameter(url, "pj"));
-    }
-
-    [Fact]
     public void ReplacePayjoinQueryParametersDropsBothPayjoinKeys()
     {
-        const string url = "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj&lightning=lnbcrt123";
+        const string url = "bitcoin:bcrt1qexample?amount=0.10000000&PJOS=0&PJ=https%3A%2F%2Fexample.com%2Fpj&lightning=lnbcrt123";
 
         var replaced = PayjoinBip21.ReplacePayjoinQueryParameters(url, []);
 

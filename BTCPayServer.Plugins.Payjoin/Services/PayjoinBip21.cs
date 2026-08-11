@@ -2,6 +2,7 @@ using BTCPayServer.BIP78.Sender;
 using Payjoin;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using PayjoinUri = Payjoin.Uri;
 
@@ -34,26 +35,25 @@ internal static class PayjoinBip21
         }
 
         var merged = MergePayjoinIntoPaymentUrl(invoiceBip21, payjoinUri);
-        bool mergedIsServable;
         try
         {
-            mergedIsServable = HasSupportedPayjoinEndpoint(merged);
+            if (HasSupportedPayjoinEndpoint(merged))
+            {
+                mergedPaymentUrl = merged;
+                return PayjoinReplayedUriVerdict.Servable;
+            }
+
+            return HasSupportedPayjoinEndpoint(payjoinUri)
+                ? PayjoinReplayedUriVerdict.MergeLostEndpoint
+                : PayjoinReplayedUriVerdict.NoPayjoinEndpoint;
         }
         catch (UniffiException e)
         {
             mergeFault = e;
             return PayjoinReplayedUriVerdict.MergeLostEndpoint;
         }
-
         if (mergedIsServable)
         {
-            mergedPaymentUrl = merged;
-            return PayjoinReplayedUriVerdict.Servable;
-        }
-
-        return HasSupportedPayjoinEndpoint(payjoinUri)
-            ? PayjoinReplayedUriVerdict.MergeLostEndpoint
-            : PayjoinReplayedUriVerdict.NoPayjoinEndpoint;
     }
 
     internal const string OutputSubstitutionParameterKey = "pjos";
@@ -108,14 +108,15 @@ internal static class PayjoinBip21
             return baseUrl;
         }
 
-        var endpointParameter = ExtractQueryParameter(payjoinUrl, PayjoinClient.BIP21EndpointKey);
-        if (endpointParameter is null)
+        if (!TryExtractPayjoinQueryParameters(
+                payjoinUrl,
+                out var endpointParameter,
+                out var outputSubstitutionParameter))
         {
             return ReplacePayjoinQueryParameters(baseUrl, []);
         }
 
         var payjoinParameters = new List<string>();
-        var outputSubstitutionParameter = ExtractQueryParameter(payjoinUrl, OutputSubstitutionParameterKey);
         if (outputSubstitutionParameter is not null)
         {
             payjoinParameters.Add(outputSubstitutionParameter);
@@ -125,23 +126,44 @@ internal static class PayjoinBip21
         return ReplacePayjoinQueryParameters(baseUrl, payjoinParameters);
     }
 
-    internal static string? ExtractQueryParameter(string url, string key)
+    // The payjoin URI parser rejects duplicate or valueless pj/pjos parameters. Detect them before
+    // replacing the base query so merging cannot turn an invalid source URI into a servable one.
+    private static bool TryExtractPayjoinQueryParameters(
+        string url,
+        [NotNullWhen(true)] out string? endpointParameter,
+        out string? outputSubstitutionParameter)
     {
+        endpointParameter = null;
+        outputSubstitutionParameter = null;
         var query = GetQuery(url);
         if (string.IsNullOrEmpty(query))
         {
-            return null;
+            return false;
         }
 
         foreach (var segment in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
-            if (HasQueryKey(segment, key))
+            if (HasQueryKey(segment, PayjoinClient.BIP21EndpointKey))
             {
-                return segment;
+                if (endpointParameter is not null || !HasNonEmptyQueryValue(segment))
+                {
+                    return false;
+                }
+
+                endpointParameter = segment;
+            }
+            else if (HasQueryKey(segment, OutputSubstitutionParameterKey))
+            {
+                if (outputSubstitutionParameter is not null || !HasNonEmptyQueryValue(segment))
+                {
+                    return false;
+                }
+
+                outputSubstitutionParameter = segment;
             }
         }
 
-        return null;
+        return endpointParameter is not null;
     }
 
     internal static string ReplacePayjoinQueryParameters(string url, IReadOnlyList<string> rawSegments)
@@ -187,6 +209,12 @@ internal static class PayjoinBip21
         var keyValueSeparatorIndex = segment.IndexOf('=', StringComparison.Ordinal);
         var segmentKey = keyValueSeparatorIndex >= 0 ? segment[..keyValueSeparatorIndex] : segment;
         return string.Equals(segmentKey, key, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasNonEmptyQueryValue(string segment)
+    {
+        var keyValueSeparatorIndex = segment.IndexOf('=', StringComparison.Ordinal);
+        return keyValueSeparatorIndex >= 0 && keyValueSeparatorIndex < segment.Length - 1;
     }
 
     private static bool HasAnyQueryKey(string segment, IEnumerable<string> keys)

@@ -48,7 +48,8 @@ public class UIPayJoinControllerTests
         {
             Bip21 = "bitcoin:bcrt1qexample?amount=0.10000000",
             Status = status,
-            UnavailableReason = "no confirmed receiver inputs are available"
+            UnavailableReason = "no confirmed receiver inputs are available",
+            Retryable = false
         });
 
         Assert.Equal(PayjoinCheckoutAvailabilityStatus.Unavailable, response.Status);
@@ -81,7 +82,8 @@ public class UIPayJoinControllerTests
         var response = await GetCheckoutResponseAsync(new GetBip21Response
         {
             Bip21 = bip21,
-            Status = PayjoinAvailabilityStatus.Active
+            Status = PayjoinAvailabilityStatus.Active,
+            Retryable = false
         });
 
         Assert.Equal(PayjoinCheckoutAvailabilityStatus.Active, response.Status);
@@ -139,7 +141,8 @@ public class UIPayJoinControllerTests
             .Returns(Task.FromResult<GetBip21Response?>(new GetBip21Response
             {
                 Bip21 = "not-a-valid-uri",
-                Status = PayjoinAvailabilityStatus.Active
+                Status = PayjoinAvailabilityStatus.Active,
+                Retryable = false
             }));
         using var controller = new UIPayJoinController(null!, null!, null!, null!, null!, null!, paymentUrlService, null!);
 
