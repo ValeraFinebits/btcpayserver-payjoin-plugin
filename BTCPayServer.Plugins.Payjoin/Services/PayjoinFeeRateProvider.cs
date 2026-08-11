@@ -61,8 +61,9 @@ internal sealed class PayjoinFeeRateProvider : IPayjoinFeeRateProvider
     public async Task<ulong> GetMaxEffectiveFeeRateSatPerVbAsync(string storeId, CancellationToken cancellationToken)
     {
         var settings = await _storeSettingsRepository.GetAsync(storeId).ConfigureAwait(false);
+        var storeOverrideSatPerVb = settings?.MaxFeeRateSatPerVb;
         decimal? estimatedSatPerVb = null;
-        if (settings.MaxFeeRateSatPerVb is null or <= 0)
+        if (storeOverrideSatPerVb is null or <= 0)
         {
             try
             {
@@ -80,7 +81,7 @@ internal sealed class PayjoinFeeRateProvider : IPayjoinFeeRateProvider
             }
         }
 
-        return ResolveMaxFeeRate(settings.MaxFeeRateSatPerVb, estimatedSatPerVb);
+        return ResolveMaxFeeRate(storeOverrideSatPerVb, estimatedSatPerVb);
     }
 
     internal static ulong ResolveMaxFeeRate(long? storeOverrideSatPerVb, decimal? estimatedSatPerVb)
