@@ -348,6 +348,77 @@ public class PayjoinReceiverSessionStoreRelationalTests
     }
 
     [Fact]
+    public void InputReservedWhileDiscardIsSavingStillStopsTheDiscard()
+    {
+        using var testContext = new RelationalPluginTestContext();
+        var logger = new CapturingLogger<PayjoinReceiverSessionStore>();
+        var store = testContext.CreateStore(logger);
+        var session = CreateSession(store, "invoice-contributed-during-discard");
+        var outPoint = new OutPoint(uint256.Parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 3);
+
+        testContext.BeforeNextSaveChanges = () =>
+            Assert.True(testContext.CreateStore().TryReserveContributedInput(
+                session.StoreId,
+                session.InvoiceId,
+                outPoint,
+                DateTimeOffset.UtcNow.AddMinutes(10)));
+
+        Assert.False(store.TryRemoveSessionUnlessNegotiating(session.InvoiceId));
+        Assert.True(store.TryGetSession(session.InvoiceId, out var reloaded));
+        Assert.True(reloaded!.TryGetContributedInput(out var contributedInput));
+        Assert.Equal(outPoint, contributedInput);
+        Assert.Contains(ConcurrencyRetryEventId, logger.Entries);
+    }
+
+    [Fact]
+    public void UnrelatedConcurrentRevisionChangeIsRetriedAndRemoved()
+    {
+        using var testContext = new RelationalPluginTestContext();
+        var logger = new CapturingLogger<PayjoinReceiverSessionStore>();
+        var store = testContext.CreateStore(logger);
+        var session = CreateSession(store, "invoice-revision-changed-during-discard");
+
+        testContext.BeforeNextSaveChanges = () =>
+        {
+            using var concurrentContext = testContext.CreateDbContext();
+            var concurrentRow = concurrentContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
+            concurrentRow.EventLogRevision = checked(concurrentRow.EventLogRevision + 1);
+            concurrentContext.SaveChanges();
+        };
+
+        Assert.True(store.TryRemoveSessionUnlessNegotiating(session.InvoiceId));
+        Assert.False(store.TryGetSession(session.InvoiceId, out _));
+        Assert.Contains(ConcurrencyRetryEventId, logger.Entries);
+    }
+
+    [Fact]
+    public void DiscardThrowsRatherThanGuessingWhenConcurrencyRetriesAreExhausted()
+    {
+        using var testContext = new RelationalPluginTestContext();
+        var logger = new CapturingLogger<PayjoinReceiverSessionStore>();
+        var store = testContext.CreateStore(logger);
+        var session = CreateSession(store, "invoice-revision-always-changing");
+
+        void BumpRevisionConcurrently()
+        {
+            using (var concurrentContext = testContext.CreateDbContext())
+            {
+                var concurrentRow = concurrentContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
+                concurrentRow.EventLogRevision = checked(concurrentRow.EventLogRevision + 1);
+                concurrentContext.SaveChanges();
+            }
+
+            testContext.BeforeNextSaveChanges = BumpRevisionConcurrently;
+        }
+
+        testContext.BeforeNextSaveChanges = BumpRevisionConcurrently;
+
+        Assert.Throws<DbUpdateConcurrencyException>(() => store.TryRemoveSessionUnlessNegotiating(session.InvoiceId));
+        Assert.Contains(ConcurrencyExhaustedEventId, logger.Entries);
+        Assert.True(testContext.CreateStore().TryGetSession(session.InvoiceId, out _));
+    }
+
+    [Fact]
     public void SessionWithAnUnparseableRecordedInputSurvivesTheDiscard()
     {
         using var testContext = new RelationalPluginTestContext();
