@@ -2,6 +2,7 @@ using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using System.Diagnostics.CodeAnalysis;
@@ -20,6 +21,9 @@ internal sealed class RelationalPluginTestContext : IDisposable
     public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
     public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory);
+
+    public PayjoinReceiverSessionStore CreateStore(ILogger<PayjoinReceiverSessionStore> logger) =>
+        new(_dbContextFactory, _uniqueConstraintViolationDetector, logger);
 
     public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
 
@@ -42,6 +46,8 @@ internal sealed class RelationalPluginTestContext : IDisposable
         get => _dbContextFactory.BeforeNextSaveChanges;
         set => _dbContextFactory.BeforeNextSaveChanges = value;
     }
+
+    public void BreakDatabase() => _dbContextFactory.Dispose();
 
     public void Dispose()
     {

@@ -1,29 +1,46 @@
 using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Payjoin;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinReceiverSessionStore
 {
+    private static readonly Action<ILogger, string, int, Exception?> LogConcurrencyRetry =
+        LoggerMessage.Define<string, int>(
+            LogLevel.Information,
+            new EventId(1, nameof(LogConcurrencyRetry)),
+            "Payjoin session write {Operation} lost a concurrency race on attempt {Attempt}; re-reading and retrying.");
+    private static readonly Action<ILogger, string, int, Exception?> LogConcurrencyRetriesExhausted =
+        LoggerMessage.Define<string, int>(
+            LogLevel.Warning,
+            new EventId(2, nameof(LogConcurrencyRetriesExhausted)),
+            "Payjoin session write {Operation} still lost a concurrency race after {Attempt} attempts; giving up.");
+
     private readonly PayjoinPluginDbContextFactory _pluginDbContextFactory;
     private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
+    private readonly ILogger<PayjoinReceiverSessionStore>? _logger;
 
     internal PayjoinReceiverSessionStore(
         PayjoinPluginDbContextFactory pluginDbContextFactory,
-        IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector)
+        IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector,
+        ILogger<PayjoinReceiverSessionStore>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(pluginDbContextFactory);
         ArgumentNullException.ThrowIfNull(uniqueConstraintViolationDetector);
         _pluginDbContextFactory = pluginDbContextFactory;
         _uniqueConstraintViolationDetector = uniqueConstraintViolationDetector;
+        _logger = logger;
     }
 
-    internal PayjoinReceiverSessionState CreateSession(
+    internal PayjoinReceiverSessionState GetOrCreateSession(
         string invoiceId,
         string receiverAddress,
         string storeId,
@@ -76,10 +93,71 @@ public sealed class PayjoinReceiverSessionStore
         }
     }
 
+    internal void StorePayjoinUri(string invoiceId, string receiverAddress, string payjoinUri)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(payjoinUri);
+
+        WriteWithConcurrencyRetry(context =>
+        {
+            var sessionData = LoadSessionDataCore(context, invoiceId, asNoTracking: false);
+            if (sessionData is null || sessionData.PayjoinUri is not null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(sessionData.ReceiverAddress, receiverAddress, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!context.ReceiverSessionEvents.Any(x => x.InvoiceId == invoiceId))
+            {
+                return false;
+            }
+
+            sessionData.PayjoinUri = payjoinUri;
+            sessionData.UpdatedAt = DateTimeOffset.UtcNow;
+            context.SaveChanges();
+            return true;
+        });
+    }
+
     public bool TryGetSession(string invoiceId, out PayjoinReceiverSessionState? session)
     {
         using var context = _pluginDbContextFactory.CreateContext();
         return TryLoadSessionCore(context, invoiceId, out session);
+    }
+
+    [SuppressMessage("Design", "CA1055:URI-like return values should not be strings", Justification = "A bitcoin: BIP21 URI is stored and merged as text; System.Uri would re-encode its query parameters.")]
+    internal string? GetServablePayjoinUri(string invoiceId, string destination)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        var row = context.ReceiverSessions
+            .AsNoTracking()
+            .Where(x => x.InvoiceId == invoiceId && x.PayjoinUri != null)
+            .Select(x => new
+            {
+                x.PayjoinUri,
+                x.ReceiverAddress,
+                x.MonitoringExpiresAt,
+                x.IsCloseRequested
+            })
+            .FirstOrDefault();
+
+        if (row is null)
+        {
+            return null;
+        }
+
+        var servability = new PayjoinSessionServability(
+            HasEvents: true,
+            row.IsCloseRequested,
+            row.MonitoringExpiresAt,
+            row.ReceiverAddress);
+
+        return servability.Decide(destination) == PayjoinPersistedSessionDecision.Reuse
+            ? row.PayjoinUri
+            : null;
     }
 
     public IReadOnlyCollection<PayjoinReceiverSessionState> GetSessions()
@@ -88,23 +166,54 @@ public sealed class PayjoinReceiverSessionStore
         return LoadSessionsCore(context);
     }
 
-    public bool RemoveSession(string invoiceId)
+    private const int MaxConcurrencyRetries = 3;
+
+    internal T WriteWithConcurrencyRetry<T>(Func<PayjoinPluginDbContext, T> write, [CallerMemberName] string operation = "")
     {
-        using var context = _pluginDbContextFactory.CreateContext();
+        for (var attempt = 1; ; attempt++)
+        {
+            using var context = _pluginDbContextFactory.CreateContext();
+            try
+            {
+                return write(context);
+            }
+            catch (DbUpdateConcurrencyException ex)
+            {
+                if (attempt >= MaxConcurrencyRetries)
+                {
+                    if (_logger is not null)
+                    {
+                        LogConcurrencyRetriesExhausted(_logger, operation, attempt, ex);
+                    }
+
+                    throw;
+                }
+
+                if (_logger is not null)
+                {
+                    LogConcurrencyRetry(_logger, operation, attempt, ex);
+                }
+            }
+        }
+    }
+
+    public bool RemoveSession(string invoiceId) => WriteWithConcurrencyRetry(context =>
+    {
         var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
         if (sessionData is null)
         {
             return false;
         }
 
-        var sessionEvents = context.ReceiverSessionEvents
-            .Where(x => x.InvoiceId == invoiceId)
-            .ToArray();
-        if (sessionEvents.Length > 0)
-        {
-            context.ReceiverSessionEvents.RemoveRange(sessionEvents);
-        }
+        RemoveAllSessionEvents(context, sessionData);
+        RemoveInputReservations(context, invoiceId);
+        context.ReceiverSessions.Remove(sessionData);
+        context.SaveChanges();
+        return true;
+    });
 
+    private static void RemoveInputReservations(PayjoinPluginDbContext context, string invoiceId)
+    {
         var inputReservations = context.ReceiverInputReservations
             .Where(x => x.InvoiceId == invoiceId)
             .ToArray();
@@ -112,43 +221,60 @@ public sealed class PayjoinReceiverSessionStore
         {
             context.ReceiverInputReservations.RemoveRange(inputReservations);
         }
-
-        context.ReceiverSessions.Remove(sessionData);
-        context.SaveChanges();
-        return true;
     }
 
-    public bool RequestClose(string invoiceId, InvoiceStatus invoiceStatus)
+    internal bool TryRemoveSessionUnlessNegotiating(string invoiceId)
     {
         using var context = _pluginDbContextFactory.CreateContext();
+        var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
+        if (sessionData is null)
+        {
+            return true;
+        }
+
+        if (sessionData.ContributedInputTransactionId is not null || sessionData.ContributedInputOutputIndex is not null)
+        {
+            return false;
+        }
+
+        RemoveAllSessionEvents(context, sessionData);
+        RemoveInputReservations(context, invoiceId);
+        context.ReceiverSessions.Remove(sessionData);
+
+        try
+        {
+            context.SaveChanges();
+            return true;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            using var verifyContext = _pluginDbContextFactory.CreateContext();
+            return !verifyContext.ReceiverSessions.AsNoTracking().Any(x => x.InvoiceId == invoiceId);
+        }
+    }
+
+    public bool RequestClose(string invoiceId, InvoiceStatus invoiceStatus) => WriteWithConcurrencyRetry(context =>
+    {
         var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
         if (sessionData is null)
         {
             return false;
         }
 
-        var requestedAt = DateTimeOffset.UtcNow;
-        var changed = !sessionData.IsCloseRequested || sessionData.CloseInvoiceStatus != invoiceStatus;
-        sessionData.IsCloseRequested = true;
-        sessionData.CloseInvoiceStatus = invoiceStatus;
-        if (changed)
-        {
-            sessionData.CloseRequestedAt = requestedAt;
-            sessionData.InitializedPollAfterCloseRequestConsumed = false;
-        }
-        else
-        {
-            sessionData.CloseRequestedAt ??= requestedAt;
-        }
-        if (!changed)
+        if (sessionData.IsCloseRequested && sessionData.CloseInvoiceStatus == invoiceStatus)
         {
             return false;
         }
 
+        var requestedAt = DateTimeOffset.UtcNow;
+        sessionData.IsCloseRequested = true;
+        sessionData.CloseInvoiceStatus = invoiceStatus;
+        sessionData.CloseRequestedAt = requestedAt;
+        sessionData.InitializedPollAfterCloseRequestConsumed = false;
         sessionData.UpdatedAt = requestedAt;
         context.SaveChanges();
         return true;
-    }
+    });
 
     public bool TryReserveContributedInput(
         string storeId,
@@ -157,7 +283,16 @@ public sealed class PayjoinReceiverSessionStore
         DateTimeOffset expiresAt)
     {
         ArgumentNullException.ThrowIfNull(outPoint);
-        using var context = _pluginDbContextFactory.CreateContext();
+        return WriteWithConcurrencyRetry(context => ReserveContributedInputCore(context, storeId, invoiceId, outPoint, expiresAt));
+    }
+
+    private bool ReserveContributedInputCore(
+        PayjoinPluginDbContext context,
+        string storeId,
+        string invoiceId,
+        NBitcoin.OutPoint outPoint,
+        DateTimeOffset expiresAt)
+    {
         var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
         if (sessionData is null)
         {
@@ -194,6 +329,7 @@ public sealed class PayjoinReceiverSessionStore
         sessionData.ContributedInputTransactionId = transactionId;
         sessionData.ContributedInputOutputIndex = outputIndex;
         sessionData.UpdatedAt = reservedAt;
+        sessionData.EventLogRevision = checked(sessionData.EventLogRevision + 1);
         context.ReceiverInputReservations.Add(new PayjoinReceiverInputReservationData
         {
             InvoiceId = invoiceId,
@@ -230,9 +366,8 @@ public sealed class PayjoinReceiverSessionStore
         }
     }
 
-    public int CleanupExpiredInputReservations(DateTimeOffset now)
+    public int CleanupExpiredInputReservations(DateTimeOffset now) => WriteWithConcurrencyRetry(context =>
     {
-        using var context = _pluginDbContextFactory.CreateContext();
         var expiredReservations = context.ReceiverInputReservations
             .Where(x => x.ExpiresAt <= now)
             .ToArray();
@@ -268,11 +403,10 @@ public sealed class PayjoinReceiverSessionStore
         context.ReceiverInputReservations.RemoveRange(expiredReservations);
         context.SaveChanges();
         return expiredReservations.Length;
-    }
+    });
 
-    public bool TryConsumeInitializedPollAfterCloseRequest(string invoiceId)
+    public bool TryConsumeInitializedPollAfterCloseRequest(string invoiceId) => WriteWithConcurrencyRetry(context =>
     {
-        using var context = _pluginDbContextFactory.CreateContext();
         var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
         if (sessionData is null ||
             !sessionData.IsCloseRequested ||
@@ -285,7 +419,7 @@ public sealed class PayjoinReceiverSessionStore
         sessionData.UpdatedAt = DateTimeOffset.UtcNow;
         context.SaveChanges();
         return true;
-    }
+    });
 
     internal JsonReceiverSessionPersister CreatePersister(PayjoinReceiverSessionState session)
     {
@@ -355,7 +489,7 @@ public sealed class PayjoinReceiverSessionStore
                 context.SaveChanges();
                 return;
             }
-            catch (DbUpdateException ex) when (IsReceiverSessionEventSequenceConflict(ex))
+            catch (DbUpdateException ex) when (IsReceiverSessionEventSequenceConflict(ex) || ex is DbUpdateConcurrencyException)
             {
                 if (attempt == maxAttempts)
                 {
@@ -398,7 +532,8 @@ public sealed class PayjoinReceiverSessionStore
             sessionData.InitializedPollAfterCloseRequestConsumed,
             sessionData.ContributedInputTransactionId,
             sessionData.ContributedInputOutputIndex,
-            events ?? []);
+            events ?? [],
+            sessionData.PayjoinUri);
     }
 
     private static IReadOnlyCollection<PayjoinReceiverSessionState> LoadSessionsCore(PayjoinPluginDbContext context)
@@ -458,6 +593,22 @@ public sealed class PayjoinReceiverSessionStore
         }
 
         return query.SingleOrDefault(x => x.InvoiceId == invoiceId);
+    }
+
+    // INVARIANT: the only place session events may be deleted. PayjoinUri infers "has events" from being
+    // set, so it is cleared with them; any retention code must go through here.
+    internal static void RemoveAllSessionEvents(PayjoinPluginDbContext context, PayjoinReceiverSessionData sessionData)
+    {
+        var sessionEvents = context.ReceiverSessionEvents
+            .Where(x => x.InvoiceId == sessionData.InvoiceId)
+            .ToArray();
+        if (sessionEvents.Length > 0)
+        {
+            context.ReceiverSessionEvents.RemoveRange(sessionEvents);
+        }
+
+        sessionData.PayjoinUri = null;
+        sessionData.EventLogRevision = checked(sessionData.EventLogRevision + 1);
     }
 
     private static void AddBootstrapEvents(PayjoinPluginDbContext context, string invoiceId, IEnumerable<string> bootstrapEvents, DateTimeOffset createdAt)
