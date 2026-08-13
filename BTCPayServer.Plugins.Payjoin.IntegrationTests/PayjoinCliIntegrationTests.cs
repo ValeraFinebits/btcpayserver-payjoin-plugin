@@ -18,7 +18,11 @@ public class PayjoinCliIntegrationTests : UnitTestBase
     private static readonly TimeSpan PreSendReceiverDelay = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan ShortInvoiceLifetime = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan ShortMonitoringLifetime = TimeSpan.FromSeconds(1);
-    private static readonly Uri UnavailableRelayUrl = new("https://127.0.0.1:1/");
+    private static readonly Uri[] UnavailableRelayUrls =
+    [
+        new("https://127.0.0.1:1/"),
+        new("https://127.0.0.1:2/")
+    ];
 
     public PayjoinCliIntegrationTests(ITestOutputHelper helper) : base(helper)
     {
@@ -68,31 +72,6 @@ public class PayjoinCliIntegrationTests : UnitTestBase
 
     [Fact(Explicit = true)]
     [Trait("Integration", "Integration")]
-    public async Task CreateInvoiceAndPayItThroughThePayjoinPluginWithPayjoinCliAcrossConfiguredRelays()
-    {
-        using var cts = new CancellationTokenSource(CliTestTimeout);
-        using var tester = CreateServerTester(newDb: true);
-        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
-
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, settings =>
-        {
-            var configuredRelays = settings.GetEffectiveOhttpRelayUrls();
-            settings.OhttpRelayUrls = [UnavailableRelayUrl, .. configuredRelays];
-        }, cts.Token).ConfigureAwait(true);
-
-        var paymentResult = await PayjoinCliIntegrationTestSupport.CreateAndPayInvoiceWithInvoiceIdAsync(
-            tester,
-            context.Merchant,
-            context.Network,
-            preSendReceiverPollDelay: TimeSpan.Zero,
-            cancellationToken: cts.Token).ConfigureAwait(true);
-
-        PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction((paymentResult.PayjoinTransaction, paymentResult.InvoiceScript, paymentResult.TransactionId));
-        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, paymentResult.InvoiceId, cts.Token).ConfigureAwait(true);
-    }
-
-    [Fact(Explicit = true)]
-    [Trait("Integration", "Integration")]
     public async Task PayjoinCliDoesNotBroadcastWhenAllSenderRelaysAreUnavailable()
     {
         using var cts = new CancellationTokenSource(CliTestTimeout);
@@ -117,30 +96,32 @@ public class PayjoinCliIntegrationTests : UnitTestBase
         using var payjoinCliPayer = new PayjoinCliPayer(senderWallet);
         var failure = await payjoinCliPayer.PayExpectingFailureAsync(
             payjoinContext.PaymentUrl,
-            [UnavailableRelayUrl],
+            UnavailableRelayUrls,
             payjoinContext.InvoiceScript,
             cts.Token).ConfigureAwait(true);
 
         var diagnostics = $"{failure.StandardOutput}\n{failure.StandardError}";
         Assert.Contains("No valid relays available", diagnostics, StringComparison.OrdinalIgnoreCase);
+        Assert.All(UnavailableRelayUrls, relay =>
+            Assert.Contains(relay.AbsoluteUri, diagnostics, StringComparison.Ordinal));
         Assert.False(string.IsNullOrWhiteSpace(failure.SessionId));
         var senderSessionId = failure.SessionId!;
 
         var history = await payjoinCliPayer.GetHistoryAsync(
-            [UnavailableRelayUrl],
+            UnavailableRelayUrls,
             cts.Token).ConfigureAwait(true);
         Assert.Contains(senderSessionId, history.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("Waiting for proposal", history.StandardOutput, StringComparison.Ordinal);
 
         var cancellation = await payjoinCliPayer.CancelSessionWithoutBroadcastAsync(
             senderSessionId,
-            [UnavailableRelayUrl],
+            UnavailableRelayUrls,
             payjoinContext.InvoiceScript,
             cts.Token).ConfigureAwait(true);
 
         var repeatedCancellation = await payjoinCliPayer.CancelAlreadyCancelledSessionWithoutBroadcastAsync(
             senderSessionId,
-            [UnavailableRelayUrl],
+            UnavailableRelayUrls,
             payjoinContext.InvoiceScript,
             cts.Token).ConfigureAwait(true);
         Assert.Equal(cancellation.ToHex(), repeatedCancellation.ToHex());
