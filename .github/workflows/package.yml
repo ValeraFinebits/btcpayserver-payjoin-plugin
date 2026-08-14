@@ -30,7 +30,7 @@ jobs:
           payjoin-ffi-profile: release
 
       - name: Publish plugin
-        run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj" -c Release --no-restore -o "./artifacts/publish/BTCPayServer.Plugins.Payjoin"
+        run: dotnet publish "./BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.AsyncPayjoin.csproj" -c Release --no-restore -o "./artifacts/publish/BTCPayServer.Plugins.AsyncPayjoin"
 
       - name: Build packer
         run: dotnet build "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release
@@ -40,8 +40,8 @@ jobs:
         run: |
           set -euo pipefail
           dotnet run --project "./btcpayserver/BTCPayServer.PluginPacker/BTCPayServer.PluginPacker.csproj" -c Release --no-build -- \
-            "./artifacts/publish/BTCPayServer.Plugins.Payjoin" \
-            "BTCPayServer.Plugins.Payjoin" \
+            "./artifacts/publish/BTCPayServer.Plugins.AsyncPayjoin" \
+            "BTCPayServer.Plugins.AsyncPayjoin" \
             "./artifacts/packages"
 
       - name: Upload package artifact

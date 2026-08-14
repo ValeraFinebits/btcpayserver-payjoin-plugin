@@ -4,11 +4,11 @@ inputs:
   plugin-project-path:
     description: Path to the plugin project file to publish for test loading
     required: false
-    default: BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.Payjoin.csproj
+    default: BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.AsyncPayjoin.csproj
   plugin-output-path:
     description: Plugin directory where BTCPayServer test host loads plugins
     required: false
-    default: $HOME/.btcpayserver/Plugins/BTCPayServer.Plugins.Payjoin
+    default: $HOME/.btcpayserver/Plugins/BTCPayServer.Plugins.AsyncPayjoin
 runs:
   using: composite
   steps:
