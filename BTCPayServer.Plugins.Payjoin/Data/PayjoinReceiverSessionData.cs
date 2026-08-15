@@ -32,7 +32,16 @@ internal class PayjoinReceiverSessionData
 
     public string? PayjoinUri { get; set; }
 
-    public int EventLogRevision { get; set; }
+    // Concurrency token, deliberately PARTIAL. Only destructive writes bump it:
+    // - RemoveAllSessionEvents (event-log wipe, which also clears PayjoinUri),
+    // - ReserveContributedInputCore (claiming the contributed input).
+    // It guards the discard-vs-reserve and wipe-vs-cache races. All other session writes
+    // (close/consume flags, the cached URI, cleanup, event appends) intentionally do NOT bump
+    // it: they are idempotent last-write-wins updates, and event-log ordering is enforced by
+    // the unique (InvoiceId, Sequence) index instead. Do not use this value to detect
+    // event-log changes. The contract is pinned by
+    // PayjoinReceiverSessionStoreRelationalTests.OnlyDestructiveWritesAdvanceTheDestructiveWriteStamp.
+    public int DestructiveWriteStamp { get; set; }
 
     public ICollection<PayjoinReceiverSessionEventData> Events { get; } = [];
 

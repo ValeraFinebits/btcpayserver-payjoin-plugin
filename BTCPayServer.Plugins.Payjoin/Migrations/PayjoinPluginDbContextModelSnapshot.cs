@@ -18,7 +18,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 #pragma warning disable 612, 618
             modelBuilder
                 .HasDefaultSchema("BTCPayServer.Plugins.Payjoin")
-                .HasAnnotation("ProductVersion", "10.0.10")
+                .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -213,7 +213,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("EventLogRevision")
+                    b.Property<int>("DestructiveWriteStamp")
                         .IsConcurrencyToken()
                         .HasColumnType("integer");
 
