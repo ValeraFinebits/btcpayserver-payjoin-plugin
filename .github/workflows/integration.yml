@@ -48,7 +48,7 @@ jobs:
         run: >-
           dotnet test "BTCPayServer.Plugins.Payjoin.IntegrationTests/BTCPayServer.Plugins.Payjoin.IntegrationTests.csproj"
           -c Release --no-build --no-restore
-          -- RunConfiguration.TreatNoTestsAsError=true xUnit.Explicit=${{ env.XUNIT_EXPLICIT_MODE }}
+          -- --minimum-expected-tests 1 --explicit ${{ env.XUNIT_EXPLICIT_MODE }}
 
       - name: Print Docker diagnostics
         if: failure()
