@@ -1,4 +1,6 @@
+using BTCPayServer.Abstractions;
 using BTCPayServer.Data;
+using BTCPayServer.HostedServices;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Services.Invoices;
@@ -38,6 +40,9 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
     private static readonly Action<ILogger, string, string, Exception?> LogSenderSessionBroadcast =
         LoggerMessage.Define<string, string>(LogLevel.Information, new EventId(3, nameof(LogSenderSessionBroadcast)),
             "Payjoin sender session {SenderSessionId} broadcast {TransactionId}");
+    private static readonly Action<ILogger, string, string, Exception?> LogProposalAwaitingSignature =
+        LoggerMessage.Define<string, string>(LogLevel.Information, new EventId(5, nameof(LogProposalAwaitingSignature)),
+            "Payjoin sender session {SenderSessionId} needs a second signature on pending transaction {PendingTransactionId}");
     private static readonly Action<ILogger, string, Exception?> LogSenderRelayUnavailable =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(4, nameof(LogSenderRelayUnavailable)),
             "Payjoin sender session {SenderSessionId} has no reachable OHTTP relay; it retries next tick");
@@ -49,6 +54,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
     private readonly StoreRepository _storeRepository;
     private readonly PaymentMethodHandlerDictionary _handlers;
     private readonly ExplorerClientProvider _explorerClientProvider;
+    private readonly PendingTransactionService _pendingTransactionService;
     private readonly ILogger<PayjoinSenderSessionProcessor> _logger;
 
     internal PayjoinSenderSessionProcessor(
@@ -59,6 +65,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         StoreRepository storeRepository,
         PaymentMethodHandlerDictionary handlers,
         ExplorerClientProvider explorerClientProvider,
+        PendingTransactionService pendingTransactionService,
         ILogger<PayjoinSenderSessionProcessor> logger)
     {
         _senderSessionStore = senderSessionStore;
@@ -68,6 +75,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         _storeRepository = storeRepository;
         _handlers = handlers;
         _explorerClientProvider = explorerClientProvider;
+        _pendingTransactionService = pendingTransactionService;
         _logger = logger;
     }
 
@@ -187,7 +195,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         // our inputs; SignAll then signs only inputs that match the store's derivation
         // scheme, and the receiver's contributed input is never touched here.
         var proposalPsbt = PSBT.Parse(progress.PsbtBase64, network.NBitcoinNetwork);
-        var (derivationScheme, accountKey, rootedKeyPath) = await ResolveSigningContextAsync(session.StoreId, network, cancellationToken).ConfigureAwait(false);
+        var (derivationScheme, signer) = await ResolveSigningContextAsync(session.StoreId, network, cancellationToken).ConfigureAwait(false);
         var explorerClient = _explorerClientProvider.GetExplorerClient(network);
         var updateResponse = await explorerClient.UpdatePSBTAsync(
             new NBXplorer.Models.UpdatePSBTRequest
@@ -201,7 +209,36 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             proposalPsbt = updateResponse.PSBT;
         }
 
-        proposalPsbt = proposalPsbt.SignAll(derivationScheme.AccountDerivation, accountKey, rootedKeyPath);
+        if (signer is null)
+        {
+            // The proposal is a different transaction from the original, so a wallet that
+            // cannot sign on the server has to sign a second time. Park the session on a new
+            // pending transaction and stop; the signature listener finishes the broadcast. If
+            // the operator never signs, the library moves the session to its fallback state and
+            // the original goes out instead, so the payment still completes.
+            if (!RequestBaseUrl.TryFromUrl(session.RequestBaseUrl ?? string.Empty, out var requestBaseUrl))
+            {
+                throw new InvalidOperationException(
+                    "the session recorded no base URL, so the second signing round cannot start");
+            }
+
+            var pending = await _pendingTransactionService.CreatePendingTransaction(
+                session.StoreId,
+                PayjoinConstants.BitcoinCode,
+                proposalPsbt,
+                requestBaseUrl,
+                expiry: null,
+                cancellationToken).ConfigureAwait(false);
+
+            if (_senderSessionStore.AwaitSignature(session.SenderSessionId, pending.Id))
+            {
+                LogProposalAwaitingSignature(_logger, session.SenderSessionId, pending.Id, null);
+            }
+
+            return;
+        }
+
+        proposalPsbt = proposalPsbt.SignAll(derivationScheme.AccountDerivation, signer.AccountKey, signer.RootedKeyPath);
         if (!proposalPsbt.TryFinalize(out var errors))
         {
             throw new InvalidOperationException($"the payjoin proposal could not be finalized: {string.Join("; ", errors.Select(e => e.ToString()))}");
@@ -277,7 +314,12 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         return null;
     }
 
-    private async Task<(DerivationSchemeSettings DerivationScheme, ExtKey AccountKey, RootedKeyPath RootedKeyPath)> ResolveSigningContextAsync(
+    /// <summary>
+    /// Returns the derivation scheme, and the account key only when the server holds one. A null
+    /// signer is the normal answer for a cold wallet, a hardware device or a multisig group, and
+    /// it sends the proposal to BTCPay's pending transactions to be signed there.
+    /// </summary>
+    private async Task<(DerivationSchemeSettings DerivationScheme, SenderSigner? Signer)> ResolveSigningContextAsync(
         string storeId,
         BTCPayNetwork network,
         CancellationToken cancellationToken)
@@ -289,23 +331,30 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             ?? throw new InvalidOperationException("derivation scheme not configured for BTC");
         if (!derivationScheme.IsHotWallet)
         {
-            throw new InvalidOperationException("payjoin sending requires a hot wallet");
+            return (derivationScheme, null);
         }
 
         var explorerClient = _explorerClientProvider.GetExplorerClient(network);
         var signingKeyStr = await explorerClient.GetMetadataAsync<string>(
             derivationScheme.AccountDerivation,
             WellknownMetadataKeys.MasterHDKey,
-            cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("wallet seed not available");
+            cancellationToken).ConfigureAwait(false);
+        if (signingKeyStr is null)
+        {
+            return (derivationScheme, null);
+        }
 
         var signingKey = ExtKey.Parse(signingKeyStr, network.NBitcoinNetwork);
-        var signingKeySettings = derivationScheme.GetAccountKeySettingsFromRoot(signingKey)
-            ?? throw new InvalidOperationException("wallet key settings not available");
-        var rootedKeyPath = signingKeySettings.GetRootedKeyPath()
-            ?? throw new InvalidOperationException("wallet key path mismatch");
-        return (derivationScheme, signingKey.Derive(rootedKeyPath.KeyPath), rootedKeyPath);
+        var rootedKeyPath = derivationScheme.GetAccountKeySettingsFromRoot(signingKey)?.GetRootedKeyPath();
+        if (rootedKeyPath is null)
+        {
+            return (derivationScheme, null);
+        }
+
+        return (derivationScheme, new SenderSigner(signingKey.Derive(rootedKeyPath.KeyPath), rootedKeyPath));
     }
+
+    private sealed record SenderSigner(ExtKey AccountKey, RootedKeyPath RootedKeyPath);
 
     private async Task BroadcastAsync(BTCPayNetwork network, Transaction transaction, CancellationToken cancellationToken)
     {

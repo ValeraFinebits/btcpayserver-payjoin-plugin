@@ -9,6 +9,8 @@ public class PayjoinSenderViewModel
 
     public decimal? FeeRateSatPerVb { get; set; }
 
+    public string? StoreId { get; set; }
+
     public IReadOnlyList<PayjoinSenderSessionViewModel> Sessions { get; set; } = [];
 }
 
@@ -21,6 +23,10 @@ public class PayjoinSenderSessionViewModel
     public required long AmountSats { get; init; }
 
     public required string Status { get; init; }
+
+    // Set while the session waits for a signature from a wallet that cannot sign on the server.
+    // The view links it to BTCPay's own pending-transaction screen.
+    public string? PendingTransactionId { get; init; }
 
     public string? BroadcastTransactionId { get; init; }
 

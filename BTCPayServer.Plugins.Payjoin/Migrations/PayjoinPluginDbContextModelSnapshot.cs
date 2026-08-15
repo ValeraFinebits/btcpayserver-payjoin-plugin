@@ -313,6 +313,13 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<string>("PendingTransactionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("RequestBaseUrl")
+                        .HasColumnType("text");
+
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
@@ -328,6 +335,9 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.HasIndex("OriginalTransactionId")
                         .HasDatabaseName("IX_SenderSessions_OriginalTransactionId");
+
+                    b.HasIndex("PendingTransactionId")
+                        .HasDatabaseName("IX_SenderSessions_PendingTransactionId");
 
                     b.HasIndex("StoreId")
                         .HasDatabaseName("IX_SenderSessions_StoreId");

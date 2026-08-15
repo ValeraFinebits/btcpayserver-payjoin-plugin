@@ -38,7 +38,12 @@ public class UIPayjoinSenderController : Controller
     public async Task<IActionResult> Send(string storeId, PayjoinSenderViewModel model, CancellationToken cancellationToken)
     {
         System.ArgumentNullException.ThrowIfNull(model);
-        var result = await _senderService.StartAsync(storeId, model.Bip21 ?? string.Empty, model.FeeRateSatPerVb, cancellationToken).ConfigureAwait(false);
+        var result = await _senderService.StartAsync(
+            storeId,
+            model.Bip21 ?? string.Empty,
+            model.FeeRateSatPerVb,
+            new BTCPayServer.Abstractions.RequestBaseUrl(Request),
+            cancellationToken).ConfigureAwait(false);
         if (!result.Success)
         {
             TempData.SetStatusMessageModel(new StatusMessageModel
@@ -47,6 +52,27 @@ public class UIPayjoinSenderController : Controller
                 Message = result.Error
             });
             return View(BuildViewModel(storeId, model.Bip21));
+        }
+
+        if (result.PendingTransactionId is not null)
+        {
+            // The wallet cannot sign on the server, so BTCPay's own screen collects the signature
+            // from the vault, a hardware device, a seed or the other multisig signers. Nothing
+            // reaches the payjoin directory until that signature arrives.
+            TempData.SetStatusMessageModel(new StatusMessageModel
+            {
+                Severity = StatusMessageModel.StatusSeverity.Info,
+                Message = "The payment is ready to sign. The payjoin session starts as soon as the transaction is signed."
+            });
+            return RedirectToAction(
+                "ViewPendingTransaction",
+                "UIWallets",
+                new
+                {
+                    area = "Wallets",
+                    walletId = new WalletId(storeId, PayjoinConstants.BitcoinCode).ToString(),
+                    pendingTransactionId = result.PendingTransactionId
+                });
         }
 
         TempData.SetStatusMessageModel(new StatusMessageModel
@@ -62,6 +88,7 @@ public class UIPayjoinSenderController : Controller
         return new PayjoinSenderViewModel
         {
             Bip21 = bip21,
+            StoreId = storeId,
             Sessions = _senderSessionStore.GetSessions(storeId)
                 .OrderByDescending(x => x.CreatedAt)
                 .Select(x => new PayjoinSenderSessionViewModel
@@ -75,8 +102,12 @@ public class UIPayjoinSenderController : Controller
                         PayjoinSenderSessionStatus.CompletedPayjoin => "Completed (payjoin)",
                         PayjoinSenderSessionStatus.CompletedFallback => "Completed (fallback)",
                         PayjoinSenderSessionStatus.Failed => "Failed",
+                        PayjoinSenderSessionStatus.AwaitingSignature => "Waiting for signature",
                         _ => x.Status.ToString()
                     },
+                    PendingTransactionId = x.Status == PayjoinSenderSessionStatus.AwaitingSignature
+                        ? x.PendingTransactionId
+                        : null,
                     BroadcastTransactionId = x.BroadcastTransactionId,
                     FailureMessage = x.FailureMessage,
                     CreatedAt = x.CreatedAt

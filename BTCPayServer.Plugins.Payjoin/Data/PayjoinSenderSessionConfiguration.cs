@@ -21,6 +21,9 @@ internal sealed class PayjoinSenderSessionConfiguration : IEntityTypeConfigurati
             .HasDatabaseName(PayjoinPluginDbSchema.SenderSessionsStatusCreatedAtIndex);
         entity.HasIndex(x => x.OriginalTransactionId)
             .HasDatabaseName(PayjoinPluginDbSchema.SenderSessionsOriginalTransactionIdIndex);
+        entity.Property(x => x.PendingTransactionId).HasMaxLength(PayjoinPluginDbSchema.SenderSessionIdMaxLength);
+        entity.HasIndex(x => x.PendingTransactionId)
+            .HasDatabaseName(PayjoinPluginDbSchema.SenderSessionsPendingTransactionIdIndex);
         entity.HasMany(x => x.Events)
             .WithOne(x => x.Session)
             .HasForeignKey(x => x.SenderSessionId)

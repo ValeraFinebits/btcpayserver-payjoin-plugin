@@ -15,6 +15,8 @@ internal sealed record PayjoinSenderSessionState(
     long AmountSats,
     string OriginalTransactionId,
     string? BroadcastTransactionId,
+    string? PendingTransactionId,
+    string? RequestBaseUrl,
     PayjoinSenderSessionStatus Status,
     string? FailureMessage,
     DateTimeOffset CreatedAt,
@@ -48,11 +50,17 @@ internal sealed class PayjoinSenderSessionStore
         string destinationAddress,
         long amountSats,
         string originalTransactionId,
-        IEnumerable<string> bootstrapEvents)
+        IEnumerable<string> bootstrapEvents,
+        string? pendingTransactionId = null,
+        PayjoinSenderSessionStatus status = PayjoinSenderSessionStatus.Pending,
+        string? requestBaseUrl = null)
     {
         ArgumentNullException.ThrowIfNull(bootstrapEvents);
         var persistedEvents = bootstrapEvents.ToArray();
-        if (persistedEvents.Length == 0)
+        // A session waiting on an off-server signature has no library state yet, because the
+        // sender state machine needs the signed original before it can be built. Every other
+        // status must carry the state the library produced.
+        if (persistedEvents.Length == 0 && status != PayjoinSenderSessionStatus.AwaitingSignature)
         {
             throw new ArgumentException("Bootstrap events must contain the initial sender session state.", nameof(bootstrapEvents));
         }
@@ -67,7 +75,9 @@ internal sealed class PayjoinSenderSessionStore
             DestinationAddress = destinationAddress,
             AmountSats = amountSats,
             OriginalTransactionId = originalTransactionId,
-            Status = PayjoinSenderSessionStatus.Pending,
+            PendingTransactionId = pendingTransactionId,
+            RequestBaseUrl = requestBaseUrl,
+            Status = status,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -119,8 +129,10 @@ internal sealed class PayjoinSenderSessionStore
     }
 
     /// <summary>
-    /// True when a pending session already pays the same original transaction, which is the
-    /// double-payment guard for retried submissions of the same URI and PSBT.
+    /// True when a live session already pays the same original transaction, which is the
+    /// double-payment guard for retried submissions of the same URI and PSBT. A session
+    /// waiting on a signature counts: the operator has not signed it yet, but the coins are
+    /// already committed to it.
     /// </summary>
     public bool HasPendingSessionForOriginal(string originalTransactionId)
     {
@@ -128,12 +140,113 @@ internal sealed class PayjoinSenderSessionStore
         return context.SenderSessions
             .AsNoTracking()
             .Any(x => x.OriginalTransactionId == originalTransactionId &&
-                      x.Status == PayjoinSenderSessionStatus.Pending);
+                      (x.Status == PayjoinSenderSessionStatus.Pending ||
+                       x.Status == PayjoinSenderSessionStatus.AwaitingSignature));
+    }
+
+    /// <summary>
+    /// True when a live session already pays the same URI. This is the guard against paying an
+    /// invoice twice: two attempts on one URI do not have to select the same coins, so their
+    /// transaction ids can differ even though the payment is the same.
+    /// </summary>
+    public bool HasPendingSessionForBip21(string bip21)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        return context.SenderSessions
+            .AsNoTracking()
+            .Any(x => x.Bip21 == bip21 &&
+                      (x.Status == PayjoinSenderSessionStatus.Pending ||
+                       x.Status == PayjoinSenderSessionStatus.AwaitingSignature));
+    }
+
+    /// <summary>
+    /// Finds the session waiting on a given BTCPay pending transaction, so a collected
+    /// signature can be matched back to the payjoin session that asked for it.
+    /// </summary>
+    public bool TryGetSessionByPendingTransactionId(string pendingTransactionId, out PayjoinSenderSessionState? session)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        var sessionData = context.SenderSessions
+            .AsNoTracking()
+            .FirstOrDefault(x => x.PendingTransactionId == pendingTransactionId);
+        if (sessionData is null)
+        {
+            session = null;
+            return false;
+        }
+
+        session = CreateState(sessionData, LoadEventsCore(context, sessionData.SenderSessionId));
+        return true;
+    }
+
+    /// <summary>
+    /// Seeds the library state produced once the signed original arrived, and hands the session
+    /// to the poller. The pending transaction id is cleared because that round is over.
+    /// </summary>
+    public bool StartSignedSession(string senderSessionId, IEnumerable<string> bootstrapEvents)
+    {
+        ArgumentNullException.ThrowIfNull(bootstrapEvents);
+        var persistedEvents = bootstrapEvents.ToArray();
+        if (persistedEvents.Length == 0)
+        {
+            throw new ArgumentException("A started session must carry the initial sender state.", nameof(bootstrapEvents));
+        }
+
+        using var context = _pluginDbContextFactory.CreateContext();
+        var sessionData = context.SenderSessions.SingleOrDefault(x => x.SenderSessionId == senderSessionId);
+        if (sessionData is null || sessionData.Status != PayjoinSenderSessionStatus.AwaitingSignature)
+        {
+            return false;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var sequence = context.SenderSessionEvents
+            .Where(x => x.SenderSessionId == senderSessionId)
+            .Select(x => (int?)x.Sequence)
+            .Max() ?? 0;
+        foreach (var @event in persistedEvents)
+        {
+            sequence++;
+            context.SenderSessionEvents.Add(new PayjoinSenderSessionEventData
+            {
+                SenderSessionId = senderSessionId,
+                Sequence = sequence,
+                Event = @event,
+                CreatedAt = now
+            });
+        }
+
+        sessionData.PendingTransactionId = null;
+        sessionData.Status = PayjoinSenderSessionStatus.Pending;
+        sessionData.UpdatedAt = now;
+        context.SaveChanges();
+        return true;
+    }
+
+    /// <summary>
+    /// Parks a running session on a new pending transaction. The receiver's proposal is a
+    /// different transaction from the original, so a wallet that cannot sign on the server has
+    /// to sign a second time before the payjoin can be broadcast.
+    /// </summary>
+    public bool AwaitSignature(string senderSessionId, string pendingTransactionId)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        var sessionData = context.SenderSessions.SingleOrDefault(x => x.SenderSessionId == senderSessionId);
+        if (sessionData is null || sessionData.Status != PayjoinSenderSessionStatus.Pending)
+        {
+            return false;
+        }
+
+        sessionData.PendingTransactionId = pendingTransactionId;
+        sessionData.Status = PayjoinSenderSessionStatus.AwaitingSignature;
+        sessionData.UpdatedAt = DateTimeOffset.UtcNow;
+        context.SaveChanges();
+        return true;
     }
 
     public bool CompleteSession(string senderSessionId, PayjoinSenderSessionStatus status, string? broadcastTransactionId, string? failureMessage)
     {
-        if (status == PayjoinSenderSessionStatus.Pending)
+        if (status is PayjoinSenderSessionStatus.Pending or PayjoinSenderSessionStatus.AwaitingSignature)
         {
             throw new ArgumentException("Completion requires a terminal status.", nameof(status));
         }
@@ -266,6 +379,8 @@ internal sealed class PayjoinSenderSessionStore
             sessionData.AmountSats,
             sessionData.OriginalTransactionId,
             sessionData.BroadcastTransactionId,
+            sessionData.PendingTransactionId,
+            sessionData.RequestBaseUrl,
             sessionData.Status,
             sessionData.FailureMessage,
             sessionData.CreatedAt,

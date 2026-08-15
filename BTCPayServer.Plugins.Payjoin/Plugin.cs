@@ -86,6 +86,7 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<ExplorerClientProvider>(),
             provider.GetRequiredService<BTCPayServer.Services.IFeeProviderFactory>(),
             provider.GetRequiredService<PayjoinSenderSessionStore>(),
+            provider.GetRequiredService<BTCPayServer.HostedServices.PendingTransactionService>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderService>>()));
         applicationBuilder.AddSingleton<IPayjoinSenderSessionProcessor>(provider => new PayjoinSenderSessionProcessor(
             provider.GetRequiredService<PayjoinSenderSessionStore>(),
@@ -95,7 +96,15 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<BTCPayServer.Services.Stores.StoreRepository>(),
             provider.GetRequiredService<BTCPayServer.Services.Invoices.PaymentMethodHandlerDictionary>(),
             provider.GetRequiredService<ExplorerClientProvider>(),
+            provider.GetRequiredService<BTCPayServer.HostedServices.PendingTransactionService>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderSessionProcessor>>()));
+        applicationBuilder.AddHostedService(provider => new PayjoinSenderSignatureListener(
+            provider.GetRequiredService<EventAggregator>(),
+            provider.GetRequiredService<PayjoinSenderSessionStore>(),
+            provider.GetRequiredService<BTCPayServer.HostedServices.PendingTransactionService>(),
+            provider.GetRequiredService<BTCPayNetworkProvider>(),
+            provider.GetRequiredService<ExplorerClientProvider>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderSignatureListener>>()));
         applicationBuilder.AddHostedService(provider => new PayjoinSenderPoller(
             provider.GetRequiredService<IPayjoinSenderSessionProcessor>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderPoller>>()));
