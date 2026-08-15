@@ -45,7 +45,7 @@ jobs:
             "./artifacts/packages"
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: btcpay-plugin
           path: artifacts/packages/**/*.btcpay
