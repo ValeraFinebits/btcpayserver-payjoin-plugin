@@ -12,17 +12,16 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace BTCPayServer.Plugins.Payjoin.Migrations
 {
     [DbContext(typeof(PayjoinPluginDbContext))]
-    [Migration("20260809084843_AddReceiverSessionPayjoinUriAndEventLogRevision")]
-    partial class AddReceiverSessionPayjoinUriAndEventLogRevision
+    [Migration("20260815100702_AddReceiverSessionPayjoinUriAndDestructiveWriteStamp")]
+    partial class AddReceiverSessionPayjoinUriAndDestructiveWriteStamp
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
-            ArgumentNullException.ThrowIfNull(modelBuilder);
-
+#pragma warning disable 612, 618
             modelBuilder
                 .HasDefaultSchema("BTCPayServer.Plugins.Payjoin")
-                .HasAnnotation("ProductVersion", "10.0.10")
+                .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -217,7 +216,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("EventLogRevision")
+                    b.Property<int>("DestructiveWriteStamp")
                         .IsConcurrencyToken()
                         .HasColumnType("integer");
 
@@ -313,6 +312,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.Navigation("InputReservations");
                 });
+#pragma warning restore 612, 618
         }
     }
 }
