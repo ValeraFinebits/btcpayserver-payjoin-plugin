@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "37 4 * * *"
   workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: read
@@ -42,10 +43,12 @@ jobs:
         uses: ./.github/actions/prepare-integration-test-env
 
       - name: Run integration tests
+        env:
+          XUNIT_EXPLICIT_MODE: ${{ github.event_name == 'pull_request' && 'off' || 'on' }}
         run: >-
           dotnet test "BTCPayServer.Plugins.Payjoin.IntegrationTests/BTCPayServer.Plugins.Payjoin.IntegrationTests.csproj"
           -c Release --no-build --no-restore
-          -- RunConfiguration.TreatNoTestsAsError=true xUnit.Explicit=on
+          -- RunConfiguration.TreatNoTestsAsError=true xUnit.Explicit=${{ env.XUNIT_EXPLICIT_MODE }}
 
       - name: Print Docker diagnostics
         if: failure()
