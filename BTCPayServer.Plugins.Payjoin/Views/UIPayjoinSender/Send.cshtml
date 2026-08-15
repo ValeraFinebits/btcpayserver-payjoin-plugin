@@ -15,10 +15,13 @@
 <div class="row">
     <div class="col-xxl-constrain col-xl-8">
         <p class="text-muted" text-translate="true">
-            Paste a BIP 21 payment URI that advertises payjoin support. The store's hot wallet
-            funds and signs the payment, and the session completes in the background: it delivers
-            the payjoin when the receiver responds, and it broadcasts the plain payment when the
-            payjoin window closes. Nothing is broadcast before one of the two happens.
+            Paste a BIP 21 payment URI that advertises payjoin support. The store's wallet funds
+            the payment, and the session completes in the background: it delivers the payjoin when
+            the receiver responds, and it broadcasts the plain payment when the payjoin window
+            closes. Nothing is broadcast before one of the two happens. A hot wallet signs on the
+            server. Any other wallet signs on the usual BTCPay screen, with the vault, a hardware
+            device, a seed or the other multisig signers, and it signs a second time when the
+            receiver returns a payjoin proposal.
         </p>
         <form method="post">
             <div class="form-group">
@@ -58,6 +61,15 @@
                         <td class="text-end">@session.AmountSats</td>
                         <td>
                             @session.Status
+                            @if (session.PendingTransactionId is not null && Model.StoreId is not null)
+                            {
+                                <div class="small">
+                                    <a asp-area="Wallets" asp-controller="UIWallets" asp-action="ViewPendingTransaction"
+                                       asp-route-walletId="@($"{Model.StoreId}-BTC")"
+                                       asp-route-pendingTransactionId="@session.PendingTransactionId"
+                                       text-translate="true">Sign the transaction</a>
+                                </div>
+                            }
                             @if (session.FailureMessage is not null)
                             {
                                 <div class="text-muted small">@session.FailureMessage</div>

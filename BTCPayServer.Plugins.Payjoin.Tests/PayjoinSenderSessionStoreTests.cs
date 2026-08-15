@@ -78,6 +78,23 @@ public class PayjoinSenderSessionStoreTests
     }
 
     [Fact]
+    public void HasPendingSessionForBip21CatchesARepeatedSubmissionOfTheSameUri()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var created = CreateSession(store, "session-uri");
+
+        // A second attempt on one URI can select different coins, so the URI is what identifies
+        // the payment.
+        Assert.True(store.HasPendingSessionForBip21(created.Bip21));
+        Assert.False(store.HasPendingSessionForBip21("bitcoin:tb1qother?amount=0.001&pj=https://example.test/#K1"));
+
+        // A session that ended releases the URI, so a failed payment can be retried.
+        Assert.True(store.CompleteSession("session-uri", PayjoinSenderSessionStatus.Failed, null, "relay unreachable"));
+        Assert.False(store.HasPendingSessionForBip21(created.Bip21));
+    }
+
+    [Fact]
     public void CompleteSessionRecordsTerminalStateAndRejectsPending()
     {
         using var testContext = new TestContext();
@@ -94,6 +111,88 @@ public class PayjoinSenderSessionStoreTests
         Assert.Null(completed.BroadcastTransactionId);
     }
 
+    [Fact]
+    public void AwaitingSignatureSessionCarriesNoLibraryStateAndIsHiddenFromThePoller()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+
+        var created = CreateAwaitingSignatureSession(store, "session-cold", "pending-1");
+
+        Assert.Equal(PayjoinSenderSessionStatus.AwaitingSignature, created.Status);
+        Assert.Empty(created.Events);
+        // The poller drives the library state machine, and this session has no state yet.
+        Assert.Empty(store.GetPendingSessions());
+        // The coins are already committed, so the same URI must not start a second session.
+        Assert.True(store.HasPendingSessionForOriginal(OriginalTxId));
+    }
+
+    [Fact]
+    public void SignatureLookupFindsTheSessionThatAskedForIt()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateAwaitingSignatureSession(store, "session-lookup", "pending-lookup");
+
+        Assert.True(store.TryGetSessionByPendingTransactionId("pending-lookup", out var found));
+        Assert.Equal("session-lookup", found!.SenderSessionId);
+        Assert.Equal("https://example.test/", found.RequestBaseUrl);
+
+        Assert.False(store.TryGetSessionByPendingTransactionId("pending-unknown", out var missing));
+        Assert.Null(missing);
+    }
+
+    [Fact]
+    public void StartSignedSessionSeedsLibraryStateAndReleasesThePendingTransaction()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateAwaitingSignatureSession(store, "session-signed", "pending-signed");
+
+        Assert.True(store.StartSignedSession("session-signed", ["bootstrap-event"]));
+
+        var started = Assert.Single(store.GetPendingSessions());
+        Assert.Equal("session-signed", started.SenderSessionId);
+        Assert.Equal(PayjoinSenderSessionStatus.Pending, started.Status);
+        Assert.Equal(["bootstrap-event"], started.Events);
+        Assert.Null(started.PendingTransactionId);
+
+        // A repeated signature event must not seed the state twice.
+        Assert.False(store.StartSignedSession("session-signed", ["bootstrap-event"]));
+        Assert.Equal(["bootstrap-event"], store.CreatePersister("session-signed").Load());
+    }
+
+    [Fact]
+    public void AwaitSignatureParksARunningSessionOnASecondPendingTransaction()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateSession(store, "session-second-round");
+
+        Assert.True(store.AwaitSignature("session-second-round", "pending-proposal"));
+
+        Assert.Empty(store.GetPendingSessions());
+        Assert.True(store.TryGetSession("session-second-round", out var parked));
+        Assert.Equal(PayjoinSenderSessionStatus.AwaitingSignature, parked!.Status);
+        Assert.Equal("pending-proposal", parked.PendingTransactionId);
+        // The event log survives, so the poller resumes where it stopped once the payjoin is out.
+        Assert.Equal(["bootstrap-event"], parked.Events);
+
+        // Only a running session parks; a session already waiting must not move again.
+        Assert.False(store.AwaitSignature("session-second-round", "pending-other"));
+    }
+
+    [Fact]
+    public void CompleteSessionRejectsAwaitingSignature()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateAwaitingSignatureSession(store, "session-not-terminal", "pending-not-terminal");
+
+        Assert.Throws<ArgumentException>(() =>
+            store.CompleteSession("session-not-terminal", PayjoinSenderSessionStatus.AwaitingSignature, null, null));
+    }
+
     private static PayjoinSenderSessionState CreateSession(
         PayjoinSenderSessionStore store,
         string senderSessionId,
@@ -107,6 +206,24 @@ public class PayjoinSenderSessionStoreTests
             100_000,
             originalTransactionId,
             ["bootstrap-event"]);
+    }
+
+    private static PayjoinSenderSessionState CreateAwaitingSignatureSession(
+        PayjoinSenderSessionStore store,
+        string senderSessionId,
+        string pendingTransactionId)
+    {
+        return store.CreateSession(
+            senderSessionId,
+            "store-1",
+            "bitcoin:tb1q?amount=0.001&pj=https://example.test/#K1",
+            "tb1q",
+            100_000,
+            OriginalTxId,
+            [],
+            pendingTransactionId,
+            PayjoinSenderSessionStatus.AwaitingSignature,
+            "https://example.test/");
     }
 
     private sealed class TestContext : IDisposable

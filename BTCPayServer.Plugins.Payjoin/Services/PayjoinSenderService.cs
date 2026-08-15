@@ -1,4 +1,6 @@
+using BTCPayServer.Abstractions;
 using BTCPayServer.Data;
+using BTCPayServer.HostedServices;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Services;
@@ -10,6 +12,7 @@ using NBXplorer;
 using NBXplorer.Models;
 using Payjoin;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,32 +23,54 @@ internal sealed record PayjoinSenderStartResult(
     bool Success,
     string? SenderSessionId,
     string? OriginalTransactionId,
+    string? PendingTransactionId,
     string? Error)
 {
+    /// <summary>The wallet signed on the server; the poller drives the rest.</summary>
     public static PayjoinSenderStartResult Started(string senderSessionId, string originalTransactionId) =>
-        new(true, senderSessionId, originalTransactionId, null);
+        new(true, senderSessionId, originalTransactionId, null, null);
 
-    public static PayjoinSenderStartResult Failed(string error) => new(false, null, null, error);
+    /// <summary>
+    /// The wallet cannot sign on the server. The transaction waits in BTCPay's pending
+    /// transactions until the operator signs it, and only then does the payjoin session begin.
+    /// </summary>
+    public static PayjoinSenderStartResult AwaitingSignature(string senderSessionId, string originalTransactionId, string pendingTransactionId) =>
+        new(true, senderSessionId, originalTransactionId, pendingTransactionId, null);
+
+    public static PayjoinSenderStartResult Failed(string error) => new(false, null, null, null, error);
 }
 
 /// <summary>
 /// Starts sender payjoin sessions from a BIP 21 URI: parses the URI through rust-payjoin, builds
-/// and signs the original transaction from the store's hot wallet, hands it to the library's
-/// sender state machine, and persists the session for the poller to drive. The original
-/// transaction never touches the network here; it is the fallback the poller broadcasts when the
-/// payjoin does not complete.
+/// the original transaction from the store's wallet, hands it to the library's sender state
+/// machine, and persists the session for the poller to drive. A hot wallet signs here. Any other
+/// wallet signs through BTCPay's pending transactions, and the session waits until it does. The
+/// original transaction never touches the network here; it is the fallback the poller broadcasts
+/// when the payjoin does not complete.
 /// </summary>
 internal sealed class PayjoinSenderService
 {
     // Floor for the payjoin round, expressed the way the library wants it:
     // 250 sat/kWU equals 1 sat/vB.
-    private const ulong MinFeeRateSatPerKwu = 250;
+    internal const ulong MinFeeRateSatPerKwu = 250;
+
+    // How long a transaction waits for an off-server signature before BTCPay retires it. The
+    // coins stay reserved for that long, so this bounds how long a forgotten signing request
+    // holds them. TODO: consider making this a store setting.
+    private static readonly TimeSpan SignatureWindow = TimeSpan.FromDays(7);
+
+    private sealed record ServerSigner(ExtKey AccountKey, RootedKeyPath RootedKeyPath);
 
     private static readonly Action<ILogger, string, string, Exception?> LogSenderSessionStarted =
         LoggerMessage.Define<string, string>(
             LogLevel.Information,
             new EventId(1, nameof(LogSenderSessionStarted)),
             "Payjoin sender session {SenderSessionId} started for store {StoreId}");
+    private static readonly Action<ILogger, string, string, Exception?> LogSenderSessionAwaitingSignature =
+        LoggerMessage.Define<string, string>(
+            LogLevel.Information,
+            new EventId(2, nameof(LogSenderSessionAwaitingSignature)),
+            "Payjoin sender session {SenderSessionId} waits for a signature on pending transaction {PendingTransactionId}");
 
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly StoreRepository _storeRepository;
@@ -53,6 +78,7 @@ internal sealed class PayjoinSenderService
     private readonly ExplorerClientProvider _explorerClientProvider;
     private readonly IFeeProviderFactory _feeProviderFactory;
     private readonly PayjoinSenderSessionStore _senderSessionStore;
+    private readonly PendingTransactionService _pendingTransactionService;
     private readonly ILogger<PayjoinSenderService> _logger;
 
     internal PayjoinSenderService(
@@ -62,6 +88,7 @@ internal sealed class PayjoinSenderService
         ExplorerClientProvider explorerClientProvider,
         IFeeProviderFactory feeProviderFactory,
         PayjoinSenderSessionStore senderSessionStore,
+        PendingTransactionService pendingTransactionService,
         ILogger<PayjoinSenderService> logger)
     {
         _networkProvider = networkProvider;
@@ -70,6 +97,7 @@ internal sealed class PayjoinSenderService
         _explorerClientProvider = explorerClientProvider;
         _feeProviderFactory = feeProviderFactory;
         _senderSessionStore = senderSessionStore;
+        _pendingTransactionService = pendingTransactionService;
         _logger = logger;
     }
 
@@ -77,6 +105,7 @@ internal sealed class PayjoinSenderService
         string storeId,
         string bip21,
         decimal? feeRateSatPerVb,
+        RequestBaseUrl requestBaseUrl,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(bip21))
@@ -97,7 +126,7 @@ internal sealed class PayjoinSenderService
         {
             using var uri = global::Payjoin.Uri.Parse(bip21.Trim());
             using var pjUri = uri.CheckPjSupported();
-            return await StartWithPjUriAsync(storeId, bip21, pjUri, network, feeRateSatPerVb, cancellationToken).ConfigureAwait(false);
+            return await StartWithPjUriAsync(storeId, bip21, pjUri, network, feeRateSatPerVb, requestBaseUrl, cancellationToken).ConfigureAwait(false);
         }
         catch (UriParseException ex)
         {
@@ -115,6 +144,7 @@ internal sealed class PayjoinSenderService
         PjUri pjUri,
         BTCPayNetwork network,
         decimal? feeRateSatPerVb,
+        RequestBaseUrl requestBaseUrl,
         CancellationToken cancellationToken)
     {
         var destinationAddress = pjUri.Address();
@@ -122,6 +152,13 @@ internal sealed class PayjoinSenderService
         if (amountSats is null or 0)
         {
             return PayjoinSenderStartResult.Failed("The URI carries no amount; payjoin sending requires one.");
+        }
+
+        // Check the URI before building anything. Two attempts on one URI can select different
+        // coins, so the transaction id below does not catch a repeated submission on its own.
+        if (_senderSessionStore.HasPendingSessionForBip21(bip21.Trim()))
+        {
+            return PayjoinSenderStartResult.Failed("A payjoin session already pays this URI.");
         }
 
         var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false);
@@ -137,31 +174,7 @@ internal sealed class PayjoinSenderService
             return PayjoinSenderStartResult.Failed("The store has no BTC wallet.");
         }
 
-        if (!derivationScheme.IsHotWallet)
-        {
-            return PayjoinSenderStartResult.Failed("Payjoin sending requires a hot wallet.");
-        }
-
         var explorerClient = _explorerClientProvider.GetExplorerClient(network);
-        var signingKeyStr = await explorerClient.GetMetadataAsync<string>(
-            derivationScheme.AccountDerivation,
-            WellknownMetadataKeys.MasterHDKey,
-            cancellationToken).ConfigureAwait(false);
-        if (signingKeyStr is null)
-        {
-            return PayjoinSenderStartResult.Failed("The wallet seed is not available.");
-        }
-
-        var signingKey = ExtKey.Parse(signingKeyStr, network.NBitcoinNetwork);
-        var signingKeySettings = derivationScheme.GetAccountKeySettingsFromRoot(signingKey);
-        var rootedKeyPath = signingKeySettings?.GetRootedKeyPath();
-        if (signingKeySettings is null || rootedKeyPath is null)
-        {
-            return PayjoinSenderStartResult.Failed("The wallet key settings are not available.");
-        }
-
-        var accountKey = signingKey.Derive(rootedKeyPath.KeyPath);
-
         var feeRate = feeRateSatPerVb is decimal explicitRate and > 0m
             ? new FeeRate(explicitRate)
             : await _feeProviderFactory.CreateFeeProvider(network).GetFeeRateAsync().ConfigureAwait(false);
@@ -183,7 +196,10 @@ internal sealed class PayjoinSenderService
                         Amount = Money.Satoshis(checked((long)amountSats.Value))
                     }
                 },
-                FeePreference = new FeePreference { ExplicitFeeRate = feeRate }
+                FeePreference = new FeePreference { ExplicitFeeRate = feeRate },
+                // Coins already committed to a pending transaction are not available. Core's own
+                // send flow applies the same exclusion, so the two cannot pick the same UTXO.
+                ExcludeOutpoints = await GetPendingOutpointsAsync(storeId, network).ConfigureAwait(false)
             },
             cancellationToken).ConfigureAwait(false);
         if (psbtResponse is null)
@@ -192,19 +208,56 @@ internal sealed class PayjoinSenderService
         }
 
         var psbt = psbtResponse.PSBT;
-        psbt = psbt.SignAll(derivationScheme.AccountDerivation, accountKey, rootedKeyPath);
+
+        // Identify the transaction by its unsigned txid. It is known before signing, which the
+        // off-server path needs, and it matches what BTCPay records for a pending transaction.
+        // Signing does not move it for the segwit inputs this flow sends; a legacy input would
+        // move it, and such an input also breaks payjoin txid stability in general.
+        var originalTransactionId = psbt.GetGlobalTransaction().GetHash().ToString();
+        // Coins are the second axis: a different URI must not spend what a live session already
+        // committed. Pending transactions are excluded above, and this covers the rest.
+        if (_senderSessionStore.HasPendingSessionForOriginal(originalTransactionId))
+        {
+            return PayjoinSenderStartResult.Failed("A payjoin session already pays this transaction.");
+        }
+
+        var senderSessionId = Guid.NewGuid().ToString("N");
+        var signer = await TryResolveServerSignerAsync(derivationScheme, network, cancellationToken).ConfigureAwait(false);
+        if (signer is null)
+        {
+            // No key on the server: hand the transaction to BTCPay's pending transactions, where
+            // the vault, a hardware device, a seed or a multisig group can sign it. Nothing goes
+            // to the directory until that signature arrives.
+            var pending = await _pendingTransactionService.CreatePendingTransaction(
+                storeId,
+                PayjoinConstants.BitcoinCode,
+                psbt,
+                requestBaseUrl,
+                expiry: DateTimeOffset.UtcNow + SignatureWindow,
+                cancellationToken).ConfigureAwait(false);
+
+            _senderSessionStore.CreateSession(
+                senderSessionId,
+                storeId,
+                bip21.Trim(),
+                destinationAddress,
+                checked((long)amountSats.Value),
+                originalTransactionId,
+                [],
+                pending.Id,
+                PayjoinSenderSessionStatus.AwaitingSignature,
+                requestBaseUrl.ToString());
+
+            LogSenderSessionAwaitingSignature(_logger, senderSessionId, pending.Id, null);
+            return PayjoinSenderStartResult.AwaitingSignature(senderSessionId, originalTransactionId, pending.Id);
+        }
+
+        psbt = psbt.SignAll(derivationScheme.AccountDerivation, signer.AccountKey, signer.RootedKeyPath);
         if (!psbt.TryFinalize(out var finalizeErrors))
         {
             return PayjoinSenderStartResult.Failed($"The original transaction could not be finalized: {string.Join("; ", finalizeErrors.Select(e => e.ToString()))}");
         }
 
-        var originalTransactionId = psbt.ExtractTransaction().GetHash().ToString();
-        if (_senderSessionStore.HasPendingSessionForOriginal(originalTransactionId))
-        {
-            return PayjoinSenderStartResult.Failed("A pending payjoin session already pays this transaction.");
-        }
-
-        var senderSessionId = Guid.NewGuid().ToString("N");
         var bootstrapPersister = new CapturingSenderSessionPersister();
         try
         {
@@ -228,5 +281,48 @@ internal sealed class PayjoinSenderService
 
         LogSenderSessionStarted(_logger, senderSessionId, storeId, null);
         return PayjoinSenderStartResult.Started(senderSessionId, originalTransactionId);
+    }
+
+    /// <summary>
+    /// Returns the account key when the server holds one, and null when it does not. A null
+    /// answer is the normal case for a cold wallet, a hardware device or a multisig group, and
+    /// it routes the transaction to BTCPay's pending transactions instead.
+    /// </summary>
+    private async Task<ServerSigner?> TryResolveServerSignerAsync(
+        DerivationSchemeSettings derivationScheme,
+        BTCPayNetwork network,
+        CancellationToken cancellationToken)
+    {
+        if (!derivationScheme.IsHotWallet)
+        {
+            return null;
+        }
+
+        var explorerClient = _explorerClientProvider.GetExplorerClient(network);
+        var signingKeyStr = await explorerClient.GetMetadataAsync<string>(
+            derivationScheme.AccountDerivation,
+            WellknownMetadataKeys.MasterHDKey,
+            cancellationToken).ConfigureAwait(false);
+        if (signingKeyStr is null)
+        {
+            return null;
+        }
+
+        var signingKey = ExtKey.Parse(signingKeyStr, network.NBitcoinNetwork);
+        var rootedKeyPath = derivationScheme.GetAccountKeySettingsFromRoot(signingKey)?.GetRootedKeyPath();
+        if (rootedKeyPath is null)
+        {
+            return null;
+        }
+
+        return new ServerSigner(signingKey.Derive(rootedKeyPath.KeyPath), rootedKeyPath);
+    }
+
+    private async Task<List<NBitcoin.OutPoint>> GetPendingOutpointsAsync(string storeId, BTCPayNetwork network)
+    {
+        var pending = await _pendingTransactionService
+            .GetPendingTransactions(network.CryptoCode, storeId)
+            .ConfigureAwait(false);
+        return pending.SelectMany(x => x.OutpointsUsed).Select(NBitcoin.OutPoint.Parse).ToList();
     }
 }

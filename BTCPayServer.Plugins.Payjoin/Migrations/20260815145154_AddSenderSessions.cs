@@ -25,6 +25,8 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     DestinationAddress = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
                     AmountSats = table.Column<long>(type: "bigint", nullable: false),
                     OriginalTransactionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                    PendingTransactionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    RequestBaseUrl = table.Column<string>(type: "text", nullable: true),
                     BroadcastTransactionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
                     Status = table.Column<int>(type: "integer", nullable: false),
                     FailureMessage = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: true),
@@ -72,6 +74,12 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                 schema: "BTCPayServer.Plugins.Payjoin",
                 table: "SenderSessions",
                 column: "OriginalTransactionId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_SenderSessions_PendingTransactionId",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                table: "SenderSessions",
+                column: "PendingTransactionId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_SenderSessions_Status_CreatedAt",

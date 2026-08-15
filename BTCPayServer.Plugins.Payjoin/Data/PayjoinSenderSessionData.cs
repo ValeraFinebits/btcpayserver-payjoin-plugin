@@ -17,11 +17,22 @@ internal class PayjoinSenderSessionData
 
     public long AmountSats { get; set; }
 
-    // The txid of the signed original transaction. It doubles as the fallback the
-    // sender broadcasts when the payjoin does not complete, and as the dedup handle
-    // against double-paying the same URI. TODO: index sessions on the receiver's
-    // ephemeral pubkey once the bindings expose PjParam.receiver_pubkey().
+    // The txid of the original transaction. It doubles as the fallback the sender
+    // broadcasts when the payjoin does not complete, and as the dedup handle against
+    // double-paying the same URI. The unsigned txid is stable for the segwit inputs
+    // this plugin sends, so it is known before signing. TODO: index sessions on the
+    // receiver's ephemeral pubkey once the bindings expose PjParam.receiver_pubkey().
     public string OriginalTransactionId { get; set; } = null!;
+
+    // Set while a wallet that cannot sign on the server works through BTCPay's own
+    // pending-transaction screen. It names the row this session waits on, and it is
+    // reused for the second signing round once the receiver returns a proposal.
+    public string? PendingTransactionId { get; set; }
+
+    // The base URL of the request that started this session. A background poller has no
+    // HttpContext, so it cannot derive one, and the second signing round still needs to create
+    // a pending transaction. BTCPay stores the same thing on the pending transaction itself.
+    public string? RequestBaseUrl { get; set; }
 
     // Set when a transaction reaches the network: the payjoin txid when the proposal
     // completed, or the original txid when the fallback was broadcast.
@@ -47,5 +58,11 @@ internal enum PayjoinSenderSessionStatus
     // The original transaction was broadcast instead of a payjoin.
     CompletedFallback,
     // The session ended without any broadcast; the failure message says why.
-    Failed
+    Failed,
+
+    // A wallet that cannot sign on the server holds the transaction. Nothing reaches
+    // the directory until the operator signs through BTCPay's pending-transaction
+    // screen, so the poller skips these. Appended rather than inserted because the
+    // status persists as an integer, and renumbering would rewrite existing rows.
+    AwaitingSignature
 }

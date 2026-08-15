@@ -18,7 +18,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 #pragma warning disable 612, 618
             modelBuilder
                 .HasDefaultSchema("BTCPayServer.Plugins.Payjoin")
-                .HasAnnotation("ProductVersion", "10.0.10")
+                .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -306,6 +306,13 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<string>("PendingTransactionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("RequestBaseUrl")
+                        .HasColumnType("text");
+
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
@@ -321,6 +328,9 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.HasIndex("OriginalTransactionId")
                         .HasDatabaseName("IX_SenderSessions_OriginalTransactionId");
+
+                    b.HasIndex("PendingTransactionId")
+                        .HasDatabaseName("IX_SenderSessions_PendingTransactionId");
 
                     b.HasIndex("StoreId")
                         .HasDatabaseName("IX_SenderSessions_StoreId");
