@@ -18,7 +18,8 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
-#pragma warning disable 612, 618
+            ArgumentNullException.ThrowIfNull(modelBuilder);
+
             modelBuilder
                 .HasDefaultSchema("BTCPayServer.Plugins.Payjoin")
                 .HasAnnotation("ProductVersion", "10.0.11")
@@ -312,7 +313,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.Navigation("InputReservations");
                 });
-#pragma warning restore 612, 618
         }
     }
 }
