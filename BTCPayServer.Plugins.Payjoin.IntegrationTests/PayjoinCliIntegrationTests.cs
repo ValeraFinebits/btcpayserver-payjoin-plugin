@@ -14,9 +14,7 @@ public class PayjoinCliIntegrationTests : UnitTestBase
     {
     }
 
-    [Fact
-    (Skip = "Manual payjoin-cli integration test. Remove Skip to run it explicitly.")
-    ]
+    [Fact(Explicit = true)]
     [Trait("Integration", "Integration")]
     public async Task CreateInvoiceAndPayItThroughThePayjoinPluginWithPayjoinCli()
     {
@@ -33,9 +31,7 @@ public class PayjoinCliIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, paymentResult.InvoiceId, cts.Token).ConfigureAwait(true);
     }
 
-    [Fact
-    (Skip = "Manual payjoin-cli integration test. Remove Skip to run it explicitly.")
-    ]
+    [Fact(Explicit = true)]
     [Trait("Integration", "Integration")]
     public async Task CreateInvoiceAndPayItThroughThePayjoinPluginWithPayjoinCliWhenSenderPostsAfterReceiverPollDelay()
     {

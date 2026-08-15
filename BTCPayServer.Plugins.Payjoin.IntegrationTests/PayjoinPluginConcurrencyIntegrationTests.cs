@@ -14,7 +14,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
     {
     }
 
-    [Fact]
+    [Fact(Explicit = true)]
     [Trait("Integration", "Integration")]
     public async Task ConcurrentGetBip21RequestsAreIdempotentForSameInvoice()
     {
@@ -41,7 +41,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         Assert.Single(sessionStore.GetSessions(), s => s.InvoiceId == invoice.Id);
     }
 
-    [Theory]
+    [Theory(Explicit = true)]
     [InlineData(8, 16)]
     [InlineData(8, 24)]
     [InlineData(8, 32)]
@@ -75,7 +75,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             cts.Token).ConfigureAwait(true);
     }
 
-    [Theory]
+    [Theory(Explicit = true)]
     [InlineData(24, 4)]
     [InlineData(32, 4)]
     [InlineData(24, 8)]
@@ -109,7 +109,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             cts.Token).ConfigureAwait(true);
     }
 
-    [Fact]
+    [Fact(Explicit = true)]
     [Trait("Integration", "Integration")]
     public async Task ConcurrentReceiverSessionsAllowOnlyOneSuccessfulPaymentWhenSingleReceiverInputExists()
     {
@@ -182,7 +182,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, failedInvoiceId, cts.Token).ConfigureAwait(true);
     }
 
-    [Theory]
+    [Theory(Explicit = true)]
     [InlineData(1, 4)]
     [InlineData(2, 4)]
     [InlineData(4, 4)]
@@ -270,7 +270,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         Assert.DoesNotContain(sessionStore.GetSessions(), session => invoiceContexts.Any(invoiceContext => invoiceContext.InvoiceId == session.InvoiceId));
     }
 
-    [Theory]
+    [Theory(Explicit = true)]
     [InlineData(4, 8)]
     [InlineData(4, 16)]
     [InlineData(8, 16)]

@@ -305,8 +305,6 @@ internal static class PayjoinInvoiceTestHelper
         IReadOnlyList<Uri> OhttpRelayUrls,
         Script InvoiceScript)
     {
-        public Uri DirectoryUrl => DirectoryUrls[0];
-
         public Uri OhttpRelayUrl => OhttpRelayUrls[0];
     }
 }

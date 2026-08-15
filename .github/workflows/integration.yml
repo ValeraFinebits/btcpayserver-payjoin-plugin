@@ -1,0 +1,63 @@
+name: integration
+
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: 1.85.0
+  TESTS_BTCRPCCONNECTION: "server=http://127.0.0.1:43782;ceiwHEbqWI83:DwubwWsoo3"
+  TESTS_BTCNBXPLORERURL: "http://127.0.0.1:32838/"
+  TESTS_POSTGRES: "User ID=postgres;Include Error Detail=true;Host=127.0.0.1;Port=39372;Database=btcpayserver"
+  TESTS_EXPLORER_POSTGRES: "User ID=postgres;Include Error Detail=true;Host=127.0.0.1;Port=39372;Database=nbxplorer"
+  TESTS_MAILPIT_HOST: "127.0.0.1"
+  TESTS_MAILPIT_SMTP: "34219"
+  TESTS_MAILPIT_HTTP: "34218"
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: recursive
+
+      - name: Set up Payjoin CI
+        uses: ./.github/actions/prepare-ci-build
+        with:
+          rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+
+      - name: Build payjoin-cli
+        working-directory: rust-payjoin
+        run: cargo build --locked --package payjoin-cli
+
+      - name: Set up BTCPay integration test environment
+        uses: ./.github/actions/prepare-integration-test-env
+
+      - name: Run integration tests
+        env:
+          XUNIT_EXPLICIT_MODE: ${{ github.event_name == 'pull_request' && 'off' || 'on' }}
+        run: >-
+          dotnet test "BTCPayServer.Plugins.Payjoin.IntegrationTests/BTCPayServer.Plugins.Payjoin.IntegrationTests.csproj"
+          -c Release --no-build --no-restore
+          -- RunConfiguration.TreatNoTestsAsError=true xUnit.Explicit=${{ env.XUNIT_EXPLICIT_MODE }}
+
+      - name: Print Docker diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml ps --all || true
+          docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml logs --no-color --tail 500 || true
+
+      - name: Stop BTCPay integration test infrastructure
+        if: always()
+        shell: bash
+        run: docker compose -f btcpayserver/BTCPayServer.Tests/docker-compose.yml down -v >/dev/null 2>&1 || true
