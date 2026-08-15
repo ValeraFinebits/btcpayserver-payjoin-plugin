@@ -319,7 +319,7 @@ public sealed class PayjoinReceiverSessionStore
         sessionData.ContributedInputTransactionId = transactionId;
         sessionData.ContributedInputOutputIndex = outputIndex;
         sessionData.UpdatedAt = reservedAt;
-        sessionData.EventLogRevision = checked(sessionData.EventLogRevision + 1);
+        sessionData.DestructiveWriteStamp = checked(sessionData.DestructiveWriteStamp + 1);
         context.ReceiverInputReservations.Add(new PayjoinReceiverInputReservationData
         {
             InvoiceId = invoiceId,
@@ -598,7 +598,7 @@ public sealed class PayjoinReceiverSessionStore
         }
 
         sessionData.PayjoinUri = null;
-        sessionData.EventLogRevision = checked(sessionData.EventLogRevision + 1);
+        sessionData.DestructiveWriteStamp = checked(sessionData.DestructiveWriteStamp + 1);
     }
 
     private static void AddBootstrapEvents(PayjoinPluginDbContext context, string invoiceId, IEnumerable<string> bootstrapEvents, DateTimeOffset createdAt)

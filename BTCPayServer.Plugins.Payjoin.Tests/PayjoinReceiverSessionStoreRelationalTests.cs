@@ -382,7 +382,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
         {
             using var concurrentContext = testContext.CreateDbContext();
             var concurrentRow = concurrentContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
-            concurrentRow.EventLogRevision = checked(concurrentRow.EventLogRevision + 1);
+            concurrentRow.DestructiveWriteStamp = checked(concurrentRow.DestructiveWriteStamp + 1);
             concurrentContext.SaveChanges();
         };
 
@@ -404,7 +404,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
             using (var concurrentContext = testContext.CreateDbContext())
             {
                 var concurrentRow = concurrentContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
-                concurrentRow.EventLogRevision = checked(concurrentRow.EventLogRevision + 1);
+                concurrentRow.DestructiveWriteStamp = checked(concurrentRow.DestructiveWriteStamp + 1);
                 concurrentContext.SaveChanges();
             }
 
@@ -475,6 +475,44 @@ public class PayjoinReceiverSessionStoreRelationalTests
         Assert.Throws<DbUpdateConcurrencyException>(() => readContext.SaveChanges());
 
         Assert.True(store.TryGetSession(session.InvoiceId, out _));
+    }
+
+    [Fact]
+    public void OnlyDestructiveWritesAdvanceTheDestructiveWriteStamp()
+    {
+        using var testContext = new RelationalPluginTestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-stamp-contract");
+
+        int ReadStamp()
+        {
+            using var context = testContext.CreateDbContext();
+            return context.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId).DestructiveWriteStamp;
+        }
+
+        var initialStamp = ReadStamp();
+
+        store.AppendEventsWithAccountingUpdate(session.InvoiceId, ["stamp-contract-event"], updateBridge: null);
+        store.StorePayjoinUri(session.InvoiceId, ReceiverAddress, PayjoinUri);
+        Assert.True(store.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
+        Assert.True(store.TryConsumeInitializedPollAfterCloseRequest(session.InvoiceId));
+        Assert.Equal(initialStamp, ReadStamp());
+
+        var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 5);
+        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.Equal(initialStamp + 1, ReadStamp());
+
+        Assert.Equal(1, store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow.AddMinutes(20)));
+        Assert.Equal(initialStamp + 1, ReadStamp());
+
+        using (var context = testContext.CreateDbContext())
+        {
+            var row = context.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
+            PayjoinReceiverSessionStore.RemoveAllSessionEvents(context, row);
+            context.SaveChanges();
+        }
+
+        Assert.Equal(initialStamp + 2, ReadStamp());
     }
 
     private const string ReceiverAddress = "bcrt1qexampleaddress0000000000000000000000000";

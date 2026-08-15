@@ -6,7 +6,7 @@ using System;
 namespace BTCPayServer.Plugins.Payjoin.Migrations
 {
     /// <inheritdoc />
-    public partial class AddReceiverSessionPayjoinUriAndEventLogRevision : Migration
+    public partial class AddReceiverSessionPayjoinUriAndDestructiveWriteStamp : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -14,7 +14,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
             ArgumentNullException.ThrowIfNull(migrationBuilder);
 
             migrationBuilder.AddColumn<int>(
-                name: "EventLogRevision",
+                name: "DestructiveWriteStamp",
                 schema: "BTCPayServer.Plugins.Payjoin",
                 table: "ReceiverSessions",
                 type: "integer",
@@ -35,7 +35,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
             ArgumentNullException.ThrowIfNull(migrationBuilder);
 
             migrationBuilder.DropColumn(
-                name: "EventLogRevision",
+                name: "DestructiveWriteStamp",
                 schema: "BTCPayServer.Plugins.Payjoin",
                 table: "ReceiverSessions");
 
