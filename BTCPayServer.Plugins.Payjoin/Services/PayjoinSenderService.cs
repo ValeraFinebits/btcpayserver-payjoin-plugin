@@ -118,11 +118,16 @@ internal sealed class PayjoinSenderService
         _logger = logger;
     }
 
+    /// <param name="selectedInputs">
+    /// The coins the operator picked, when they came through BTCPay's own send screen with coin
+    /// selection open. Empty means the wallet chooses.
+    /// </param>
     public async Task<PayjoinSenderStartResult> StartAsync(
         string storeId,
         string bip21,
         decimal? feeRateSatPerVb,
         RequestBaseUrl requestBaseUrl,
+        IReadOnlyCollection<string>? selectedInputs,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(bip21))
@@ -143,7 +148,7 @@ internal sealed class PayjoinSenderService
         {
             using var uri = global::Payjoin.Uri.Parse(bip21.Trim());
             using var pjUri = uri.CheckPjSupported();
-            return await StartWithPjUriAsync(storeId, bip21, pjUri, network, feeRateSatPerVb, requestBaseUrl, cancellationToken).ConfigureAwait(false);
+            return await StartWithPjUriAsync(storeId, bip21, pjUri, network, feeRateSatPerVb, requestBaseUrl, selectedInputs, cancellationToken).ConfigureAwait(false);
         }
         catch (UriParseException ex)
         {
@@ -162,6 +167,7 @@ internal sealed class PayjoinSenderService
         BTCPayNetwork network,
         decimal? feeRateSatPerVb,
         RequestBaseUrl requestBaseUrl,
+        IReadOnlyCollection<string>? selectedInputs,
         CancellationToken cancellationToken)
     {
         var destinationAddress = pjUri.Address();
@@ -214,6 +220,10 @@ internal sealed class PayjoinSenderService
                     }
                 },
                 FeePreference = new FeePreference { ExplicitFeeRate = feeRate },
+                // Coin selection from BTCPay's send screen, when the operator opened it.
+                IncludeOnlyOutpoints = selectedInputs is { Count: > 0 }
+                    ? selectedInputs.Select(NBitcoin.OutPoint.Parse).ToList()
+                    : null,
                 // Coins already committed are not available: a pending transaction holds some,
                 // and a live payjoin session holds the rest. Core's own send flow applies the
                 // same exclusion for pending transactions, so the two cannot pick one UTXO twice.

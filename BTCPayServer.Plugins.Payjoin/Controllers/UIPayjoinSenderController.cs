@@ -3,7 +3,12 @@ using BTCPayServer.Abstractions.Extensions;
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
 using BTCPayServer.Plugins.Payjoin.Data;
+using BTCPayServer.Data;
 using BTCPayServer.Plugins.Payjoin.Models;
+using BTCPayServer.Plugins.Wallets;
+using BTCPayServer.Plugins.Wallets.Views.ViewModels;
+using BTCPayServer.Services;
+using BTCPayServer.Services.Wallets;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -20,43 +25,126 @@ public class UIPayjoinSenderController : Controller
     private readonly PayjoinSenderService _senderService;
     private readonly PayjoinSenderSessionStore _senderSessionStore;
     private readonly IPayjoinSenderSessionProcessor _senderSessionProcessor;
+    private readonly WalletRepository _walletRepository;
 
     internal UIPayjoinSenderController(
         PayjoinSenderService senderService,
         PayjoinSenderSessionStore senderSessionStore,
-        IPayjoinSenderSessionProcessor senderSessionProcessor)
+        IPayjoinSenderSessionProcessor senderSessionProcessor,
+        WalletRepository walletRepository)
     {
         _senderService = senderService;
         _senderSessionStore = senderSessionStore;
         _senderSessionProcessor = senderSessionProcessor;
+        _walletRepository = walletRepository;
     }
 
-    [HttpGet]
-    public IActionResult Send(string storeId, string? bip21)
-    {
-        return View(BuildViewModel(storeId, bip21));
-    }
-
-    [HttpPost]
-    public async Task<IActionResult> Send(string storeId, PayjoinSenderViewModel model, CancellationToken cancellationToken)
+    /// <summary>
+    /// Starts a session from BTCPay's own send screen. The screen posts its whole form here, so
+    /// the operator keeps coin selection, labels, fee-rate presets, the balance and the fiat
+    /// conversion, and this plugin only takes over the part core cannot do: the asynchronous
+    /// round with a receiver who is not online.
+    /// </summary>
+    [HttpPost("from-wallet")]
+    // The operator arrives from BTCPay's send screen, so this asks for the permission that screen
+    // asks for rather than the store-settings permission the rest of this controller uses.
+    [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = WalletPolicies.CanCreateWalletTransactions)]
+    public async Task<IActionResult> SendFromWallet(string storeId, WalletSendModel model, CancellationToken cancellationToken)
     {
         System.ArgumentNullException.ThrowIfNull(model);
+        var walletId = new WalletId(storeId, PayjoinConstants.BitcoinCode);
+        var destination = ResolveSingleDestination(model, out var destinationError);
+        if (destination is null)
+        {
+            return RedirectWithError(storeId, walletId, destinationError!);
+        }
+
+        await SaveDestinationLabelsAsync(walletId, destination).ConfigureAwait(false);
+
         var result = await _senderService.StartAsync(
             storeId,
-            model.Bip21 ?? string.Empty,
-            model.FeeRateSatPerVb,
+            model.PayJoinBIP21,
+            model.FeeSatoshiPerByte,
             new BTCPayServer.Abstractions.RequestBaseUrl(Request),
+            model.InputSelection ? model.SelectedInputs?.ToArray() : null,
             cancellationToken).ConfigureAwait(false);
         if (!result.Success)
         {
-            TempData.SetStatusMessageModel(new StatusMessageModel
-            {
-                Severity = StatusMessageModel.StatusSeverity.Error,
-                Message = result.Error
-            });
-            return View(BuildViewModel(storeId, model.Bip21));
+            return RedirectWithError(storeId, walletId, result.Error!);
         }
 
+        return RedirectAfterStart(storeId, result);
+    }
+
+    /// <summary>
+    /// An async payjoin pays one destination, because the library takes its fee contribution from
+    /// the first output that is not the payee, and with a second payee that output would be
+    /// someone else's payment rather than this wallet's change.
+    /// </summary>
+    internal static WalletSendModel.TransactionOutput? ResolveSingleDestination(WalletSendModel model, out string? error)
+    {
+        if (string.IsNullOrEmpty(model.PayJoinBIP21))
+        {
+            error = "This destination does not advertise async payjoin.";
+            return null;
+        }
+
+        var outputs = model.Outputs?.Where(x => !string.IsNullOrWhiteSpace(x.DestinationAddress)).ToArray() ?? [];
+        if (outputs.Length != 1)
+        {
+            error = "An async payjoin pays one destination. Remove the other destinations, or send them separately.";
+            return null;
+        }
+
+        if (outputs[0].SubtractFeesFromOutput)
+        {
+            error = "An async payjoin cannot subtract the fee from the amount the receiver expects.";
+            return null;
+        }
+
+        error = null;
+        return outputs[0];
+    }
+
+    /// <summary>
+    /// Keeps the labels the operator typed on the send screen, the way core's own send does:
+    /// they attach to the destination address, not to the transaction.
+    /// </summary>
+    private async Task SaveDestinationLabelsAsync(WalletId walletId, WalletSendModel.TransactionOutput destination)
+    {
+        var labels = destination.Labels?.Where(x => !string.IsNullOrWhiteSpace(x)).ToArray() ?? [];
+        if (labels.Length == 0)
+        {
+            return;
+        }
+
+        var walletObjectAddress = new WalletObjectId(walletId, WalletObjectData.Types.Address, destination.DestinationAddress);
+        if (await _walletRepository.GetWalletObject(walletObjectAddress).ConfigureAwait(false) is null)
+        {
+            await _walletRepository.EnsureWalletObject(walletObjectAddress).ConfigureAwait(false);
+        }
+
+        await _walletRepository.AddWalletObjectLabels(walletObjectAddress, labels).ConfigureAwait(false);
+    }
+
+    private IActionResult RedirectWithError(string storeId, WalletId walletId, string error)
+    {
+        TempData.SetStatusMessageModel(new StatusMessageModel
+        {
+            Severity = StatusMessageModel.StatusSeverity.Error,
+            Message = error
+        });
+        return RedirectToAction("WalletSend", "UIWallets", new { area = "Wallets", walletId = walletId.ToString() });
+    }
+
+    [HttpGet]
+    public IActionResult Send(string storeId)
+    {
+        return View(BuildViewModel(storeId));
+    }
+
+    private IActionResult RedirectAfterStart(string storeId, PayjoinSenderStartResult result)
+    {
         if (result.PendingTransactionId is not null)
         {
             // The wallet cannot sign on the server, so BTCPay's own screen collects the signature
@@ -112,11 +200,10 @@ public class UIPayjoinSenderController : Controller
         return RedirectToAction(nameof(Send), new { storeId });
     }
 
-    private PayjoinSenderViewModel BuildViewModel(string storeId, string? bip21)
+    private PayjoinSenderViewModel BuildViewModel(string storeId)
     {
         return new PayjoinSenderViewModel
         {
-            Bip21 = bip21,
             StoreId = storeId,
             Sessions = _senderSessionStore.GetSessions(storeId)
                 .OrderByDescending(x => x.CreatedAt)

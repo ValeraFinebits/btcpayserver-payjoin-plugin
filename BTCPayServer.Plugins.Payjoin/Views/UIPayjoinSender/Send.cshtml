@@ -3,11 +3,15 @@
 @using Microsoft.AspNetCore.Mvc.TagHelpers
 @model BTCPayServer.Plugins.Payjoin.Models.PayjoinSenderViewModel
 @{
-    ViewData.SetLayoutModel(new LayoutModel("PayjoinSend", "Send Async Payjoin").SetCategory(WellKnownCategories.Store));
+    ViewData.SetLayoutModel(new LayoutModel("PayjoinSend", "Async Payjoin Payments").SetCategory(WellKnownCategories.Store));
 }
 
 <div class="sticky-header">
-    <h2 text-translate="true">Send Async Payjoin</h2>
+    <h2 text-translate="true">Async Payjoin Payments</h2>
+    <a asp-area="Wallets" asp-controller="UIWallets" asp-action="WalletSend"
+       asp-route-walletId="@($"{Model.StoreId}-BTC")" class="btn btn-primary" text-translate="true">
+        Send
+    </a>
 </div>
 
 <partial name="_StatusMessage" />
@@ -15,32 +19,23 @@
 <div class="row">
     <div class="col-xxl-constrain col-xl-8">
         <p class="text-muted" text-translate="true">
-            Paste a BIP 21 payment URI that advertises payjoin support. The store's wallet funds
-            the payment, and the session completes in the background: it delivers the payjoin when
-            the receiver responds, and it broadcasts the plain payment when the payjoin window
-            closes. Nothing is broadcast before one of the two happens. A hot wallet signs on the
-            server. Any other wallet signs on the usual BTCPay screen, with the vault, a hardware
-            device, a seed or the other multisig signers, and it signs a second time when the
-            receiver returns a payjoin proposal.
+            Payments start on the wallet send screen: paste a BIP 21 URI that advertises payjoin
+            support, and the async option appears there. This page follows the sessions those
+            payments run in. A session delivers the payjoin when the receiver responds, and it
+            broadcasts the plain payment when the payjoin window closes. Nothing is broadcast
+            before one of the two happens. A hot wallet signs on the server. Any other wallet signs
+            on the usual BTCPay screen, with the vault, a hardware device, a seed or the other
+            multisig signers, and it signs a second time when the receiver returns a proposal.
         </p>
-        <form method="post">
-            <div class="form-group">
-                <label asp-for="Bip21" class="form-label" text-translate="true">Payment URI</label>
-                <textarea asp-for="Bip21" class="form-control font-monospace" rows="3" placeholder="bitcoin:...?amount=...&pj=..."></textarea>
-            </div>
-            <div class="form-group">
-                <label asp-for="FeeRateSatPerVb" class="form-label" text-translate="true">Fee rate (sat/vB, optional)</label>
-                <input asp-for="FeeRateSatPerVb" class="form-control" style="max-width:12ch" />
-                <div class="form-text" text-translate="true">Empty uses the wallet's recommended fee rate.</div>
-            </div>
-            <button type="submit" class="btn btn-primary" text-translate="true">Start payjoin payment</button>
-        </form>
     </div>
 </div>
 
-@if (Model.Sessions.Count > 0)
+@if (Model.Sessions.Count == 0)
 {
-    <h3 class="mt-5" text-translate="true">Sender sessions</h3>
+    <p class="text-secondary" text-translate="true">No async payjoin payments yet.</p>
+}
+else
+{
     <div class="table-responsive">
         <table class="table table-hover">
             <thead>

@@ -1,61 +1,64 @@
-@* Injected into the core wallet send screen (onchain-wallet-send). Watches the destination
-   field for a BIP 77 payjoin URI and offers the async sender flow, which survives the
-   receiver being offline; the core flow only speaks the synchronous v1 protocol. *@
-<div id="payjoin-async-offer" class="alert alert-info d-none mt-3">
-    <span text-translate="true">
-        This destination supports async payjoin. The core send flow pays it as a plain
-        transaction; the async flow completes the payjoin in the background, and the receiver
-        does not need to be online now.
-    </span>
-    <a id="payjoin-async-offer-link" href="#" class="alert-link" text-translate="true">Send as async payjoin</a>
-</div>
-<script>
-    (function () {
-        function extractStoreId() {
-            var match = window.location.pathname.match(/\/wallets\/S-(.+)-[A-Z0-9]+(\/|$)/);
-            return match ? match[1] : null;
-        }
+@using BTCPayServer
+@using BTCPayServer.Plugins.Wallets.Views.ViewModels
+@using Microsoft.AspNetCore.Routing
+@model WalletSendModel
+@*
+    Injected into core's wallet send screen (onchain-wallet-send), inside its form. Core already
+    resolves a pasted BIP 21 URI server-side: LoadFromBIP21 sets PayJoinBIP21 whenever the URI
+    carries a pj= endpoint. That covers both payjoin versions, but core's own flow speaks the
+    synchronous v1 protocol, so a v2 endpoint would fail there and the payment would go out plain.
 
-        function looksLikeAsyncPayjoin(value) {
-            if (!value) {
-                return false;
-            }
+    This block adds the v2 route as another submit button on the same form, so the operator keeps
+    coin selection, labels, fee-rate presets, the balance and the fiat conversion.
+*@
+@{
+    // A BIP 77 pj endpoint carries its session parameters in a URI fragment. A v1 endpoint has none.
+    var isAsyncPayjoin = false;
+    if (!string.IsNullOrEmpty(Model?.PayJoinBIP21) &&
+        System.Text.RegularExpressions.Regex.Match(Model.PayJoinBIP21, "[?&]pj=([^&]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase) is { Success: true } pjMatch)
+    {
+        isAsyncPayjoin = System.Uri.UnescapeDataString(pjMatch.Groups[1].Value).Contains('#', StringComparison.Ordinal);
+    }
 
-            // A BIP 77 pj endpoint is a directory URL whose session parameters travel in a
-            // URI fragment. A v1 endpoint has no fragment.
-            var pjMatch = value.match(/[?&]pj=([^&]+)/i);
-            if (!pjMatch) {
-                return false;
-            }
+    var storeId = ViewContext.RouteData.Values["walletId"] as string is { } walletIdValue &&
+                  WalletId.TryParse(walletIdValue, out var walletId)
+        ? walletId.StoreId
+        : null;
+}
 
-            var endpoint = decodeURIComponent(pjMatch[1]);
-            return endpoint.indexOf('#') !== -1;
-        }
-
-        function update() {
-            var offer = document.getElementById('payjoin-async-offer');
-            var link = document.getElementById('payjoin-async-offer-link');
-            var storeId = extractStoreId();
-            if (!offer || !link || !storeId) {
+@if (isAsyncPayjoin && storeId is not null)
+{
+    <div class="alert alert-info mt-3" id="payjoin-async-offer">
+        <p text-translate="true">
+            This destination supports async payjoin. The receiver does not have to be online now:
+            the payjoin completes in the background, and the plain payment goes out on its own if
+            it does not. A wallet that cannot sign on the server asks for a second signature when
+            the receiver answers.
+        </p>
+        <button type="submit" class="btn btn-primary" name="command" value="payjoin-async"
+                asp-controller="UIPayjoinSender" asp-action="SendFromWallet" asp-route-storeId="@storeId"
+                formmethod="post" text-translate="true">
+            Send as async payjoin
+        </button>
+    </div>
+    <script>
+        // Core renders its own payjoin toggle for any pj= endpoint. It drives the v1 request,
+        // which this endpoint does not answer, so signing with it on would fail and fall back to
+        // a plain payment. Turn it off and hide it; the button above is the route for this URI.
+        (function () {
+            var toggle = document.getElementById('PayJoinBIP21');
+            if (!toggle) {
                 return;
             }
 
-            var destinationField = document.querySelector('textarea[name$="DestinationAddress"], input[name$="DestinationAddress"]');
-            var value = destinationField ? destinationField.value.trim() : '';
-            if (looksLikeAsyncPayjoin(value)) {
-                link.href = '/stores/' + encodeURIComponent(storeId) + '/payjoin/send?bip21=' + encodeURIComponent(value);
-                offer.classList.remove('d-none');
-            } else {
-                offer.classList.add('d-none');
+            if (toggle.type === 'checkbox') {
+                toggle.checked = false;
             }
-        }
 
-        document.addEventListener('input', function (ev) {
-            if (ev.target && typeof ev.target.name === 'string' && ev.target.name.indexOf('DestinationAddress') !== -1) {
-                update();
+            var row = toggle.closest('div');
+            if (row) {
+                row.classList.add('d-none');
             }
-        });
-        document.addEventListener('DOMContentLoaded', update);
-        update();
-    })();
-</script>
+        })();
+    </script>
+}
