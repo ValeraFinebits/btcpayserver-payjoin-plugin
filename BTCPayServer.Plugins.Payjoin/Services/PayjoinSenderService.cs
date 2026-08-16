@@ -50,9 +50,26 @@ internal sealed record PayjoinSenderStartResult(
 /// </summary>
 internal sealed class PayjoinSenderService
 {
-    // Floor for the payjoin round, expressed the way the library wants it:
+    // Relay floor for the payjoin round, expressed the way the library wants it:
     // 250 sat/kWU equals 1 sat/vB.
     internal const ulong MinFeeRateSatPerKwu = 250;
+
+    /// <summary>
+    /// The fee rate this sender gives rust-payjoin. The library uses it twice: it is the floor
+    /// the receiver's proposal must clear, and it sizes the fee this sender contributes for the
+    /// receiver's extra input. Both must reflect the rate the operator chose, or the receiver can
+    /// hand back a proposal that confirms far slower than the operator asked for. Sessions from
+    /// before this was recorded fall back to the relay floor.
+    /// </summary>
+    internal static ulong ResolveMinFeeRate(long feeRateSatPerKwu) =>
+        feeRateSatPerKwu <= 0 ? MinFeeRateSatPerKwu : Math.Max(MinFeeRateSatPerKwu, (ulong)feeRateSatPerKwu);
+
+    /// <summary>
+    /// NBitcoin counts fee rates in satoshi per virtual byte; rust-payjoin counts them in
+    /// satoshi per thousand weight units, and a virtual byte is four weight units.
+    /// </summary>
+    internal static long ToSatPerKwu(FeeRate feeRate) =>
+        checked((long)(feeRate.SatoshiPerByte * 250m));
 
     // How long a transaction waits for an off-server signature before BTCPay retires it. The
     // coins stay reserved for that long, so this bounds how long a forgotten signing request
@@ -197,9 +214,10 @@ internal sealed class PayjoinSenderService
                     }
                 },
                 FeePreference = new FeePreference { ExplicitFeeRate = feeRate },
-                // Coins already committed to a pending transaction are not available. Core's own
-                // send flow applies the same exclusion, so the two cannot pick the same UTXO.
-                ExcludeOutpoints = await GetPendingOutpointsAsync(storeId, network).ConfigureAwait(false)
+                // Coins already committed are not available: a pending transaction holds some,
+                // and a live payjoin session holds the rest. Core's own send flow applies the
+                // same exclusion for pending transactions, so the two cannot pick one UTXO twice.
+                ExcludeOutpoints = await GetCommittedOutpointsAsync(storeId, network).ConfigureAwait(false)
             },
             cancellationToken).ConfigureAwait(false);
         if (psbtResponse is null)
@@ -214,6 +232,8 @@ internal sealed class PayjoinSenderService
         // Signing does not move it for the segwit inputs this flow sends; a legacy input would
         // move it, and such an input also breaks payjoin txid stability in general.
         var originalTransactionId = psbt.GetGlobalTransaction().GetHash().ToString();
+        var feeRateSatPerKwu = ToSatPerKwu(feeRate);
+        var outpointsUsed = psbt.Inputs.Select(x => x.PrevOut.ToString()).ToArray();
         // Coins are the second axis: a different URI must not spend what a live session already
         // committed. Pending transactions are excluded above, and this covers the rest.
         if (_senderSessionStore.HasPendingSessionForOriginal(originalTransactionId))
@@ -244,6 +264,11 @@ internal sealed class PayjoinSenderService
                 checked((long)amountSats.Value),
                 originalTransactionId,
                 [],
+                feeRateSatPerKwu,
+                outpointsUsed,
+                // The original is not signed yet, so the session has no fallback to offer until
+                // the operator signs it.
+                originalTransactionHex: null,
                 pending.Id,
                 PayjoinSenderSessionStatus.AwaitingSignature,
                 requestBaseUrl.ToString());
@@ -262,7 +287,7 @@ internal sealed class PayjoinSenderService
         try
         {
             using var senderBuilder = new SenderBuilder(psbt.ToBase64(), pjUri);
-            using var transition = senderBuilder.BuildRecommended(MinFeeRateSatPerKwu);
+            using var transition = senderBuilder.BuildRecommended(ResolveMinFeeRate(feeRateSatPerKwu));
             using var sender = transition.Save(bootstrapPersister);
         }
         catch (UniffiException ex)
@@ -277,7 +302,10 @@ internal sealed class PayjoinSenderService
             destinationAddress,
             checked((long)amountSats.Value),
             originalTransactionId,
-            bootstrapPersister.Load());
+            bootstrapPersister.Load(),
+            feeRateSatPerKwu,
+            outpointsUsed,
+            psbt.ExtractTransaction().ToHex());
 
         LogSenderSessionStarted(_logger, senderSessionId, storeId, null);
         return PayjoinSenderStartResult.Started(senderSessionId, originalTransactionId);
@@ -318,11 +346,15 @@ internal sealed class PayjoinSenderService
         return new ServerSigner(signingKey.Derive(rootedKeyPath.KeyPath), rootedKeyPath);
     }
 
-    private async Task<List<NBitcoin.OutPoint>> GetPendingOutpointsAsync(string storeId, BTCPayNetwork network)
+    private async Task<List<NBitcoin.OutPoint>> GetCommittedOutpointsAsync(string storeId, BTCPayNetwork network)
     {
         var pending = await _pendingTransactionService
             .GetPendingTransactions(network.CryptoCode, storeId)
             .ConfigureAwait(false);
-        return pending.SelectMany(x => x.OutpointsUsed).Select(NBitcoin.OutPoint.Parse).ToList();
+        return pending.SelectMany(x => x.OutpointsUsed)
+            .Concat(_senderSessionStore.GetOutpointsHeldByLiveSessions(storeId))
+            .Distinct(StringComparer.Ordinal)
+            .Select(NBitcoin.OutPoint.Parse)
+            .ToList();
     }
 }

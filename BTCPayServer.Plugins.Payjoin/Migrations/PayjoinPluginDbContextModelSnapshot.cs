@@ -301,10 +301,20 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)");
 
+                    b.Property<long>("FeeRateSatPerKwu")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OriginalTransactionHex")
+                        .HasColumnType("text");
+
                     b.Property<string>("OriginalTransactionId")
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.PrimitiveCollection<string[]>("OutpointsUsed")
+                        .IsRequired()
+                        .HasColumnType("text[]");
 
                     b.Property<string>("PendingTransactionId")
                         .HasMaxLength(64)
