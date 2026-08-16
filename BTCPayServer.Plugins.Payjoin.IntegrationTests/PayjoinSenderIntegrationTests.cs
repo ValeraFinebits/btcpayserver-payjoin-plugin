@@ -53,13 +53,13 @@ public class PayjoinSenderIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         var senderService = tester.PayTester.GetService<PayjoinSenderService>();
-        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, cts.Token).ConfigureAwait(true);
+        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, selectedInputs: null, cts.Token).ConfigureAwait(true);
         Assert.True(startResult.Success, startResult.Error);
         Assert.NotNull(startResult.SenderSessionId);
         Assert.NotNull(startResult.OriginalTransactionId);
 
         // A duplicate submission of the same URI must be refused while the session runs.
-        var duplicate = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, cts.Token).ConfigureAwait(true);
+        var duplicate = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, selectedInputs: null, cts.Token).ConfigureAwait(true);
         Assert.False(duplicate.Success);
 
         var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();
@@ -138,7 +138,7 @@ public class PayjoinSenderIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         var senderService = tester.PayTester.GetService<PayjoinSenderService>();
-        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, cts.Token).ConfigureAwait(true);
+        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, selectedInputs: null, cts.Token).ConfigureAwait(true);
         Assert.True(startResult.Success, startResult.Error);
         // Nothing was signed on the server, so the session waits instead of starting.
         Assert.NotNull(startResult.PendingTransactionId);
@@ -211,7 +211,7 @@ public class PayjoinSenderIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         var senderService = tester.PayTester.GetService<PayjoinSenderService>();
-        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, cts.Token).ConfigureAwait(true);
+        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, selectedInputs: null, cts.Token).ConfigureAwait(true);
         Assert.True(startResult.Success, startResult.Error);
         Assert.NotNull(startResult.PendingTransactionId);
 
@@ -229,6 +229,65 @@ public class PayjoinSenderIntegrationTests : UnitTestBase
         var completedSession = await WaitForTerminalSessionAsync(senderSessionStore, senderSessionId, cts.Token).ConfigureAwait(true);
         Assert.Equal(PayjoinSenderSessionStatus.CompletedPayjoin, completedSession.Status);
         Assert.NotEqual(startResult.OriginalTransactionId, completedSession.BroadcastTransactionId);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task CoinSelectionFromTheSendScreenDecidesWhichCoinsThePayjoinSpends()
+    {
+        // The send screen is where a payment starts, and the coins the operator picks there have
+        // to be the coins the payjoin spends. The receiver adds an input of its own on top; every
+        // other input must be the one that was chosen.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, payer.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        // The payer wallet is funded with more than one coin, so a choice is a real choice.
+        var payerOutpoints = await PayjoinIntegrationTestSupport.GetReceiverOutpointsAsync(
+            tester,
+            payer.StoreId,
+            confirmedOnly: true,
+            cts.Token).ConfigureAwait(true);
+        Assert.True(payerOutpoints.Count > 1, "the payer wallet needs more than one coin for this test to mean anything");
+        var chosenOutpoint = payerOutpoints.OrderBy(x => x, StringComparer.Ordinal).First();
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var senderService = tester.PayTester.GetService<PayjoinSenderService>();
+        var startResult = await senderService.StartAsync(
+            payer.StoreId,
+            bip21Response.Bip21,
+            feeRateSatPerVb: 5m,
+            TestRequestBaseUrl,
+            selectedInputs: [chosenOutpoint],
+            cts.Token).ConfigureAwait(true);
+        Assert.True(startResult.Success, startResult.Error);
+
+        var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();
+        Assert.True(senderSessionStore.TryGetSession(startResult.SenderSessionId!, out var session));
+        // The session records what it committed, and it committed only what was chosen.
+        Assert.Equal([chosenOutpoint], session!.OutpointsUsed);
+
+        var completedSession = await WaitForTerminalSessionAsync(senderSessionStore, startResult.SenderSessionId!, cts.Token).ConfigureAwait(true);
+        Assert.Equal(PayjoinSenderSessionStatus.CompletedPayjoin, completedSession.Status);
+
+        var rewardAddress = await tester.ExplorerNode.GetNewAddressAsync(cts.Token).ConfigureAwait(true);
+        await tester.ExplorerNode.GenerateToAddressAsync(1, rewardAddress, cts.Token).ConfigureAwait(true);
+        var bestBlock = await tester.ExplorerNode.GetBestBlockHashAsync(cts.Token).ConfigureAwait(true);
+        var broadcastTransaction = await tester.ExplorerNode
+            .GetRawTransactionAsync(uint256.Parse(completedSession.BroadcastTransactionId!), bestBlock, cancellationToken: cts.Token)
+            .ConfigureAwait(true);
+
+        var spentByThisWallet = broadcastTransaction.Inputs
+            .Select(x => x.PrevOut.ToString())
+            .Where(payerOutpoints.Contains)
+            .ToArray();
+        Assert.Equal([chosenOutpoint], spentByThisWallet);
     }
 
     [Fact]
@@ -253,7 +312,7 @@ public class PayjoinSenderIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
 
         var senderService = tester.PayTester.GetService<PayjoinSenderService>();
-        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, cts.Token).ConfigureAwait(true);
+        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, selectedInputs: null, cts.Token).ConfigureAwait(true);
         Assert.True(startResult.Success, startResult.Error);
 
         var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();

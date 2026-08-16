@@ -5,10 +5,6 @@ namespace BTCPayServer.Plugins.Payjoin.Models;
 
 public class PayjoinSenderViewModel
 {
-    public string? Bip21 { get; set; }
-
-    public decimal? FeeRateSatPerVb { get; set; }
-
     public string? StoreId { get; set; }
 
     public IReadOnlyList<PayjoinSenderSessionViewModel> Sessions { get; set; } = [];
