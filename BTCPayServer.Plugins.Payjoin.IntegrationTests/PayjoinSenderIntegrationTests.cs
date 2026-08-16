@@ -5,6 +5,8 @@ using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Tests;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using NBitcoin;
 using Xunit;
 
@@ -178,6 +180,107 @@ public class PayjoinSenderIntegrationTests : UnitTestBase
         Assert.Contains(
             broadcastTransaction.Inputs,
             input => receiverOutpointsBeforePayment.Contains(input.PrevOut.ToString()));
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task ColdWalletSessionCompletesWithTheSignatureEventSwitchedOff()
+    {
+        // The signature reaches the plugin as an in-memory event, which a restart can drop. The
+        // poller sweep is the path that has to be reliable, so this test stops the listener before
+        // anything is signed and requires the whole cold-wallet loop to finish without it.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(
+            tester,
+            context.Network,
+            serverHoldsKeys: false,
+            cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, payer.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var listener = tester.PayTester.ServiceProvider
+            .GetServices<IHostedService>()
+            .OfType<PayjoinSenderSignatureListener>()
+            .Single();
+        await listener.StopAsync(cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var senderService = tester.PayTester.GetService<PayjoinSenderService>();
+        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, cts.Token).ConfigureAwait(true);
+        Assert.True(startResult.Success, startResult.Error);
+        Assert.NotNull(startResult.PendingTransactionId);
+
+        var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();
+        var senderSessionId = startResult.SenderSessionId!;
+
+        await SignPendingTransactionAsync(tester, payer, startResult.PendingTransactionId!, cts.Token).ConfigureAwait(true);
+        var proposalPendingTransactionId = await WaitForNextPendingTransactionAsync(
+            senderSessionStore,
+            senderSessionId,
+            startResult.PendingTransactionId!,
+            cts.Token).ConfigureAwait(true);
+        await SignPendingTransactionAsync(tester, payer, proposalPendingTransactionId, cts.Token).ConfigureAwait(true);
+
+        var completedSession = await WaitForTerminalSessionAsync(senderSessionStore, senderSessionId, cts.Token).ConfigureAwait(true);
+        Assert.Equal(PayjoinSenderSessionStatus.CompletedPayjoin, completedSession.Status);
+        Assert.NotEqual(startResult.OriginalTransactionId, completedSession.BroadcastTransactionId);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task StoppingASessionBroadcastsThePlainPayment()
+    {
+        // Stopping a session stops the payjoin, not the payment. The operator signs the original,
+        // refuses the receiver's proposal, and the original goes to the network on its own.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(
+            tester,
+            context.Network,
+            serverHoldsKeys: false,
+            cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, payer.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var senderService = tester.PayTester.GetService<PayjoinSenderService>();
+        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, cts.Token).ConfigureAwait(true);
+        Assert.True(startResult.Success, startResult.Error);
+
+        var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();
+        var senderSessionId = startResult.SenderSessionId!;
+        await SignPendingTransactionAsync(tester, payer, startResult.PendingTransactionId!, cts.Token).ConfigureAwait(true);
+
+        // Wait until the receiver's proposal is back and parked for its own signature. The session
+        // is idle there, so the stop below races with nothing.
+        await WaitForNextPendingTransactionAsync(
+            senderSessionStore,
+            senderSessionId,
+            startResult.PendingTransactionId!,
+            cts.Token).ConfigureAwait(true);
+
+        var processor = tester.PayTester.GetService<IPayjoinSenderSessionProcessor>();
+        var cancelResult = await processor.CancelAsync(payer.StoreId, senderSessionId, cts.Token).ConfigureAwait(true);
+        Assert.True(cancelResult.Success, cancelResult.Error);
+        Assert.Equal(startResult.OriginalTransactionId, cancelResult.BroadcastTransactionId);
+
+        Assert.True(senderSessionStore.TryGetSession(senderSessionId, out var stopped));
+        Assert.Equal(PayjoinSenderSessionStatus.CompletedFallback, stopped!.Status);
+        Assert.Equal(startResult.OriginalTransactionId, stopped.BroadcastTransactionId);
+
+        // The plain payment is a real transaction on the network, and it pays the merchant.
+        var rewardAddress = await tester.ExplorerNode.GetNewAddressAsync(cts.Token).ConfigureAwait(true);
+        await tester.ExplorerNode.GenerateToAddressAsync(1, rewardAddress, cts.Token).ConfigureAwait(true);
+        await context.Merchant.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
     }
 
     /// <summary>

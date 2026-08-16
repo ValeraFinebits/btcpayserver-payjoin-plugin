@@ -88,6 +88,12 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<PayjoinSenderSessionStore>(),
             provider.GetRequiredService<BTCPayServer.HostedServices.PendingTransactionService>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderService>>()));
+        applicationBuilder.AddSingleton(provider => new PayjoinSenderSignatureHandler(
+            provider.GetRequiredService<PayjoinSenderSessionStore>(),
+            provider.GetRequiredService<BTCPayServer.HostedServices.PendingTransactionService>(),
+            provider.GetRequiredService<BTCPayNetworkProvider>(),
+            provider.GetRequiredService<ExplorerClientProvider>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderSignatureHandler>>()));
         applicationBuilder.AddSingleton<IPayjoinSenderSessionProcessor>(provider => new PayjoinSenderSessionProcessor(
             provider.GetRequiredService<PayjoinSenderSessionStore>(),
             provider.GetRequiredService<IPayjoinStoreSettingsRepository>(),
@@ -97,14 +103,12 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<BTCPayServer.Services.Invoices.PaymentMethodHandlerDictionary>(),
             provider.GetRequiredService<ExplorerClientProvider>(),
             provider.GetRequiredService<BTCPayServer.HostedServices.PendingTransactionService>(),
+            provider.GetRequiredService<PayjoinSenderSignatureHandler>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderSessionProcessor>>()));
         applicationBuilder.AddHostedService(provider => new PayjoinSenderSignatureListener(
             provider.GetRequiredService<EventAggregator>(),
             provider.GetRequiredService<PayjoinSenderSessionStore>(),
-            provider.GetRequiredService<BTCPayServer.HostedServices.PendingTransactionService>(),
-            provider.GetRequiredService<BTCPayNetworkProvider>(),
-            provider.GetRequiredService<ExplorerClientProvider>(),
-            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderSignatureListener>>()));
+            provider.GetRequiredService<PayjoinSenderSignatureHandler>()));
         applicationBuilder.AddHostedService(provider => new PayjoinSenderPoller(
             provider.GetRequiredService<IPayjoinSenderSessionProcessor>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderPoller>>()));

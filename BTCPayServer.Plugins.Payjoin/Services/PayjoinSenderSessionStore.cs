@@ -17,6 +17,9 @@ internal sealed record PayjoinSenderSessionState(
     string? BroadcastTransactionId,
     string? PendingTransactionId,
     string? RequestBaseUrl,
+    long FeeRateSatPerKwu,
+    string[] OutpointsUsed,
+    string? OriginalTransactionHex,
     PayjoinSenderSessionStatus Status,
     string? FailureMessage,
     DateTimeOffset CreatedAt,
@@ -51,6 +54,9 @@ internal sealed class PayjoinSenderSessionStore
         long amountSats,
         string originalTransactionId,
         IEnumerable<string> bootstrapEvents,
+        long feeRateSatPerKwu = 0,
+        IEnumerable<string>? outpointsUsed = null,
+        string? originalTransactionHex = null,
         string? pendingTransactionId = null,
         PayjoinSenderSessionStatus status = PayjoinSenderSessionStatus.Pending,
         string? requestBaseUrl = null)
@@ -77,6 +83,9 @@ internal sealed class PayjoinSenderSessionStore
             OriginalTransactionId = originalTransactionId,
             PendingTransactionId = pendingTransactionId,
             RequestBaseUrl = requestBaseUrl,
+            FeeRateSatPerKwu = feeRateSatPerKwu,
+            OutpointsUsed = outpointsUsed?.ToArray() ?? [],
+            OriginalTransactionHex = originalTransactionHex,
             Status = status,
             CreatedAt = now,
             UpdatedAt = now
@@ -145,6 +154,38 @@ internal sealed class PayjoinSenderSessionStore
     }
 
     /// <summary>
+    /// Every session that waits for a signature. The poller sweeps these each tick, because the
+    /// signature arrives as an in-memory event that a restart can lose, and because a cancelled
+    /// or expired pending transaction produces no event this plugin can act on at all.
+    /// </summary>
+    public IReadOnlyCollection<PayjoinSenderSessionState> GetSessionsAwaitingSignature()
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        return LoadSessionsCore(context, pendingOnly: false, storeId: null, PayjoinSenderSessionStatus.AwaitingSignature);
+    }
+
+    /// <summary>
+    /// The outpoints every live session of a store holds. A session commits its coins the moment
+    /// it builds the original, and it keeps them until it ends, so the next transaction the store
+    /// builds must leave them alone.
+    /// </summary>
+    public IReadOnlyCollection<string> GetOutpointsHeldByLiveSessions(string storeId)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        return context.SenderSessions
+            .AsNoTracking()
+            .Where(x => x.StoreId == storeId &&
+                        (x.Status == PayjoinSenderSessionStatus.Pending ||
+                         x.Status == PayjoinSenderSessionStatus.AwaitingSignature))
+            .Select(x => x.OutpointsUsed)
+            // Flattened here rather than in the query: an array column does not translate the
+            // same way on every provider, and a store never holds many live sessions at once.
+            .ToArray()
+            .SelectMany(x => x ?? [])
+            .ToArray();
+    }
+
+    /// <summary>
     /// True when a live session already pays the same URI. This is the guard against paying an
     /// invoice twice: two attempts on one URI do not have to select the same coins, so their
     /// transaction ids can differ even though the payment is the same.
@@ -183,7 +224,7 @@ internal sealed class PayjoinSenderSessionStore
     /// Seeds the library state produced once the signed original arrived, and hands the session
     /// to the poller. The pending transaction id is cleared because that round is over.
     /// </summary>
-    public bool StartSignedSession(string senderSessionId, IEnumerable<string> bootstrapEvents)
+    public bool StartSignedSession(string senderSessionId, IEnumerable<string> bootstrapEvents, string originalTransactionHex)
     {
         ArgumentNullException.ThrowIfNull(bootstrapEvents);
         var persistedEvents = bootstrapEvents.ToArray();
@@ -217,6 +258,7 @@ internal sealed class PayjoinSenderSessionStore
         }
 
         sessionData.PendingTransactionId = null;
+        sessionData.OriginalTransactionHex = originalTransactionHex;
         sessionData.Status = PayjoinSenderSessionStatus.Pending;
         sessionData.UpdatedAt = now;
         context.SaveChanges();
@@ -340,12 +382,18 @@ internal sealed class PayjoinSenderSessionStore
     private static IReadOnlyCollection<PayjoinSenderSessionState> LoadSessionsCore(
         PayjoinPluginDbContext context,
         bool pendingOnly,
-        string? storeId = null)
+        string? storeId = null,
+        PayjoinSenderSessionStatus? status = null)
     {
         IQueryable<PayjoinSenderSessionData> query = context.SenderSessions.AsNoTracking();
         if (pendingOnly)
         {
             query = query.Where(x => x.Status == PayjoinSenderSessionStatus.Pending);
+        }
+
+        if (status is not null)
+        {
+            query = query.Where(x => x.Status == status);
         }
 
         if (storeId is not null)
@@ -381,6 +429,9 @@ internal sealed class PayjoinSenderSessionStore
             sessionData.BroadcastTransactionId,
             sessionData.PendingTransactionId,
             sessionData.RequestBaseUrl,
+            sessionData.FeeRateSatPerKwu,
+            sessionData.OutpointsUsed ?? [],
+            sessionData.OriginalTransactionHex,
             sessionData.Status,
             sessionData.FailureMessage,
             sessionData.CreatedAt,

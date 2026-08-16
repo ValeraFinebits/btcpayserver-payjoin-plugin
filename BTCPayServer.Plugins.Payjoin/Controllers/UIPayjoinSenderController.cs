@@ -19,13 +19,16 @@ public class UIPayjoinSenderController : Controller
 {
     private readonly PayjoinSenderService _senderService;
     private readonly PayjoinSenderSessionStore _senderSessionStore;
+    private readonly IPayjoinSenderSessionProcessor _senderSessionProcessor;
 
     internal UIPayjoinSenderController(
         PayjoinSenderService senderService,
-        PayjoinSenderSessionStore senderSessionStore)
+        PayjoinSenderSessionStore senderSessionStore,
+        IPayjoinSenderSessionProcessor senderSessionProcessor)
     {
         _senderService = senderService;
         _senderSessionStore = senderSessionStore;
+        _senderSessionProcessor = senderSessionProcessor;
     }
 
     [HttpGet]
@@ -83,6 +86,32 @@ public class UIPayjoinSenderController : Controller
         return RedirectToAction(nameof(Send), new { storeId });
     }
 
+    [HttpPost("{senderSessionId}/cancel")]
+    public async Task<IActionResult> Cancel(string storeId, string senderSessionId, CancellationToken cancellationToken)
+    {
+        var result = await _senderSessionProcessor
+            .CancelAsync(storeId, senderSessionId, cancellationToken)
+            .ConfigureAwait(false);
+        if (!result.Success)
+        {
+            TempData.SetStatusMessageModel(new StatusMessageModel
+            {
+                Severity = StatusMessageModel.StatusSeverity.Error,
+                Message = result.Error
+            });
+            return RedirectToAction(nameof(Send), new { storeId });
+        }
+
+        TempData.SetStatusMessageModel(new StatusMessageModel
+        {
+            Severity = StatusMessageModel.StatusSeverity.Success,
+            Message = result.BroadcastTransactionId is null
+                ? "The payjoin session ended. Nothing was broadcast, so the coins are free again."
+                : $"The payjoin session ended and the plain payment was broadcast as {result.BroadcastTransactionId}."
+        });
+        return RedirectToAction(nameof(Send), new { storeId });
+    }
+
     private PayjoinSenderViewModel BuildViewModel(string storeId, string? bip21)
     {
         return new PayjoinSenderViewModel
@@ -108,6 +137,8 @@ public class UIPayjoinSenderController : Controller
                     PendingTransactionId = x.Status == PayjoinSenderSessionStatus.AwaitingSignature
                         ? x.PendingTransactionId
                         : null,
+                    CanCancel = x.Status is PayjoinSenderSessionStatus.Pending
+                        or PayjoinSenderSessionStatus.AwaitingSignature,
                     BroadcastTransactionId = x.BroadcastTransactionId,
                     FailureMessage = x.FailureMessage,
                     CreatedAt = x.CreatedAt

@@ -50,6 +50,7 @@
                     <th class="text-end" text-translate="true">Amount (sats)</th>
                     <th text-translate="true">Status</th>
                     <th text-translate="true">Transaction</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>
@@ -68,6 +69,10 @@
                                        asp-route-walletId="@($"{Model.StoreId}-BTC")"
                                        asp-route-pendingTransactionId="@session.PendingTransactionId"
                                        text-translate="true">Sign the transaction</a>
+                                    <div class="text-muted" text-translate="true">
+                                        Sign only. This session broadcasts the transaction itself, so
+                                        the broadcast button on that screen is not necessary.
+                                    </div>
                                 </div>
                             }
                             @if (session.FailureMessage is not null)
@@ -76,6 +81,14 @@
                             }
                         </td>
                         <td class="font-monospace text-truncate" style="max-width:16ch">@(session.BroadcastTransactionId ?? "-")</td>
+                        <td class="text-end">
+                            @if (session.CanCancel)
+                            {
+                                <form method="post" asp-action="Cancel" asp-route-storeId="@Model.StoreId" asp-route-senderSessionId="@session.SenderSessionId">
+                                    <button type="submit" class="btn btn-link btn-sm p-0" text-translate="true">Stop the payjoin</button>
+                                </form>
+                            }
+                        </td>
                     </tr>
                 }
             </tbody>

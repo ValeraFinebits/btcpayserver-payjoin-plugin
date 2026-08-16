@@ -12,6 +12,10 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 public class PayjoinSenderSessionStoreTests
 {
     private const string OriginalTxId = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    private const long FeeRateSatPerKwu = 1250;
+    private const string OutpointUsed = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc-0";
+    // A minimal consensus-valid transaction; the store keeps this opaque, so its shape is free.
+    private const string SignedOriginalHex = "02000000000101cccc00000000";
 
     [Fact]
     public void CreateSessionRoundTripsThroughFreshStoreInstance()
@@ -149,16 +153,18 @@ public class PayjoinSenderSessionStoreTests
         var store = testContext.CreateStore();
         CreateAwaitingSignatureSession(store, "session-signed", "pending-signed");
 
-        Assert.True(store.StartSignedSession("session-signed", ["bootstrap-event"]));
+        Assert.True(store.StartSignedSession("session-signed", ["bootstrap-event"], SignedOriginalHex));
 
         var started = Assert.Single(store.GetPendingSessions());
         Assert.Equal("session-signed", started.SenderSessionId);
         Assert.Equal(PayjoinSenderSessionStatus.Pending, started.Status);
         Assert.Equal(["bootstrap-event"], started.Events);
         Assert.Null(started.PendingTransactionId);
+        // The signed original is the session's own fallback copy from here on.
+        Assert.Equal(SignedOriginalHex, started.OriginalTransactionHex);
 
         // A repeated signature event must not seed the state twice.
-        Assert.False(store.StartSignedSession("session-signed", ["bootstrap-event"]));
+        Assert.False(store.StartSignedSession("session-signed", ["bootstrap-event"], SignedOriginalHex));
         Assert.Equal(["bootstrap-event"], store.CreatePersister("session-signed").Load());
     }
 
@@ -180,6 +186,50 @@ public class PayjoinSenderSessionStoreTests
 
         // Only a running session parks; a session already waiting must not move again.
         Assert.False(store.AwaitSignature("session-second-round", "pending-other"));
+    }
+
+    [Fact]
+    public void LiveSessionsHoldTheirCoinsUntilTheyEnd()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateSession(store, "session-coins");
+
+        // Nothing else this store builds may spend what a live session already committed, even
+        // though a hot-wallet session creates no pending transaction to hold them.
+        Assert.Equal([OutpointUsed], store.GetOutpointsHeldByLiveSessions("store-1"));
+        Assert.Empty(store.GetOutpointsHeldByLiveSessions("store-other"));
+
+        Assert.True(store.CompleteSession("session-coins", PayjoinSenderSessionStatus.CompletedPayjoin, "eeee", null));
+        Assert.Empty(store.GetOutpointsHeldByLiveSessions("store-1"));
+    }
+
+    [Fact]
+    public void SessionsAwaitingSignatureAreListedForTheSweep()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateSession(store, "session-live");
+        CreateAwaitingSignatureSession(store, "session-waiting", "pending-waiting");
+
+        // The signature arrives as an in-memory event that a restart can lose, so the poller has
+        // to be able to find these sessions on its own.
+        var waiting = Assert.Single(store.GetSessionsAwaitingSignature());
+        Assert.Equal("session-waiting", waiting.SenderSessionId);
+        Assert.Equal("pending-waiting", waiting.PendingTransactionId);
+    }
+
+    [Fact]
+    public void SessionsCarryTheFeeRateTheSecondRoundNeeds()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateAwaitingSignatureSession(store, "session-fee", "pending-fee");
+
+        // The poller drives the second round with no access to the original request, so the rate
+        // the operator chose has to survive on the session itself.
+        Assert.True(store.TryGetSession("session-fee", out var session));
+        Assert.Equal(FeeRateSatPerKwu, session!.FeeRateSatPerKwu);
     }
 
     [Fact]
@@ -205,7 +255,9 @@ public class PayjoinSenderSessionStoreTests
             "tb1q",
             100_000,
             originalTransactionId,
-            ["bootstrap-event"]);
+            ["bootstrap-event"],
+            FeeRateSatPerKwu,
+            [OutpointUsed]);
     }
 
     private static PayjoinSenderSessionState CreateAwaitingSignatureSession(
@@ -221,6 +273,9 @@ public class PayjoinSenderSessionStoreTests
             100_000,
             OriginalTxId,
             [],
+            FeeRateSatPerKwu,
+            [OutpointUsed],
+            null,
             pendingTransactionId,
             PayjoinSenderSessionStatus.AwaitingSignature,
             "https://example.test/");
