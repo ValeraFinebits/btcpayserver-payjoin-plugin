@@ -100,16 +100,18 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken)
     {
-        // A payload that arrived within this tick is not in the replayed history yet, so the original
-        // transaction's output scripts are taken from the proposal itself and shared with the rest of
-        // the chain through the context.
-        if (context.OriginalOutputScripts.Count == 0)
+        // A payload that arrived within this tick is not in the replayed history yet, so parse the
+        // fallback transaction once and share its authoritative input outpoints and output scripts
+        // with the rest of the chain through the context.
+        if (context.OriginalInputOutpoints.Count == 0)
         {
-            context.OriginalOutputScripts = ExtractOutputScripts(proposal.ExtractTxToScheduleBroadcast());
+            var originalTransaction = ExtractTransactionFacts(proposal.ExtractTxToScheduleBroadcast());
+            context.OriginalInputOutpoints = originalTransaction.InputOutpoints;
+            context.OriginalOutputScripts = originalTransaction.OutputScripts;
         }
 
-        var ownershipResolver = await GetOrCreateOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
-        using var transition = proposal.CheckInputsNotOwned(new WalletScriptOwnedCallback(ownershipResolver));
+        var ownershipResolver = await GetOrCreateInputOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
+        using var transition = proposal.CheckInputsNotOwned(new WalletInputOwnedCallback(ownershipResolver));
         using var maybeInputsSeen = transition.Save(context.Persister);
         await ProcessMaybeInputsSeenAsync(context, maybeInputsSeen, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
     }
@@ -131,39 +133,56 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken)
     {
-        var ownershipResolver = await GetOrCreateOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
+        var ownershipResolver = await GetOrCreateOutputOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
         using var transition = proposal.IdentifyReceiverOutputs(new WalletScriptOwnedCallback(ownershipResolver));
         using var wantsOutputs = transition.Save(context.Persister);
         await continueWithOutputsAsync(wantsOutputs, context, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<PayjoinScriptOwnershipResolver> GetOrCreateOwnershipResolverAsync(
+    private async Task<PayjoinInputOwnershipResolver> GetOrCreateInputOwnershipResolverAsync(
         PayjoinReceiverStateContext context,
         CancellationToken cancellationToken)
     {
-        context.OwnershipResolver ??= await _walletOwnershipService.CreateResolverAsync(
+        context.InputOwnershipResolver ??= await _walletOwnershipService.CreateInputResolverAsync(
+            context.StoreId,
+            context.OriginalInputOutpoints,
+            cancellationToken).ConfigureAwait(false);
+        return context.InputOwnershipResolver;
+    }
+
+    private async Task<PayjoinScriptOwnershipResolver> GetOrCreateOutputOwnershipResolverAsync(
+        PayjoinReceiverStateContext context,
+        CancellationToken cancellationToken)
+    {
+        context.OutputOwnershipResolver ??= await _walletOwnershipService.CreateOutputResolverAsync(
             context.StoreId,
             context.ReceiverScript,
             context.OriginalOutputScripts,
             cancellationToken).ConfigureAwait(false);
-        return context.OwnershipResolver;
+        return context.OutputOwnershipResolver;
     }
 
-    internal static IReadOnlyList<byte[]> ExtractOutputScripts(byte[] transactionBytes)
+    internal static PayjoinOriginalTransactionFacts ExtractTransactionFacts(byte[] transactionBytes)
     {
         if (transactionBytes.Length == 0)
         {
-            return Array.Empty<byte[]>();
+            throw new InvalidOperationException("rust-payjoin returned an empty Original transaction.");
         }
 
         var transaction = NBitcoin.Transaction.Load(transactionBytes, NBitcoin.Network.Main);
+        var inputOutpoints = new List<NBitcoin.OutPoint>(transaction.Inputs.Count);
+        foreach (var input in transaction.Inputs)
+        {
+            inputOutpoints.Add(input.PrevOut);
+        }
+
         var scripts = new List<byte[]>(transaction.Outputs.Count);
         foreach (var output in transaction.Outputs)
         {
             scripts.Add(output.ScriptPubKey.ToBytes());
         }
 
-        return scripts;
+        return new PayjoinOriginalTransactionFacts(inputOutpoints, scripts);
     }
 
     private PayjoinReceiverStateContext RefreshCloseRequestedContext(PayjoinReceiverStateContext context)
@@ -241,9 +260,21 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         return true;
     }
 
-    // Checks an input/output script against the store's full derivation scheme (not just the single
-    // invoice address) so a sender cannot slip in a receiver-owned input or have a receiver output
-    // misclassified as the sender's.
+    // Checks input ownership by authoritative wallet outpoint so a sender cannot disguise a
+    // receiver-owned coin with forged PSBT metadata.
+    internal sealed class WalletInputOwnedCallback : IsInputOwned
+    {
+        private readonly PayjoinInputOwnershipResolver _resolver;
+
+        public WalletInputOwnedCallback(PayjoinInputOwnershipResolver resolver)
+        {
+            _resolver = resolver;
+        }
+
+        public bool Callback(OutPoint outpoint) => _resolver.IsOwned(outpoint.Txid, outpoint.Vout);
+    }
+
+    // Output ownership remains script-based because the transaction output script is authoritative.
     internal sealed class WalletScriptOwnedCallback : IsScriptOwned
     {
         private readonly PayjoinScriptOwnershipResolver _resolver;

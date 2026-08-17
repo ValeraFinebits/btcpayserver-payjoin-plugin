@@ -2,7 +2,6 @@ using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using NBitcoin;
 using Xunit;
-using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
@@ -23,8 +22,8 @@ public class PayjoinReceiverStateProcessorTests
         // The core claim of the widened check: a wallet script that is NOT the invoice's receiving
         // address must still be recognized as receiver-owned, both when it holds a coin and when it
         // was resolved from the original transaction's outputs.
-        using var receiverKey = new NBitcoin.Key();
-        using var otherWalletKey = new NBitcoin.Key();
+        using var receiverKey = new Key();
+        using var otherWalletKey = new Key();
         var receiverScript = receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes();
         var otherWalletScript = otherWalletKey.PubKey.WitHash.ScriptPubKey;
         var resolver = new PayjoinScriptOwnershipResolver(receiverScript, [otherWalletScript]);
@@ -35,9 +34,9 @@ public class PayjoinReceiverStateProcessorTests
     [Fact]
     public void OwnershipResolverDoesNotClaimForeignScripts()
     {
-        using var receiverKey = new NBitcoin.Key();
-        using var walletKey = new NBitcoin.Key();
-        using var foreignKey = new NBitcoin.Key();
+        using var receiverKey = new Key();
+        using var walletKey = new Key();
+        using var foreignKey = new Key();
         var resolver = new PayjoinScriptOwnershipResolver(
             receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes(),
             [walletKey.PubKey.WitHash.ScriptPubKey]);
@@ -46,42 +45,61 @@ public class PayjoinReceiverStateProcessorTests
     }
 
     [Fact]
-    public void WalletScriptOwnedCallbackRejectsProposalInputsSpendingWalletCoins()
+    public void WalletInputOwnedCallbackRejectsProposalInputsSpendingWalletCoins()
     {
-        // The rust-payjoin callback path: a sender slipping one of the receiver's other wallet coins
-        // into the original proposal must be reported as owned so check_inputs_not_owned rejects it.
-        using var receiverKey = new NBitcoin.Key();
-        using var plantedCoinKey = new NBitcoin.Key();
-        var plantedCoinScript = plantedCoinKey.PubKey.WitHash.ScriptPubKey;
-        var resolver = new PayjoinScriptOwnershipResolver(
-            receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes(),
-            [plantedCoinScript]);
+        var walletOutPoint = new OutPoint(uint256.One, 7);
+        var resolver = new PayjoinInputOwnershipResolver([walletOutPoint]);
+        var callback = new PayjoinReceiverStateProcessor.WalletInputOwnedCallback(resolver);
+
+        Assert.True(callback.Callback(new global::Payjoin.OutPoint(walletOutPoint.Hash.ToString(), walletOutPoint.N)));
+        Assert.False(callback.Callback(new global::Payjoin.OutPoint(walletOutPoint.Hash.ToString(), walletOutPoint.N + 1)));
+    }
+
+    [Fact]
+    public void InputOwnershipResolverRejectsMalformedTransactionIdFailClosed()
+    {
+        var resolver = new PayjoinInputOwnershipResolver([]);
+
+        Assert.Throws<FormatException>(() => resolver.IsOwned("not-a-transaction-id", 0));
+    }
+
+    [Fact]
+    public void WalletScriptOwnedCallbackReportsReceiverOutputs()
+    {
+        var receiverScript = new byte[] { 0x01, 0x02, 0x03 };
+        var resolver = new PayjoinScriptOwnershipResolver(receiverScript, []);
         var callback = new PayjoinReceiverStateProcessor.WalletScriptOwnedCallback(resolver);
 
-        Assert.True(callback.Callback(plantedCoinScript.ToBytes()));
+        Assert.True(callback.Callback(receiverScript));
+        Assert.False(callback.Callback(new byte[] { 0x04, 0x05, 0x06 }));
     }
 
     [Fact]
-    public void ExtractOutputScriptsReturnsEveryOutputScript()
+    public void ExtractTransactionFactsReturnsEveryInputAndOutputScript()
     {
-        using var firstKey = new NBitcoin.Key();
-        using var secondKey = new NBitcoin.Key();
-        var tx = NBitcoin.Network.RegTest.CreateTransaction();
-        tx.Inputs.Add(new OutPoint(uint256.One, 0));
-        tx.Outputs.Add(NBitcoin.Money.Satoshis(1000), firstKey.PubKey.WitHash.ScriptPubKey);
-        tx.Outputs.Add(NBitcoin.Money.Satoshis(2000), secondKey.PubKey.WitHash.ScriptPubKey);
+        using var firstKey = new Key();
+        using var secondKey = new Key();
+        var tx = Network.RegTest.CreateTransaction();
+        var firstInput = new OutPoint(uint256.One, 0);
+        var secondInput = new OutPoint(uint256.Zero, 1);
+        tx.Inputs.Add(firstInput);
+        tx.Inputs.Add(secondInput);
+        tx.Outputs.Add(Money.Satoshis(1000), firstKey.PubKey.WitHash.ScriptPubKey);
+        tx.Outputs.Add(Money.Satoshis(2000), secondKey.PubKey.WitHash.ScriptPubKey);
 
-        var scripts = PayjoinReceiverStateProcessor.ExtractOutputScripts(tx.ToBytes());
+        var facts = PayjoinReceiverStateProcessor.ExtractTransactionFacts(tx.ToBytes());
 
-        Assert.Equal(2, scripts.Count);
-        Assert.Equal(firstKey.PubKey.WitHash.ScriptPubKey.ToBytes(), scripts[0]);
-        Assert.Equal(secondKey.PubKey.WitHash.ScriptPubKey.ToBytes(), scripts[1]);
+        Assert.Equal(new[] { firstInput, secondInput }, facts.InputOutpoints);
+        Assert.Equal(2, facts.OutputScripts.Count);
+        Assert.Equal(firstKey.PubKey.WitHash.ScriptPubKey.ToBytes(), facts.OutputScripts[0]);
+        Assert.Equal(secondKey.PubKey.WitHash.ScriptPubKey.ToBytes(), facts.OutputScripts[1]);
     }
 
     [Fact]
-    public void ExtractOutputScriptsReturnsEmptyForEmptyPayload()
+    public void ExtractTransactionFactsRejectsEmptyPayloadFailClosed()
     {
-        Assert.Empty(PayjoinReceiverStateProcessor.ExtractOutputScripts(Array.Empty<byte>()));
+        Assert.Throws<InvalidOperationException>(() =>
+            PayjoinReceiverStateProcessor.ExtractTransactionFacts(Array.Empty<byte>()));
     }
 
     [Fact]
