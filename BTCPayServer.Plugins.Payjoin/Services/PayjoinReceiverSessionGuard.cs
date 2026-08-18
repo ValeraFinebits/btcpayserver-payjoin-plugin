@@ -113,6 +113,9 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
         }
         catch (ReceiverReplayException ex)
         {
+            // TODO: Extend payjoin-ffi ReceiverReplayError with a persistence-failure
+            // classification. A temporary Load/storage failure must retain the session for a later
+            // replay, while malformed or otherwise irrecoverable event logs may still be removed.
             LogPayjoinReceiverReplayFailed(_logger, session.InvoiceId, ex.Message, ex);
             RemoveSession(session.InvoiceId, "receiver replay failed");
             return null;
