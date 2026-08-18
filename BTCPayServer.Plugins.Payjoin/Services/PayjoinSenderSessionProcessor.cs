@@ -110,6 +110,13 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             {
                 await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
             }
+            catch (PayjoinReceiverRelayTimeoutException ex)
+            {
+                // A stalled relay is this session's problem, not the tick's. It derives from
+                // TaskCanceledException, so without this it would leave the loop as a
+                // cancellation and every session after it would be skipped.
+                LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
+            }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 throw;
@@ -128,6 +135,12 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             }
             catch (System.Net.Http.HttpRequestException ex)
             {
+                LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
+            }
+            catch (PayjoinSenderBroadcastException ex)
+            {
+                // The transaction is signed and valid as far as this plugin can tell, so a node
+                // that refuses it now gets another chance on the next tick.
                 LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
             }
             catch (InvalidOperationException ex)
@@ -184,7 +197,10 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         // over a proposal, and the payment must stay available after that.
         var fallbackTransaction = Transaction.Parse(session.OriginalTransactionHex, network.NBitcoinNetwork);
         await BroadcastAsync(network, fallbackTransaction, cancellationToken).ConfigureAwait(false);
-        CloseLibrarySession(session);
+        if (!PayjoinSenderSessionCloser.TryClose(_senderSessionStore.CreatePersister(session.SenderSessionId)))
+        {
+            LogSenderSessionTransient(_logger, session.SenderSessionId, null!);
+        }
 
         var fallbackTxId = fallbackTransaction.GetHash().ToString();
         LogSenderSessionBroadcast(_logger, session.SenderSessionId, fallbackTxId, null);
@@ -194,53 +210,6 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             fallbackTxId,
             failureMessage: null);
         return PayjoinSenderCancelResult.Broadcast(fallbackTxId);
-    }
-
-    /// <summary>
-    /// Records the handoff in the library's event log so a later replay sees a finished session.
-    /// A session the library already closed needs nothing, and a log this cannot advance is not
-    /// worth failing a completed payment over.
-    /// </summary>
-    private void CloseLibrarySession(PayjoinSenderSessionState session)
-    {
-        try
-        {
-            var persister = _senderSessionStore.CreatePersister(session.SenderSessionId);
-            using var replay = PayjoinMethods.ReplaySenderEventLog(persister);
-            using var state = replay.State();
-            switch (state)
-            {
-                case SendSession.WithReplyKey withReplyKey:
-                    using (var cancelTransition = withReplyKey.Inner.Cancel())
-                    using (var pendingFallback = cancelTransition.Save(persister))
-                    using (var closeTransition = pendingFallback.Close())
-                    {
-                        closeTransition.Save(persister);
-                    }
-
-                    break;
-                case SendSession.PollingForProposal polling:
-                    using (var cancelTransition = polling.Inner.Cancel())
-                    using (var pendingFallback = cancelTransition.Save(persister))
-                    using (var closeTransition = pendingFallback.Close())
-                    {
-                        closeTransition.Save(persister);
-                    }
-
-                    break;
-                case SendSession.SenderPendingFallback alreadyPending:
-                    using (var closeTransition = alreadyPending.Inner.Close())
-                    {
-                        closeTransition.Save(persister);
-                    }
-
-                    break;
-            }
-        }
-        catch (Exception ex) when (ex is SenderPersistedException or SenderReplayException or UniffiException)
-        {
-            LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
-        }
     }
 
     private async Task CancelPendingTransactionAsync(PayjoinSenderSessionState session)
@@ -383,7 +352,9 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
                 PayjoinConstants.BitcoinCode,
                 proposalPsbt,
                 requestBaseUrl,
-                expiry: null,
+                // The same window round one gets. When it lapses the sweep ends the session, and
+                // because the original is signed by then, the plain payment goes out instead.
+                expiry: DateTimeOffset.UtcNow + PayjoinSenderService.SignatureWindow,
                 cancellationToken).ConfigureAwait(false);
 
             if (_senderSessionStore.AwaitSignature(session.SenderSessionId, pending.Id))

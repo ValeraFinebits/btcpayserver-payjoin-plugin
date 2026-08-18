@@ -74,7 +74,7 @@ internal sealed class PayjoinSenderService
     // How long a transaction waits for an off-server signature before BTCPay retires it. The
     // coins stay reserved for that long, so this bounds how long a forgotten signing request
     // holds them. TODO: consider making this a store setting.
-    private static readonly TimeSpan SignatureWindow = TimeSpan.FromDays(7);
+    internal static readonly TimeSpan SignatureWindow = TimeSpan.FromDays(7);
 
     private sealed record ServerSigner(ExtKey AccountKey, RootedKeyPath RootedKeyPath);
 

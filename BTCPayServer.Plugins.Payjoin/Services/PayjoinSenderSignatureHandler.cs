@@ -34,6 +34,9 @@ internal sealed class PayjoinSenderSignatureHandler
     private static readonly Action<ILogger, string, Exception?> LogSignatureHandlingFailed =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(3, nameof(LogSignatureHandlingFailed)),
             "Payjoin sender session {SenderSessionId} could not use the collected signature");
+    private static readonly Action<ILogger, string, Exception?> LogBroadcastRefused =
+        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(5, nameof(LogBroadcastRefused)),
+            "Payjoin sender session {SenderSessionId} could not broadcast; it retries next tick");
     private static readonly Action<ILogger, string, string, Exception?> LogSessionAbandoned =
         LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(4, nameof(LogSessionAbandoned)),
             "Payjoin sender session {SenderSessionId} will never be signed: {Reason}");
@@ -68,10 +71,31 @@ internal sealed class PayjoinSenderSignatureHandler
         foreach (var session in _senderSessionStore.GetSessionsAwaitingSignature())
         {
             cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await ReconcileSessionAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or UniffiException or FormatException
+                                       or PayjoinSenderBroadcastException or System.Net.Http.HttpRequestException)
+            {
+                // One session must not stop the sweep: the others are waiting on their own
+                // transactions and have nothing to do with this failure.
+                LogSignatureHandlingFailed(_logger, session.SenderSessionId, ex);
+            }
+        }
+    }
+
+    private async Task ReconcileSessionAsync(PayjoinSenderSessionState session, CancellationToken cancellationToken)
+    {
+        {
             if (session.PendingTransactionId is null)
             {
-                Abandon(session, "the session records no pending transaction");
-                continue;
+                await EndSessionAsync(session, "the session records no pending transaction", cancellationToken).ConfigureAwait(false);
+                return;
             }
 
             var pendingTransaction = await _pendingTransactionService.GetPendingTransaction(
@@ -81,8 +105,8 @@ internal sealed class PayjoinSenderSignatureHandler
                     session.PendingTransactionId)).ConfigureAwait(false);
             if (pendingTransaction is null)
             {
-                Abandon(session, "the pending transaction no longer exists");
-                continue;
+                await EndSessionAsync(session, "the pending transaction no longer exists", cancellationToken).ConfigureAwait(false);
+                return;
             }
 
             switch (pendingTransaction.State)
@@ -97,13 +121,13 @@ internal sealed class PayjoinSenderSignatureHandler
                     CompleteFromExternalBroadcast(session, pendingTransaction);
                     break;
                 case PendingTransactionState.Cancelled:
-                    Abandon(session, "the operator cancelled the transaction");
+                    await EndSessionAsync(session, "the operator cancelled the transaction", cancellationToken).ConfigureAwait(false);
                     break;
                 case PendingTransactionState.Expired:
-                    Abandon(session, "the transaction expired before it was signed");
+                    await EndSessionAsync(session, "the transaction expired before it was signed", cancellationToken).ConfigureAwait(false);
                     break;
                 case PendingTransactionState.Invalidated:
-                    Abandon(session, "another transaction spent the same coins");
+                    await EndSessionAsync(session, "another transaction spent the same coins", cancellationToken).ConfigureAwait(false);
                     break;
                 case PendingTransactionState.Pending:
                     break;
@@ -116,29 +140,41 @@ internal sealed class PayjoinSenderSignatureHandler
         PendingTransaction pendingTransaction,
         CancellationToken cancellationToken)
     {
+        // Read the session again: the operator may have stopped it between the signature being
+        // collected and this running, and a stopped session has already broadcast its original.
+        if (!_senderSessionStore.TryGetSession(session.SenderSessionId, out var current) ||
+            current is null ||
+            current.Status != PayjoinSenderSessionStatus.AwaitingSignature)
+        {
+            return;
+        }
+
         try
         {
             var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode)
                 ?? throw new InvalidOperationException("BTC network not available");
             var signedPsbt = LoadSignedPsbt(pendingTransaction, network.NBitcoinNetwork);
 
-            if (session.Events.Length == 0)
+            if (current.Events.Length == 0)
             {
-                StartSession(session, signedPsbt);
+                await StartSessionAsync(current, signedPsbt, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                await BroadcastProposalAsync(session, signedPsbt, network, cancellationToken).ConfigureAwait(false);
+                await BroadcastProposalAsync(current, signedPsbt, network, cancellationToken).ConfigureAwait(false);
             }
+        }
+        catch (PayjoinSenderBroadcastException ex)
+        {
+            // The transaction is signed and valid as far as this plugin can tell, so the node
+            // refusing it now is not a reason to throw the payjoin away. The session stays where
+            // it is and the next sweep tries again.
+            LogBroadcastRefused(_logger, session.SenderSessionId, ex);
         }
         catch (Exception ex) when (ex is InvalidOperationException or UniffiException or FormatException)
         {
             LogSignatureHandlingFailed(_logger, session.SenderSessionId, ex);
-            _senderSessionStore.CompleteSession(
-                session.SenderSessionId,
-                PayjoinSenderSessionStatus.Failed,
-                broadcastTransactionId: null,
-                ex.Message);
+            await EndSessionAsync(session, ex.Message, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -146,7 +182,7 @@ internal sealed class PayjoinSenderSignatureHandler
     /// The first round: the signed original exists, so the rust-payjoin sender can finally be
     /// built. Saving its state moves the session to Pending and the poller takes over.
     /// </summary>
-    private void StartSession(PayjoinSenderSessionState session, PSBT signedPsbt)
+    private async Task StartSessionAsync(PayjoinSenderSessionState session, PSBT signedPsbt, CancellationToken cancellationToken)
     {
         // rust-payjoin needs the original complete, because it broadcasts it as the fallback.
         if (!signedPsbt.TryFinalize(out var errors))
@@ -163,13 +199,34 @@ internal sealed class PayjoinSenderSignatureHandler
             using var sender = transition.Save(bootstrapPersister);
         }
 
-        if (_senderSessionStore.StartSignedSession(
+        if (!_senderSessionStore.StartSignedSession(
                 session.SenderSessionId,
                 bootstrapPersister.Load(),
                 signedPsbt.ExtractTransaction().ToHex()))
         {
-            LogSessionStarted(_logger, session.SenderSessionId, null);
+            return;
         }
+
+        LogSessionStarted(_logger, session.SenderSessionId, null);
+
+        // The signing request is done and this session now holds the coins. Core keeps a signed
+        // row for ever and keeps excluding its outpoints, so retire it here; otherwise a session
+        // that later fails would leave those coins blocked with nothing left to release them.
+        await RetirePendingTransactionAsync(session, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RetirePendingTransactionAsync(PayjoinSenderSessionState session, CancellationToken cancellationToken)
+    {
+        if (session.PendingTransactionId is null)
+        {
+            return;
+        }
+
+        await _pendingTransactionService.CancelPendingTransaction(
+            new PendingTransactionService.PendingTransactionFullId(
+                PayjoinConstants.BitcoinCode,
+                session.StoreId,
+                session.PendingTransactionId)).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -210,14 +267,39 @@ internal sealed class PayjoinSenderSignatureHandler
             failureMessage: null);
     }
 
-    private void Abandon(PayjoinSenderSessionState session, string reason)
+    /// <summary>
+    /// Ends a session that will never get the signature it waits for. The payjoin is over either
+    /// way, but the payment is not: once the original is signed the operator has authorised it,
+    /// so it goes to the network as a plain transaction rather than being thrown away. Only a
+    /// session whose original was never signed ends with nothing broadcast.
+    /// </summary>
+    private async Task EndSessionAsync(PayjoinSenderSessionState session, string reason, CancellationToken cancellationToken)
     {
         LogSessionAbandoned(_logger, session.SenderSessionId, reason, null);
+        if (session.OriginalTransactionHex is null)
+        {
+            _senderSessionStore.CompleteSession(
+                session.SenderSessionId,
+                PayjoinSenderSessionStatus.Failed,
+                broadcastTransactionId: null,
+                reason);
+            return;
+        }
+
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode)
+            ?? throw new InvalidOperationException("BTC network not available");
+        var fallbackTransaction = Transaction.Parse(session.OriginalTransactionHex, network.NBitcoinNetwork);
+        var explorerClient = _explorerClientProvider.GetExplorerClient(network);
+        var transactionId = await PayjoinSenderBroadcaster
+            .BroadcastAsync(explorerClient, fallbackTransaction, cancellationToken)
+            .ConfigureAwait(false);
+
+        PayjoinSenderSessionCloser.TryClose(_senderSessionStore.CreatePersister(session.SenderSessionId));
         _senderSessionStore.CompleteSession(
             session.SenderSessionId,
-            PayjoinSenderSessionStatus.Failed,
-            broadcastTransactionId: null,
-            reason);
+            PayjoinSenderSessionStatus.CompletedFallback,
+            transactionId,
+            failureMessage: reason);
     }
 
     /// <summary>

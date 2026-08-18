@@ -205,6 +205,7 @@ public class UIPayjoinSenderController : Controller
         return new PayjoinSenderViewModel
         {
             StoreId = storeId,
+            WalletId = new WalletId(storeId, PayjoinConstants.BitcoinCode).ToString(),
             Sessions = _senderSessionStore.GetSessions(storeId)
                 .OrderByDescending(x => x.CreatedAt)
                 .Select(x => new PayjoinSenderSessionViewModel

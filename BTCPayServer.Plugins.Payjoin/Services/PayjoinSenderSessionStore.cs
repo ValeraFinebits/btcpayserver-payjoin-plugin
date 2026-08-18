@@ -300,9 +300,20 @@ internal sealed class PayjoinSenderSessionStore
             return false;
         }
 
+        // The first terminal state wins. Two routes can reach one session at once: the operator
+        // stopping it, and a signature collected a moment earlier arriving late. Whichever landed
+        // first is what happened, and a later one must not rewrite the record.
+        if (sessionData.Status is not (PayjoinSenderSessionStatus.Pending or PayjoinSenderSessionStatus.AwaitingSignature))
+        {
+            return false;
+        }
+
         sessionData.Status = status;
         sessionData.BroadcastTransactionId = broadcastTransactionId;
         sessionData.FailureMessage = failureMessage;
+        // The signing request is over, whichever way this ended, so drop the handle to it. A
+        // signature that arrives afterwards then finds no session to act on.
+        sessionData.PendingTransactionId = null;
         sessionData.UpdatedAt = DateTimeOffset.UtcNow;
         context.SaveChanges();
         return true;

@@ -189,6 +189,26 @@ public class PayjoinSenderSessionStoreTests
     }
 
     [Fact]
+    public void TheFirstTerminalStateWins()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateAwaitingSignatureSession(store, "session-race", "pending-race");
+
+        // The operator stops a session while a signature collected a moment earlier is still on
+        // its way. Whichever landed first is what happened.
+        Assert.True(store.CompleteSession("session-race", PayjoinSenderSessionStatus.CompletedFallback, "aaaa", null));
+        Assert.False(store.CompleteSession("session-race", PayjoinSenderSessionStatus.CompletedPayjoin, "bbbb", null));
+
+        Assert.True(store.TryGetSession("session-race", out var session));
+        Assert.Equal(PayjoinSenderSessionStatus.CompletedFallback, session!.Status);
+        Assert.Equal("aaaa", session.BroadcastTransactionId);
+        // The signing request is over, so a late signature finds no session waiting on it.
+        Assert.Null(session.PendingTransactionId);
+        Assert.False(store.TryGetSessionByPendingTransactionId("pending-race", out _));
+    }
+
+    [Fact]
     public void LiveSessionsHoldTheirCoinsUntilTheyEnd()
     {
         using var testContext = new TestContext();

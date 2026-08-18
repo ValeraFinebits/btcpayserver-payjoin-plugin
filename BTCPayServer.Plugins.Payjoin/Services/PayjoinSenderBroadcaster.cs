@@ -27,7 +27,7 @@ internal static class PayjoinSenderBroadcaster
         var result = await explorerClient.BroadcastAsync(transaction, cancellationToken).ConfigureAwait(false);
         if (!result.Success && !IsAlreadyBroadcast(result))
         {
-            throw new InvalidOperationException(
+            throw new PayjoinSenderBroadcastException(
                 $"broadcast rejected: {result.RPCCodeMessage ?? result.RPCMessage ?? "unknown error"}");
         }
 
