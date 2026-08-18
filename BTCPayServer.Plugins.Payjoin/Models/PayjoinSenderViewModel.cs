@@ -7,6 +7,10 @@ public class PayjoinSenderViewModel
 {
     public string? StoreId { get; set; }
 
+    // The wallet these payments spend from, in the form core's route binder accepts. Building it
+    // by hand is what broke both wallet links: the binder needs the "S-" prefix.
+    public string? WalletId { get; set; }
+
     public IReadOnlyList<PayjoinSenderSessionViewModel> Sessions { get; set; } = [];
 }
 

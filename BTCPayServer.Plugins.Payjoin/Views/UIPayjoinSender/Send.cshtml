@@ -9,7 +9,7 @@
 <div class="sticky-header">
     <h2 text-translate="true">Async Payjoin Payments</h2>
     <a asp-area="Wallets" asp-controller="UIWallets" asp-action="WalletSend"
-       asp-route-walletId="@($"{Model.StoreId}-BTC")" class="btn btn-primary" text-translate="true">
+       asp-route-walletId="@Model.WalletId" class="btn btn-primary" text-translate="true">
         Send
     </a>
 </div>
@@ -57,11 +57,11 @@ else
                         <td class="text-end">@session.AmountSats</td>
                         <td>
                             @session.Status
-                            @if (session.PendingTransactionId is not null && Model.StoreId is not null)
+                            @if (session.PendingTransactionId is not null && Model.WalletId is not null)
                             {
                                 <div class="small">
                                     <a asp-area="Wallets" asp-controller="UIWallets" asp-action="ViewPendingTransaction"
-                                       asp-route-walletId="@($"{Model.StoreId}-BTC")"
+                                       asp-route-walletId="@Model.WalletId"
                                        asp-route-pendingTransactionId="@session.PendingTransactionId"
                                        text-translate="true">Sign the transaction</a>
                                     <div class="text-muted" text-translate="true">

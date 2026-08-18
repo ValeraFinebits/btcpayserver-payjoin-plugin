@@ -42,20 +42,22 @@
         </button>
     </div>
     <script>
-        // Core renders its own payjoin toggle for any pj= endpoint. It drives the v1 request,
-        // which this endpoint does not answer, so signing with it on would fail and fall back to
-        // a plain payment. Turn it off and hide it; the button above is the route for this URI.
+        // Core renders its own payjoin field for any pj= endpoint. It drives the v1 request,
+        // which this endpoint does not answer, so core's Sign button would fail and fall back to
+        // a plain payment. The field is bound to a string, so it renders as a text input however
+        // it is styled: clear the value rather than unchecking anything, or it still submits.
         (function () {
-            var toggle = document.getElementById('PayJoinBIP21');
-            if (!toggle) {
+            var field = document.getElementById('PayJoinBIP21');
+            if (!field) {
                 return;
             }
 
-            if (toggle.type === 'checkbox') {
-                toggle.checked = false;
+            field.value = '';
+            if (field.type === 'checkbox') {
+                field.checked = false;
             }
 
-            var row = toggle.closest('div');
+            var row = field.closest('div');
             if (row) {
                 row.classList.add('d-none');
             }
