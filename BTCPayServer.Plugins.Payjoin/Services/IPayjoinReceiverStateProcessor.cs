@@ -19,6 +19,11 @@ internal interface IPayjoinReceiverStateProcessor
         HasReplyableError replyableError,
         CancellationToken cancellationToken);
 
+    Task ProcessPendingFallbackAsync(
+        PayjoinReceiverStateContext context,
+        ReceiverPendingFallback pendingFallback,
+        CancellationToken cancellationToken);
+
     Task ProcessUncheckedProposalAsync(
         PayjoinReceiverStateContext context,
         UncheckedOriginalPayload proposal,

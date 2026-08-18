@@ -136,6 +136,10 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         {
             LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
         }
+        catch (ReceiverPersistedException ex)
+        {
+            LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+        }
         catch (UniffiException ex)
         {
             LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
@@ -231,6 +235,9 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     await _proposalFinalizer.PostAsync(finalizationContext, payjoinProposal.Inner, stoppingToken).ConfigureAwait(false);
                     break;
                 }
+            case ReceiveSession.ReceiverPendingFallback pendingFallback:
+                await _stateProcessor.ProcessPendingFallbackAsync(stateContext, pendingFallback.Inner, stoppingToken).ConfigureAwait(false);
+                break;
             case ReceiveSession.Monitor:
                 break;
             case ReceiveSession.Closed:

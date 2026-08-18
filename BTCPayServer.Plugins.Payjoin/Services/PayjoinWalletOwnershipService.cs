@@ -62,7 +62,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
         var walletContext = await GetWalletContextAsync(storeId).ConfigureAwait(false);
         var ownedInputs = new HashSet<OutPoint>();
 
-        // TODO(security): Charge distinct funding txids to a proposal-wide NBXplorer lookup budget with a deadline, limiter, and cache.
+        // TODO: Charge distinct funding txids to a proposal-wide NBXplorer lookup budget with a deadline, limiter, and cache.
         foreach (var transactionInputs in candidateInputOutpoints.Distinct().GroupBy(outpoint => outpoint.Hash))
         {
             if (walletContext.ColdWalletDerivation is null)
@@ -101,7 +101,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
         var ownedScripts = new HashSet<Script>();
 
         var receiverScriptPubKey = Script.FromBytesUnsafe(receiverScript);
-        // TODO(security): Charge distinct output scripts to the same proposal-wide NBXplorer lookup budget with a deadline, limiter, and cache.
+        // TODO: Charge distinct output scripts to the same proposal-wide NBXplorer lookup budget with a deadline, limiter, and cache.
         foreach (var script in candidateOutputScripts.Select(Script.FromBytesUnsafe).Distinct())
         {
             if (script == receiverScriptPubKey)
@@ -142,7 +142,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
         IEnumerable<MatchedOutput>? matchedOutputs,
         HashSet<OutPoint> ownedInputs)
     {
-        // TODO(security): Do not collapse an NBXplorer no-match into Foreign while wallet
+        // TODO: Do not collapse an NBXplorer no-match into Foreign while wallet
         // ownership readiness is unverified. Represent it as Unknown and fail closed until
         // the relevant hot/cold derivation histories are known to be authoritative.
         if (matchedOutputs is null)

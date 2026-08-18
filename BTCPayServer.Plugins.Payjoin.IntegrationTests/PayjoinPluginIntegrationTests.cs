@@ -77,18 +77,14 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, payjoinContext.InvoiceId, cts.Token).ConfigureAwait(true);
 
         // A same-wallet payer funds the original PSBT with the receiver's own coins, so every
-        // input is receiver-owned. check_inputs_not_owned must treat that as an attempt to make
-        // the receiver co-sign its own inputs and reject the proposal instead of completing a
-        // payjoin. The sender only posts the original here; polling is deferred past the test
-        // timeout because no proposal may ever be produced.
+        // input is receiver-owned. check_inputs_not_owned must reject the proposal, publish the
+        // replyable error, and then close the replayed PendingFallback receiver state.
         var payjoinPayer = new PayjoinTestPayer(tester, context.Merchant, context.Network, useReservedSenderChangeAddress: true);
-        using var payCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
-        var payTask = payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, PayjoinIntegrationTestSupport.TestTimeout, payCts.Token);
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            payjoinPayer.PayAsync(payjoinContext.PaymentUrl, payjoinContext.OhttpRelayUrl, cts.Token)).ConfigureAwait(true);
 
+        Assert.Contains("Payjoin receiver rejected the proposal", failure.Message, StringComparison.Ordinal);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, payjoinContext.InvoiceId, cts.Token).ConfigureAwait(true);
-
-        payCts.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => payTask).ConfigureAwait(true);
     }
 
     [Fact]

@@ -112,6 +112,7 @@ public class UIStorePayjoinController : Controller
                 var wallet = _walletProvider.GetWallet(network);
                 if (wallet is not null)
                 {
+                    // TODO: TrackAsync is not wallet recovery; establish verified cold-wallet ownership readiness before enabling Payjoin.
                     await wallet.TrackAsync(parsed.AccountDerivation).ConfigureAwait(false);
                 }
 

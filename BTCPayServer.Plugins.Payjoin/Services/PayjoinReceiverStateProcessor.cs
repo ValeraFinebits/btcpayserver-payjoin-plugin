@@ -69,7 +69,18 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             cancellationToken).ConfigureAwait(false);
         using var relayRequestContext = requestResponse;
         using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
+        using var pendingFallback = transition.Save(context.Persister);
+    }
+
+    public Task ProcessPendingFallbackAsync(
+        PayjoinReceiverStateContext context,
+        ReceiverPendingFallback pendingFallback,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var transition = pendingFallback.Close();
         transition.Save(context.Persister);
+        return Task.CompletedTask;
     }
 
     public async Task ProcessUncheckedProposalAsync(
@@ -89,6 +100,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             return;
         }
 
+        // TODO: Reject or suspend proposals while cold-wallet ownership readiness is unverified.
         using var transition = proposal.AssumeInteractiveReceiver();
         using var maybeInputsOwned = transition.Save(context.Persister);
         await ProcessMaybeInputsOwnedAsync(context, maybeInputsOwned, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
@@ -122,8 +134,13 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken)
     {
-        using var transition = proposal.CheckNoInputsSeenBefore(new PersistentInputsSeenCallback(_seenInputStore));
-        using var outputsUnknown = transition.Save(context.Persister);
+        using var outputsUnknown = _seenInputStore.ExecuteSeenInputTransition(
+            context.InvoiceId,
+            (callback, persister) =>
+            {
+                using var transition = proposal.CheckNoInputsSeenBefore(callback);
+                return transition.Save(persister);
+            });
         await ProcessOutputsUnknownAsync(context, outputsUnknown, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
     }
 
@@ -285,21 +302,6 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         }
 
         public bool Callback(byte[] script) => _resolver.IsOwned(script);
-    }
-
-    // Records every inspected outpoint and reports whether it had been seen before, rejecting probing
-    // attempts and re-entrant payjoins that replay a prior proposal's inputs.
-    internal sealed class PersistentInputsSeenCallback : IsOutputKnown
-    {
-        private readonly PayjoinSeenInputStore _seenInputStore;
-
-        public PersistentInputsSeenCallback(PayjoinSeenInputStore seenInputStore)
-        {
-            _seenInputStore = seenInputStore;
-        }
-
-        public bool Callback(OutPoint outpoint) =>
-            _seenInputStore.MarkSeenAndWasPresent(outpoint.Txid, checked((long)outpoint.Vout));
     }
 
     internal sealed class CloseRequestedBroadcastGuard : CanBroadcast
