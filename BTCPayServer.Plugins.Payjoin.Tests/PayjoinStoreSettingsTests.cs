@@ -266,25 +266,27 @@ public class PayjoinStoreSettingsTests
     [Fact]
     public void ReadSettingsNormalizesPersistedDirectoryAndRelayUrls()
     {
-        var blob = new StoreBlob();
-        blob.AdditionalData = new JObject
+        var blob = new StoreBlob
         {
-            ["payjoin.settings"] = JToken.FromObject(new
+            AdditionalData = new JObject
             {
-                PayjoinV2Enabled = true,
-                DirectoryUrls = new[]
+                ["payjoin.settings"] = JToken.FromObject(new
                 {
-                    "https://example.com/directory",
-                    "http://example.com/directory",
-                    "https://example.com/directory"
-                },
-                OhttpRelayUrls = new[]
-                {
-                    "https://example.com/relay",
-                    "http://example.com/relay",
-                    "https://example.com/relay"
-                }
-            })
+                    PayjoinV2Enabled = true,
+                    DirectoryUrls = new[]
+                    {
+                        "https://example.com/directory",
+                        "http://example.com/directory",
+                        "https://example.com/directory"
+                    },
+                    OhttpRelayUrls = new[]
+                    {
+                        "https://example.com/relay",
+                        "http://example.com/relay",
+                        "https://example.com/relay"
+                    }
+                })
+            }
         };
 
         var settings = PayjoinStoreSettingsRepository.ReadSettings(blob);
@@ -336,19 +338,33 @@ public class PayjoinStoreSettingsTests
             }
         };
 
-        var normalizedSettings = new PayjoinStoreSettings
-        {
-            PayjoinV2Enabled = settings.PayjoinV2Enabled,
-            DirectoryUrls = PayjoinStoreSettings.NormalizeDirectoryUrls(settings.DirectoryUrls),
-            OhttpRelayUrls = PayjoinStoreSettings.NormalizeOhttpRelayUrls(settings.OhttpRelayUrls),
-            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme
-        };
-        normalizedSettings.NormalizeUrlSettings();
+        var normalizedSettings = PayjoinStoreSettingsRepository.Normalize(settings);
 
         Assert.Equal(2, settings.DirectoryUrls!.Count);
         Assert.Equal(2, settings.OhttpRelayUrls!.Count);
-        Assert.Single(normalizedSettings.DirectoryUrls!);
-        Assert.Single(normalizedSettings.OhttpRelayUrls!);
+        _ = Assert.Single(normalizedSettings.DirectoryUrls!);
+        _ = Assert.Single(normalizedSettings.OhttpRelayUrls!);
+    }
+
+    [Fact]
+    public void NormalizingRepositoryCopyCarriesEverySettingOver()
+    {
+        var settings = new PayjoinStoreSettings
+        {
+            PayjoinV2Enabled = false,
+            DirectoryUrls = new Uri[] { new("https://example.com/directory") },
+            OhttpRelayUrls = new Uri[] { new("https://example.com/relay") },
+            ColdWalletDerivationScheme = TestXpub,
+            MaxFeeRateSatPerVb = 42
+        };
+
+        var normalizedSettings = PayjoinStoreSettingsRepository.Normalize(settings);
+
+        Assert.False(normalizedSettings.PayjoinV2Enabled);
+        Assert.Equal(settings.DirectoryUrls, normalizedSettings.DirectoryUrls);
+        Assert.Equal(settings.OhttpRelayUrls, normalizedSettings.OhttpRelayUrls);
+        Assert.Equal(TestXpub, normalizedSettings.ColdWalletDerivationScheme);
+        Assert.Equal(42, normalizedSettings.MaxFeeRateSatPerVb);
     }
 
     [Fact]
