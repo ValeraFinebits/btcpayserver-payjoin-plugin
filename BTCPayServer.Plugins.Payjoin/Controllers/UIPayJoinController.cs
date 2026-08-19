@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging;
 using NBitcoin;
 using Payjoin;
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 using PayjoinUri = Payjoin.Uri;
@@ -25,6 +26,10 @@ public class UIPayJoinController : Controller
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinSenderBroadcasted =
         LoggerMessage.Define<string, string>(LogLevel.Information, new EventId(1, nameof(LogPayjoinSenderBroadcasted)),
             "Payjoin sender broadcasted payjoin transaction {TransactionId} for {InvoiceId}");
+
+    private static readonly Action<ILogger, string, Exception?> LogRunTestPaymentFailed =
+        LoggerMessage.Define<string>(LogLevel.Error, new EventId(2, nameof(LogRunTestPaymentFailed)),
+            "Payjoin test payment for {InvoiceId} failed with an unexpected exception");
 
     private readonly BTCPayServerEnvironment _env;
     private readonly InvoiceRepository _invoiceRepository;
@@ -87,11 +92,12 @@ public class UIPayJoinController : Controller
     [AllowAnonymous]
     [IgnoreAntiforgeryToken]
     [HttpPost("run-test-payment")]
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Any exception escaping a plugin controller makes BTCPay disable the plugin and stop the host process.")]
     public async Task<ActionResult<RunTestPaymentResponse>> RunTestPayment([FromBody] RunTestPaymentRequest request, CancellationToken cancellationToken)
     {
         if (request is null)
         {
-            throw new ArgumentNullException(nameof(request));
+            return BadRequest(RunTestPaymentResponse.Failure("A JSON body containing an invoiceId is required."));
         }
 
         if (string.IsNullOrWhiteSpace(request.InvoiceId))
@@ -99,10 +105,31 @@ public class UIPayJoinController : Controller
             return RunTestPaymentFailure("invoiceId is required");
         }
 
-        var invoicePaymentUrl = await _paymentUrlService.GetInvoicePaymentUrlAsync(request.InvoiceId, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await RunTestPaymentCoreAsync(request.InvoiceId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_logger is not null)
+            {
+                LogRunTestPaymentFailed(_logger, request.InvoiceId, ex);
+            }
+
+            return RunTestPaymentFailure($"The test payment for invoice {request.InvoiceId} failed unexpectedly: {ex.Message}");
+        }
+    }
+
+    private async Task<ActionResult<RunTestPaymentResponse>> RunTestPaymentCoreAsync(string invoiceId, CancellationToken cancellationToken)
+    {
+        var invoicePaymentUrl = await _paymentUrlService.GetInvoicePaymentUrlAsync(invoiceId, cancellationToken).ConfigureAwait(false);
         if (invoicePaymentUrl is null)
         {
-            return RunTestPaymentFailure("paymentUrl not available for invoice");
+            return RunTestPaymentFailure($"No payjoin payment URL is available for invoice {invoiceId}. The invoice is not payable or has no Bitcoin payment method.");
         }
 
         if (invoicePaymentUrl.Status != PayjoinAvailabilityStatus.Active)
@@ -115,7 +142,7 @@ public class UIPayJoinController : Controller
             return RunTestPaymentFailure("invoice paymentUrl invalid");
         }
 
-        var invoice = await _invoiceRepository.GetInvoice(request.InvoiceId).ConfigureAwait(false);
+        var invoice = await _invoiceRepository.GetInvoice(invoiceId).ConfigureAwait(false);
         if (invoice is null)
         {
             return RunTestPaymentFailure("invoice not found");
@@ -179,7 +206,7 @@ public class UIPayJoinController : Controller
         }
 
         var runTestPaymentContext = new RunTestPaymentContext(
-            request.InvoiceId,
+            invoiceId,
             canonicalPaymentUrl,
             ohttpRelayUrls,
             paymentAddressValue,
@@ -191,7 +218,7 @@ public class UIPayJoinController : Controller
             var txid = await _runTestPaymentService.ExecuteAsync(runTestPaymentContext, cancellationToken).ConfigureAwait(false);
             if (_logger is not null)
             {
-                LogPayjoinSenderBroadcasted(_logger, txid, request.InvoiceId, null);
+                LogPayjoinSenderBroadcasted(_logger, txid, invoiceId, null);
             }
 
             return RunTestPaymentSuccess($"Payjoin transaction broadcasted: {txid}", txid);
