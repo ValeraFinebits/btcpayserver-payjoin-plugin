@@ -282,7 +282,10 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             return;
         }
 
-        using var transition = sender.ProcessResponse(responseBody.Value.Body, responseBody.Value.Context.OhttpCtx);
+        // The context is a native handle; the relay call hands it over on success, so this
+        // caller owns its disposal.
+        using var requestContext = responseBody.Value.Context;
+        using var transition = sender.ProcessResponse(responseBody.Value.Body, requestContext.OhttpCtx);
         using var polling = transition.Save(persister);
     }
 
@@ -302,7 +305,8 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             return;
         }
 
-        using var transition = polling.ProcessResponse(responseBody.Value.Body, responseBody.Value.Context.OhttpCtx);
+        using var requestContext = responseBody.Value.Context;
+        using var transition = polling.ProcessResponse(responseBody.Value.Body, requestContext.OhttpCtx);
         using var outcome = transition.Save(persister);
         if (outcome is not PollingForProposalTransitionOutcome.Progress progress)
         {
@@ -445,7 +449,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
     {
         var storeSettings = await _storeSettingsRepository.GetAsync(session.StoreId).ConfigureAwait(false);
         var relayUrls = storeSettings?.GetEffectiveOhttpRelayUrls() ?? [];
-        System.Net.Http.HttpRequestException? lastError = null;
+        Exception? lastError = null;
         foreach (var relayUrl in relayUrls)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -461,6 +465,13 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             }
             catch (System.Net.Http.HttpRequestException ex)
             {
+                lastError = ex;
+                requestContext.Dispose();
+            }
+            catch (PayjoinReceiverRelayTimeoutException ex)
+            {
+                // A stalled relay must not stop the rotation: without this the next relay is
+                // never tried, and one dead relay blocks every sender session of the store.
                 lastError = ex;
                 requestContext.Dispose();
             }
