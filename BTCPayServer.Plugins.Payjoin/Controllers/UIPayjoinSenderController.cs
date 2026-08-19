@@ -49,9 +49,18 @@ public class UIPayjoinSenderController : Controller
     // The operator arrives from BTCPay's send screen, so this asks for the permission that screen
     // asks for rather than the store-settings permission the rest of this controller uses.
     [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = WalletPolicies.CanCreateWalletTransactions)]
-    public async Task<IActionResult> SendFromWallet(string storeId, WalletSendModel model, CancellationToken cancellationToken)
+    public async Task<IActionResult> SendFromWallet(string storeId, WalletSendModel model, string? asyncPayjoinBip21, CancellationToken cancellationToken)
     {
         System.ArgumentNullException.ThrowIfNull(model);
+        // The send screen carries the URI twice. Core's PayJoinBIP21 field drives the v1 flow,
+        // which a v2 endpoint does not answer, so the extension clears it in the browser and
+        // posts the URI under its own name instead. The model's copy stays as a fallback for
+        // callers that post the form directly.
+        if (!string.IsNullOrEmpty(asyncPayjoinBip21))
+        {
+            model.PayJoinBIP21 = asyncPayjoinBip21;
+        }
+
         var walletId = new WalletId(storeId, PayjoinConstants.BitcoinCode);
         var destination = ResolveSingleDestination(model, out var destinationError);
         if (destination is null)
@@ -99,6 +108,28 @@ public class UIPayjoinSenderController : Controller
         if (outputs[0].SubtractFeesFromOutput)
         {
             error = "An async payjoin cannot subtract the fee from the amount the receiver expects.";
+            return null;
+        }
+
+        // The payjoin pays what the URI says. The fields on the screen stay editable after the
+        // URI resolves, so an edit there would otherwise be silently ignored.
+        var uriAddress = System.Text.RegularExpressions.Regex.Match(
+            model.PayJoinBIP21, "^bitcoin:([^?]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (uriAddress.Success &&
+            !string.Equals(System.Uri.UnescapeDataString(uriAddress.Groups[1].Value), outputs[0].DestinationAddress?.Trim(), System.StringComparison.OrdinalIgnoreCase))
+        {
+            error = "The destination no longer matches the payment link. Paste the link again to send an async payjoin.";
+            return null;
+        }
+
+        var uriAmount = System.Text.RegularExpressions.Regex.Match(
+            model.PayJoinBIP21, "[?&]amount=([0-9.]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (uriAmount.Success &&
+            decimal.TryParse(uriAmount.Groups[1].Value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var expectedAmount) &&
+            outputs[0].Amount is decimal formAmount &&
+            formAmount != expectedAmount)
+        {
+            error = "The amount no longer matches the payment link. An async payjoin pays the amount the link asks for.";
             return null;
         }
 

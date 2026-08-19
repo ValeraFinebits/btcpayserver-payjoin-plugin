@@ -83,6 +83,7 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<BTCPayServer.Services.IFeeProviderFactory>(),
             provider.GetRequiredService<PayjoinSenderSessionStore>(),
             provider.GetRequiredService<BTCPayServer.HostedServices.PendingTransactionService>(),
+            provider.GetRequiredService<PayjoinSessionBuildLock>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderService>>()));
         applicationBuilder.AddSingleton(provider => new PayjoinSenderSignatureHandler(
             provider.GetRequiredService<PayjoinSenderSessionStore>(),

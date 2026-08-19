@@ -289,6 +289,10 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<string>("CoinReservationTransactionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -335,6 +339,11 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.HasKey("SenderSessionId")
                         .HasName("PK_SenderSessions");
+
+                    b.HasIndex("Bip21")
+                        .IsUnique()
+                        .HasDatabaseName("IX_SenderSessions_Bip21_Live")
+                        .HasFilter("\"Status\" IN (0, 4)");
 
                     b.HasIndex("OriginalTransactionId")
                         .HasDatabaseName("IX_SenderSessions_OriginalTransactionId");

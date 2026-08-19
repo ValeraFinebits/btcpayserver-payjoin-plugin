@@ -24,6 +24,14 @@ internal sealed class PayjoinSenderSessionConfiguration : IEntityTypeConfigurati
         entity.Property(x => x.PendingTransactionId).HasMaxLength(PayjoinPluginDbSchema.SenderSessionIdMaxLength);
         entity.HasIndex(x => x.PendingTransactionId)
             .HasDatabaseName(PayjoinPluginDbSchema.SenderSessionsPendingTransactionIdIndex);
+        entity.Property(x => x.CoinReservationTransactionId).HasMaxLength(PayjoinPluginDbSchema.SenderSessionIdMaxLength);
+        // One live session per URI, enforced where the in-process build lock cannot reach:
+        // across processes and across restarts. The filter names the statuses by value because
+        // the filter is raw SQL: 0 is Pending and 4 is AwaitingSignature.
+        entity.HasIndex(x => x.Bip21)
+            .IsUnique()
+            .HasFilter("\"Status\" IN (0, 4)")
+            .HasDatabaseName(PayjoinPluginDbSchema.SenderSessionsLiveBip21Index);
         entity.Property(x => x.OutpointsUsed).HasColumnType("text[]");
         entity.HasMany(x => x.Events)
             .WithOne(x => x.Session)

@@ -63,6 +63,22 @@ public class PayjoinSenderIntegrationTests : UnitTestBase
         Assert.False(duplicate.Success);
 
         var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();
+
+        // The session's coins are reserved where core can see them: a Signed pending
+        // transaction holds the signed original, so an ordinary send cannot pick the same
+        // outpoints, and its broadcast button is the operator's manual fallback.
+        var pendingTransactionService = tester.PayTester.GetService<PendingTransactionService>();
+        Assert.True(senderSessionStore.TryGetSession(startResult.SenderSessionId!, out var liveSession));
+        Assert.NotNull(liveSession!.CoinReservationTransactionId);
+        var reservations = await pendingTransactionService
+            .GetPendingTransactions(PayjoinConstants.BitcoinCode, payer.StoreId)
+            .WaitAsync(cts.Token).ConfigureAwait(true);
+        var reservation = Assert.Single(reservations, p => p.Id == liveSession.CoinReservationTransactionId);
+        Assert.Equal(PendingTransactionState.Signed, reservation.State);
+        Assert.Equal(
+            liveSession.OutpointsUsed.OrderBy(x => x, StringComparer.Ordinal),
+            reservation.OutpointsUsed.OrderBy(x => x, StringComparer.Ordinal));
+
         PayjoinSenderSessionState? completedSession = null;
         await AsyncPolling.WaitUntilAsync(
             PayjoinIntegrationTestSupport.TestTimeout,
@@ -101,6 +117,102 @@ public class PayjoinSenderIntegrationTests : UnitTestBase
 
         // The defining property of the payjoin: the receiver contributed one of its own
         // confirmed inputs to the sender's transaction.
+        Assert.Contains(
+            broadcastTransaction.Inputs,
+            input => receiverOutpointsBeforePayment.Contains(input.PrevOut.ToString()));
+
+        // The reservation settles on its own: the payjoin spent its coins, so core's chain
+        // watcher invalidates the row and its outpoints stop being excluded from sends.
+        await AsyncPolling.WaitUntilAsync(
+            TimeSpan.FromSeconds(45),
+            TimeSpan.FromSeconds(1),
+            async _ =>
+            {
+                var stillHeld = await pendingTransactionService
+                    .GetPendingTransactions(PayjoinConstants.BitcoinCode, payer.StoreId)
+                    .ConfigureAwait(false);
+                return stillHeld.All(p => p.Id != liveSession.CoinReservationTransactionId);
+            },
+            shouldRetry: null,
+            _ =>
+            {
+                var row = pendingTransactionService.GetPendingTransaction(
+                    new PendingTransactionService.PendingTransactionFullId(
+                        PayjoinConstants.BitcoinCode, payer.StoreId, liveSession.CoinReservationTransactionId!))
+                    .GetAwaiter().GetResult();
+                return $"The coin reservation kept holding its outpoints after the payjoin completed. Row state: {row?.State.ToString() ?? "missing"}, outpoints: {string.Join(",", row?.OutpointsUsed ?? [])}, payjoin: {completedSession.BroadcastTransactionId}.";
+            },
+            cts.Token).ConfigureAwait(true);
+    }
+
+    // TODO: Re-enable together with the receiver's restart test when the integration test
+    // harness can perform a real BTCPay server restart without disposing the shared service
+    // provider. The body already passes its assertions; the harness fails in Dispose afterwards.
+    [Fact(Skip = "Temporarily disabled: test harness restart disposes the shared service provider.")]
+    [Trait("Integration", "Integration")]
+    public async Task InFlightSenderSessionSurvivesServerRestartAndCompletesPayjoin()
+    {
+        // The sender's recovery line is its event log: every library transition persists before
+        // anything acts on it, so a restart replays the log and resumes from the last persisted
+        // state. The restart lands right after the session starts, which is the widest recovery
+        // window a run can face.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, payer.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var receiverOutpointsBeforePayment = await PayjoinIntegrationTestSupport.GetReceiverOutpointsAsync(
+            tester,
+            context.Merchant.StoreId,
+            confirmedOnly: true,
+            cts.Token).ConfigureAwait(true);
+        Assert.NotEmpty(receiverOutpointsBeforePayment);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var senderService = tester.PayTester.GetService<PayjoinSenderService>();
+        var startResult = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, selectedInputs: null, cts.Token).ConfigureAwait(true);
+        Assert.True(startResult.Success, startResult.Error);
+
+        tester.PayTester.Dispose();
+        await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
+
+        var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();
+        PayjoinSenderSessionState? completedSession = null;
+        await AsyncPolling.WaitUntilAsync(
+            PayjoinIntegrationTestSupport.TestTimeout,
+            TimeSpan.FromSeconds(1),
+            _ =>
+            {
+                if (senderSessionStore.TryGetSession(startResult.SenderSessionId!, out var session) &&
+                    session!.Status != PayjoinSenderSessionStatus.Pending)
+                {
+                    completedSession = session;
+                    return Task.FromResult(true);
+                }
+
+                return Task.FromResult(false);
+            },
+            shouldRetry: null,
+            _ => $"Sender session {startResult.SenderSessionId} did not complete after the restart. Last status: {(senderSessionStore.TryGetSession(startResult.SenderSessionId!, out var last) ? last!.Status.ToString() : "missing")}, failure: {last?.FailureMessage}",
+            cts.Token).ConfigureAwait(true);
+
+        Assert.NotNull(completedSession);
+        Assert.Equal(PayjoinSenderSessionStatus.CompletedPayjoin, completedSession!.Status);
+        Assert.NotEqual(startResult.OriginalTransactionId, completedSession.BroadcastTransactionId);
+
+        var rewardAddress = await tester.ExplorerNode.GetNewAddressAsync(cts.Token).ConfigureAwait(true);
+        await tester.ExplorerNode.GenerateToAddressAsync(1, rewardAddress, cts.Token).ConfigureAwait(true);
+        await context.Merchant.WaitInvoicePaid(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+
+        var bestBlock = await tester.ExplorerNode.GetBestBlockHashAsync(cts.Token).ConfigureAwait(true);
+        var broadcastTransaction = await tester.ExplorerNode
+            .GetRawTransactionAsync(uint256.Parse(completedSession.BroadcastTransactionId!), bestBlock, cancellationToken: cts.Token)
+            .ConfigureAwait(true);
         Assert.Contains(
             broadcastTransaction.Inputs,
             input => receiverOutpointsBeforePayment.Contains(input.PrevOut.ToString()));

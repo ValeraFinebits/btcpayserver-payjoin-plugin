@@ -30,6 +30,7 @@ internal static class PayjoinPluginDbSchema
     internal const string SenderSessionsStatusCreatedAtIndex = "IX_SenderSessions_Status_CreatedAt";
     internal const string SenderSessionsOriginalTransactionIdIndex = "IX_SenderSessions_OriginalTransactionId";
     internal const string SenderSessionsPendingTransactionIdIndex = "IX_SenderSessions_PendingTransactionId";
+    internal const string SenderSessionsLiveBip21Index = "IX_SenderSessions_Bip21_Live";
 
     internal const string ReceiverInputReservationsOutPointIndex = "IX_ReceiverInputReservations_TransactionId_OutputIndex";
     internal const string ReceiverInputReservationsInvoiceIdIndex = "IX_ReceiverInputReservations_InvoiceId";

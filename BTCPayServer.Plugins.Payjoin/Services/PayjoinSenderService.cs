@@ -96,6 +96,7 @@ internal sealed class PayjoinSenderService
     private readonly IFeeProviderFactory _feeProviderFactory;
     private readonly PayjoinSenderSessionStore _senderSessionStore;
     private readonly PendingTransactionService _pendingTransactionService;
+    private readonly PayjoinSessionBuildLock _sessionBuildLock;
     private readonly ILogger<PayjoinSenderService> _logger;
 
     internal PayjoinSenderService(
@@ -106,6 +107,7 @@ internal sealed class PayjoinSenderService
         IFeeProviderFactory feeProviderFactory,
         PayjoinSenderSessionStore senderSessionStore,
         PendingTransactionService pendingTransactionService,
+        PayjoinSessionBuildLock sessionBuildLock,
         ILogger<PayjoinSenderService> logger)
     {
         _networkProvider = networkProvider;
@@ -115,6 +117,7 @@ internal sealed class PayjoinSenderService
         _feeProviderFactory = feeProviderFactory;
         _senderSessionStore = senderSessionStore;
         _pendingTransactionService = pendingTransactionService;
+        _sessionBuildLock = sessionBuildLock;
         _logger = logger;
     }
 
@@ -141,14 +144,22 @@ internal sealed class PayjoinSenderService
             return PayjoinSenderStartResult.Failed("The BTC network is not available.");
         }
 
+        // One start per URI at a time inside this process. The dedup check and the session
+        // insert are separate steps with a wallet call between them, so without this a
+        // double-click could pass the check twice; the unique live-Bip21 index is the same
+        // guard across processes and restarts.
+        var trimmedBip21 = bip21.Trim();
+        using var uriLease = await _sessionBuildLock
+            .AcquireAsync("sender:" + trimmedBip21, cancellationToken).ConfigureAwait(false);
+
         // Parse and validate through the library, so URI-format knowledge stays in one place.
         // The whole flow runs inside the URI's disposal scope because the sender builder at
         // the end still needs the parsed PjUri.
         try
         {
-            using var uri = global::Payjoin.Uri.Parse(bip21.Trim());
+            using var uri = global::Payjoin.Uri.Parse(trimmedBip21);
             using var pjUri = uri.CheckPjSupported();
-            return await StartWithPjUriAsync(storeId, bip21, pjUri, network, feeRateSatPerVb, requestBaseUrl, selectedInputs, cancellationToken).ConfigureAwait(false);
+            return await StartWithPjUriAsync(storeId, trimmedBip21, pjUri, network, feeRateSatPerVb, requestBaseUrl, selectedInputs, cancellationToken).ConfigureAwait(false);
         }
         catch (UriParseException ex)
         {
@@ -179,7 +190,7 @@ internal sealed class PayjoinSenderService
 
         // Check the URI before building anything. Two attempts on one URI can select different
         // coins, so the transaction id below does not catch a repeated submission on its own.
-        if (_senderSessionStore.HasPendingSessionForBip21(bip21.Trim()))
+        if (_senderSessionStore.HasPendingSessionForBip21(bip21))
         {
             return PayjoinSenderStartResult.Failed("A payjoin session already pays this URI.");
         }
@@ -266,22 +277,41 @@ internal sealed class PayjoinSenderService
                 expiry: DateTimeOffset.UtcNow + SignatureWindow,
                 cancellationToken).ConfigureAwait(false);
 
-            _senderSessionStore.CreateSession(
-                senderSessionId,
-                storeId,
-                bip21.Trim(),
-                destinationAddress,
-                checked((long)amountSats.Value),
-                originalTransactionId,
-                [],
-                feeRateSatPerKwu,
-                outpointsUsed,
-                // The original is not signed yet, so the session has no fallback to offer until
-                // the operator signs it.
-                originalTransactionHex: null,
-                pending.Id,
-                PayjoinSenderSessionStatus.AwaitingSignature,
-                requestBaseUrl.ToString());
+            // The signing request exists before the session does, so a failure to record the
+            // session must withdraw the request; a signature nothing waits for would otherwise
+            // sit in front of the operator for the whole window.
+            var sessionRecorded = false;
+            try
+            {
+                _senderSessionStore.CreateSession(
+                    senderSessionId,
+                    storeId,
+                    bip21,
+                    destinationAddress,
+                    checked((long)amountSats.Value),
+                    originalTransactionId,
+                    [],
+                    feeRateSatPerKwu,
+                    outpointsUsed,
+                    // The original is not signed yet, so the session has no fallback to offer until
+                    // the operator signs it.
+                    originalTransactionHex: null,
+                    pending.Id,
+                    PayjoinSenderSessionStatus.AwaitingSignature,
+                    requestBaseUrl.ToString());
+                sessionRecorded = true;
+            }
+            catch (PayjoinSenderDuplicateSessionException)
+            {
+                return PayjoinSenderStartResult.Failed("A payjoin session already pays this URI.");
+            }
+            finally
+            {
+                if (!sessionRecorded)
+                {
+                    await CancelPendingTransactionAsync(storeId, pending.Id).ConfigureAwait(false);
+                }
+            }
 
             LogSenderSessionAwaitingSignature(_logger, senderSessionId, pending.Id, null);
             return PayjoinSenderStartResult.AwaitingSignature(senderSessionId, originalTransactionId, pending.Id);
@@ -305,20 +335,87 @@ internal sealed class PayjoinSenderService
             return PayjoinSenderStartResult.Failed($"The payjoin sender could not be created: {ex.Message}");
         }
 
-        _senderSessionStore.CreateSession(
-            senderSessionId,
-            storeId,
-            bip21.Trim(),
-            destinationAddress,
-            checked((long)amountSats.Value),
-            originalTransactionId,
-            bootstrapPersister.Load(),
-            feeRateSatPerKwu,
-            outpointsUsed,
-            psbt.ExtractTransaction().ToHex());
+        var coinReservationTransactionId = await TryReserveCoinsAsync(storeId, psbt, requestBaseUrl, cancellationToken).ConfigureAwait(false);
+
+        var hotSessionRecorded = false;
+        try
+        {
+            _senderSessionStore.CreateSession(
+                senderSessionId,
+                storeId,
+                bip21,
+                destinationAddress,
+                checked((long)amountSats.Value),
+                originalTransactionId,
+                bootstrapPersister.Load(),
+                feeRateSatPerKwu,
+                outpointsUsed,
+                psbt.ExtractTransaction().ToHex(),
+                coinReservationTransactionId: coinReservationTransactionId);
+            hotSessionRecorded = true;
+        }
+        catch (PayjoinSenderDuplicateSessionException)
+        {
+            return PayjoinSenderStartResult.Failed("A payjoin session already pays this URI.");
+        }
+        finally
+        {
+            if (!hotSessionRecorded && coinReservationTransactionId is not null)
+            {
+                await CancelPendingTransactionAsync(storeId, coinReservationTransactionId).ConfigureAwait(false);
+            }
+        }
 
         LogSenderSessionStarted(_logger, senderSessionId, storeId, null);
         return PayjoinSenderStartResult.Started(senderSessionId, originalTransactionId);
+    }
+
+    /// <summary>
+    /// Reserves the session's coins where core can see them. Core's send flow excludes the
+    /// outpoints of Pending and Signed pending transactions, and this plugin's own live-session
+    /// exclusion is invisible to it, so without this an ordinary send could spend a live
+    /// session's coins. The row holds the signed original in the Signed state: it reads as the
+    /// plain payment ready to broadcast, which is what it is, and its broadcast button is the
+    /// operator's manual fallback. Every terminal transition releases the row through
+    /// PayjoinSenderCoinReservationReleaser. Failing to reserve does not fail the start: the
+    /// session still runs, only the exclusion is lost.
+    /// </summary>
+    private async Task<string?> TryReserveCoinsAsync(
+        string storeId,
+        PSBT signedPsbt,
+        RequestBaseUrl requestBaseUrl,
+        CancellationToken cancellationToken)
+    {
+        var reservation = await _pendingTransactionService.CreatePendingTransaction(
+            storeId,
+            PayjoinConstants.BitcoinCode,
+            signedPsbt,
+            requestBaseUrl,
+            expiry: DateTimeOffset.UtcNow + SignatureWindow,
+            cancellationToken).ConfigureAwait(false);
+
+        // The same signed PSBT again: collecting it finalizes the row and moves it to Signed, so
+        // it stops looking like a request for a signature it does not need.
+        var collected = await _pendingTransactionService.CollectSignature(
+            new PendingTransactionService.PendingTransactionFullId(PayjoinConstants.BitcoinCode, storeId, reservation.Id),
+            signedPsbt,
+            cancellationToken).ConfigureAwait(false);
+        if (collected?.State == PendingTransactionState.Signed)
+        {
+            return reservation.Id;
+        }
+
+        await CancelPendingTransactionAsync(storeId, reservation.Id).ConfigureAwait(false);
+        return null;
+    }
+
+    private Task CancelPendingTransactionAsync(string storeId, string pendingTransactionId)
+    {
+        return _pendingTransactionService.CancelPendingTransaction(
+            new PendingTransactionService.PendingTransactionFullId(
+                PayjoinConstants.BitcoinCode,
+                storeId,
+                pendingTransactionId));
     }
 
     /// <summary>

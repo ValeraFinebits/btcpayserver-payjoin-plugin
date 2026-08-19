@@ -35,6 +35,10 @@
             it does not. A wallet that cannot sign on the server asks for a second signature when
             the receiver answers.
         </p>
+        @* Our own copy of the URI. The script below clears core's PayJoinBIP21 field to disarm
+           the v1 flow, and that field is inside the same form this button submits, so the URI
+           has to travel under a name core does not read. *@
+        <input type="hidden" name="AsyncPayjoinBip21" value="@Model!.PayJoinBIP21" />
         <button type="submit" class="btn btn-primary" name="command" value="payjoin-async"
                 asp-controller="UIPayjoinSender" asp-action="SendFromWallet" asp-route-storeId="@storeId"
                 formmethod="post" text-translate="true">

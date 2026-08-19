@@ -44,9 +44,11 @@ internal static class PayjoinSenderBroadcaster
             return true;
         }
 
-        var reason = result.RPCCodeMessage ?? result.RPCMessage;
+        // Core's reject reasons come in both spellings across versions: "txn-already-in-mempool"
+        // and "Transaction already in block chain". Fold the hyphens away and match once.
+        var reason = (result.RPCCodeMessage ?? result.RPCMessage)?.Replace('-', ' ');
         return reason is not null &&
-               (reason.Contains("already-known", StringComparison.OrdinalIgnoreCase) ||
+               (reason.Contains("already known", StringComparison.OrdinalIgnoreCase) ||
                 reason.Contains("already in block chain", StringComparison.OrdinalIgnoreCase) ||
                 reason.Contains("already in mempool", StringComparison.OrdinalIgnoreCase));
     }
