@@ -16,6 +16,7 @@ internal sealed record PayjoinSenderSessionState(
     string OriginalTransactionId,
     string? BroadcastTransactionId,
     string? PendingTransactionId,
+    string? CoinReservationTransactionId,
     string? RequestBaseUrl,
     long FeeRateSatPerKwu,
     string[] OutpointsUsed,
@@ -59,7 +60,8 @@ internal sealed class PayjoinSenderSessionStore
         string? originalTransactionHex = null,
         string? pendingTransactionId = null,
         PayjoinSenderSessionStatus status = PayjoinSenderSessionStatus.Pending,
-        string? requestBaseUrl = null)
+        string? requestBaseUrl = null,
+        string? coinReservationTransactionId = null)
     {
         ArgumentNullException.ThrowIfNull(bootstrapEvents);
         var persistedEvents = bootstrapEvents.ToArray();
@@ -82,6 +84,7 @@ internal sealed class PayjoinSenderSessionStore
             AmountSats = amountSats,
             OriginalTransactionId = originalTransactionId,
             PendingTransactionId = pendingTransactionId,
+            CoinReservationTransactionId = coinReservationTransactionId,
             RequestBaseUrl = requestBaseUrl,
             FeeRateSatPerKwu = feeRateSatPerKwu,
             OutpointsUsed = outpointsUsed?.ToArray() ?? [],
@@ -105,7 +108,19 @@ internal sealed class PayjoinSenderSessionStore
             });
         }
 
-        context.SaveChanges();
+        try
+        {
+            context.SaveChanges();
+        }
+        catch (DbUpdateException ex) when (_uniqueConstraintViolationDetector.IsUniqueConstraintViolation(
+            ex, PayjoinPluginDbSchema.SenderSessionsLiveBip21Index))
+        {
+            // A concurrent writer created a live session for the same URI between the read-side
+            // check and this save. The unique live-Bip21 index is the guard that holds across
+            // processes and restarts.
+            throw new PayjoinSenderDuplicateSessionException("A payjoin session already pays this URI.", ex);
+        }
+
         return CreateState(sessionData, persistedEvents);
     }
 
@@ -201,6 +216,61 @@ internal sealed class PayjoinSenderSessionStore
     }
 
     /// <summary>
+    /// Every running session whose coins a pending transaction holds. The sweep watches these
+    /// rows for what the operator does on BTCPay's own screen: a manual broadcast of the plain
+    /// payment, or a cancellation of it.
+    /// </summary>
+    public IReadOnlyCollection<PayjoinSenderSessionState> GetPendingSessionsWithCoinReservations()
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        IQueryable<PayjoinSenderSessionData> query = context.SenderSessions
+            .AsNoTracking()
+            .Where(x => x.Status == PayjoinSenderSessionStatus.Pending && x.CoinReservationTransactionId != null);
+        return query
+            .OrderBy(x => x.CreatedAt)
+            .ToArray()
+            .Select(row => CreateState(row))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Sessions that ended while still pointing at a coin reservation. The release runs after
+    /// the completion write, so a crash between the two leaves the reservation holding coins a
+    /// dead session no longer needs; the sweep finishes the release.
+    /// </summary>
+    public IReadOnlyCollection<PayjoinSenderSessionState> GetSessionsWithDanglingCoinReservations()
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        return context.SenderSessions
+            .AsNoTracking()
+            .Where(x => x.CoinReservationTransactionId != null &&
+                        x.Status != PayjoinSenderSessionStatus.Pending &&
+                        x.Status != PayjoinSenderSessionStatus.AwaitingSignature)
+            .OrderBy(x => x.CreatedAt)
+            .ToArray()
+            .Select(row => CreateState(row))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Records that a session's coin reservation has been released, so the release is not
+    /// repeated on every sweep.
+    /// </summary>
+    public void ClearCoinReservation(string senderSessionId)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        var sessionData = context.SenderSessions.SingleOrDefault(x => x.SenderSessionId == senderSessionId);
+        if (sessionData is null || sessionData.CoinReservationTransactionId is null)
+        {
+            return;
+        }
+
+        sessionData.CoinReservationTransactionId = null;
+        sessionData.UpdatedAt = DateTimeOffset.UtcNow;
+        context.SaveChanges();
+    }
+
+    /// <summary>
     /// Finds the session waiting on a given BTCPay pending transaction, so a collected
     /// signature can be matched back to the payjoin session that asked for it.
     /// </summary>
@@ -222,7 +292,10 @@ internal sealed class PayjoinSenderSessionStore
 
     /// <summary>
     /// Seeds the library state produced once the signed original arrived, and hands the session
-    /// to the poller. The pending transaction id is cleared because that round is over.
+    /// to the poller. The signing round is over, so the pending transaction stops being a
+    /// signature to wait for; it becomes the session's coin reservation instead. Core keeps
+    /// excluding a Signed row's outpoints, which is exactly what a live session needs, and the
+    /// row's broadcast button stays available as the operator's manual fallback.
     /// </summary>
     public bool StartSignedSession(string senderSessionId, IEnumerable<string> bootstrapEvents, string originalTransactionHex)
     {
@@ -257,6 +330,7 @@ internal sealed class PayjoinSenderSessionStore
             });
         }
 
+        sessionData.CoinReservationTransactionId = sessionData.PendingTransactionId;
         sessionData.PendingTransactionId = null;
         sessionData.OriginalTransactionHex = originalTransactionHex;
         sessionData.Status = PayjoinSenderSessionStatus.Pending;
@@ -326,7 +400,11 @@ internal sealed class PayjoinSenderSessionStore
 
     private void AppendEvent(string senderSessionId, string @event)
     {
-        const int maxAttempts = 3;
+        // A sequence conflict is not a failure, it is how concurrent appends order themselves:
+        // every conflict means another writer committed an event, so retrying with the next
+        // sequence always makes progress. The cap is a backstop far beyond any real writer
+        // count, only there so a defect cannot spin for ever.
+        const int maxAttempts = 100;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             using var context = _pluginDbContextFactory.CreateContext();
@@ -439,6 +517,7 @@ internal sealed class PayjoinSenderSessionStore
             sessionData.OriginalTransactionId,
             sessionData.BroadcastTransactionId,
             sessionData.PendingTransactionId,
+            sessionData.CoinReservationTransactionId,
             sessionData.RequestBaseUrl,
             sessionData.FeeRateSatPerKwu,
             sessionData.OutpointsUsed ?? [],

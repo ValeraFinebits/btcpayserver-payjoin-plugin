@@ -49,7 +49,10 @@ public class PayjoinSenderWalletSendIntegrationTests : UnitTestBase
         var uriBuilder = new BitcoinUrlBuilder(bip21Response.Bip21, context.Network.NBitcoinNetwork);
         var sendModel = new WalletSendModel
         {
-            PayJoinBIP21 = bip21Response.Bip21,
+            // Empty on purpose: the extension clears core's field in the browser to disarm the
+            // v1 flow and posts the URI under its own name. This is the shape a real submission
+            // arrives in, and the shape an earlier version of this flow silently rejected.
+            PayJoinBIP21 = null,
             FeeSatoshiPerByte = 5m,
             Outputs =
             [
@@ -63,7 +66,7 @@ public class PayjoinSenderWalletSendIntegrationTests : UnitTestBase
         };
 
         using var controller = CreateController(tester);
-        var posted = await controller.SendFromWallet(payer.StoreId, sendModel, cts.Token).ConfigureAwait(true);
+        var posted = await controller.SendFromWallet(payer.StoreId, sendModel, bip21Response.Bip21, cts.Token).ConfigureAwait(true);
 
         // A redirect back to a wallet or plugin screen, not a re-render carrying an error.
         var redirect = Assert.IsType<RedirectToActionResult>(posted);
@@ -114,7 +117,7 @@ public class PayjoinSenderWalletSendIntegrationTests : UnitTestBase
         };
 
         using var controller = CreateController(tester);
-        var posted = await controller.SendFromWallet(payer.StoreId, sendModel, cts.Token).ConfigureAwait(true);
+        var posted = await controller.SendFromWallet(payer.StoreId, sendModel, asyncPayjoinBip21: null, cts.Token).ConfigureAwait(true);
 
         // Back to the send screen with the reason, and no session started.
         var redirect = Assert.IsType<RedirectToActionResult>(posted);

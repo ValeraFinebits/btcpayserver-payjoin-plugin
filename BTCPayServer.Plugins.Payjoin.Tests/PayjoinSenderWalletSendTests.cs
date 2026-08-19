@@ -11,7 +11,7 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 /// </summary>
 public class PayjoinSenderWalletSendTests
 {
-    private const string PayjoinUri = "bitcoin:tb1q?amount=0.001&pj=https://example.test/#K1";
+    private const string PayjoinUri = "bitcoin:tb1qdestination?amount=0.001&pj=https://example.test/#K1";
 
     [Fact]
     public void ADestinationWithoutPayjoinIsRefused()
@@ -59,6 +59,28 @@ public class PayjoinSenderWalletSendTests
 
         Assert.NotNull(UIPayjoinSenderController.ResolveSingleDestination(model, out var error));
         Assert.Null(error);
+    }
+
+    [Fact]
+    public void AChangedDestinationIsRefused()
+    {
+        // The payjoin pays the URI. An edit on the still-editable screen must be refused, not
+        // silently overridden.
+        var model = CreateModel();
+        model.Outputs[0].DestinationAddress = "tb1qsomewhereelse";
+
+        Assert.Null(UIPayjoinSenderController.ResolveSingleDestination(model, out var error));
+        Assert.Contains("no longer matches", error, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AChangedAmountIsRefused()
+    {
+        var model = CreateModel();
+        model.Outputs[0].Amount = 0.002m;
+
+        Assert.Null(UIPayjoinSenderController.ResolveSingleDestination(model, out var error));
+        Assert.Contains("amount", error, System.StringComparison.Ordinal);
     }
 
     [Fact]

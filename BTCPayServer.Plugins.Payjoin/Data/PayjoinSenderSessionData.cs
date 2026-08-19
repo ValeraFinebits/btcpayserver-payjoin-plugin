@@ -29,6 +29,16 @@ internal class PayjoinSenderSessionData
     // reused for the second signing round once the receiver returns a proposal.
     public string? PendingTransactionId { get; set; }
 
+    // A BTCPay pending transaction that holds this session's coins while the session runs. It is
+    // the signed original in the Signed state, so core's own send flow excludes its outpoints,
+    // and its broadcast button doubles as the operator's manual fallback. It is deliberately a
+    // different column from PendingTransactionId: that one names a signature this session waits
+    // for, and the signature listener acts on it, while this row must never be treated as a
+    // collected signature. Every terminal transition releases the row explicitly and clears this
+    // column; a sweep finishes the release for a run that crashed in between. Core cannot do it
+    // for us: its chain watcher and expiry sweep live on an event loop that is never started.
+    public string? CoinReservationTransactionId { get; set; }
+
     // The fee rate the operator chose, in sat/kWU, which is the unit rust-payjoin wants. It is
     // the floor the receiver's proposal must clear, and it sizes the fee this sender contributes
     // for the receiver's extra input, so the second signing round needs it as well as the first.

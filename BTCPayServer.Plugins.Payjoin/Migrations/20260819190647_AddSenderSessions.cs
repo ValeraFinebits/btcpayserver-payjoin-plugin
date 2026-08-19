@@ -12,8 +12,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            ArgumentNullException.ThrowIfNull(migrationBuilder);
-
+            System.ArgumentNullException.ThrowIfNull(migrationBuilder);
             migrationBuilder.CreateTable(
                 name: "SenderSessions",
                 schema: "BTCPayServer.Plugins.Payjoin",
@@ -26,6 +25,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     AmountSats = table.Column<long>(type: "bigint", nullable: false),
                     OriginalTransactionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     PendingTransactionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    CoinReservationTransactionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
                     FeeRateSatPerKwu = table.Column<long>(type: "bigint", nullable: false),
                     OutpointsUsed = table.Column<string[]>(type: "text[]", nullable: false),
                     OriginalTransactionHex = table.Column<string>(type: "text", nullable: true),
@@ -73,6 +73,14 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "IX_SenderSessions_Bip21_Live",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                table: "SenderSessions",
+                column: "Bip21",
+                unique: true,
+                filter: "\"Status\" IN (0, 4)");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_SenderSessions_OriginalTransactionId",
                 schema: "BTCPayServer.Plugins.Payjoin",
                 table: "SenderSessions",
@@ -100,8 +108,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            ArgumentNullException.ThrowIfNull(migrationBuilder);
-
+            System.ArgumentNullException.ThrowIfNull(migrationBuilder);
             migrationBuilder.DropTable(
                 name: "SenderSessionEvents",
                 schema: "BTCPayServer.Plugins.Payjoin");

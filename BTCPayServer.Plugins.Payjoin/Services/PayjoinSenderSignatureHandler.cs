@@ -80,12 +80,113 @@ internal sealed class PayjoinSenderSignatureHandler
                 throw;
             }
             catch (Exception ex) when (ex is InvalidOperationException or UniffiException or FormatException
-                                       or PayjoinSenderBroadcastException or System.Net.Http.HttpRequestException)
+                                       or PayjoinSenderBroadcastException or System.Net.Http.HttpRequestException
+                                       or Microsoft.EntityFrameworkCore.DbUpdateException)
             {
                 // One session must not stop the sweep: the others are waiting on their own
-                // transactions and have nothing to do with this failure.
+                // transactions and have nothing to do with this failure. DbUpdateException is the
+                // benign end of the listener-versus-sweep race: the unique event-sequence index
+                // let exactly one of them seed the session, and this run lost.
                 LogSignatureHandlingFailed(_logger, session.SenderSessionId, ex);
             }
+        }
+
+        foreach (var session in _senderSessionStore.GetPendingSessionsWithCoinReservations())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await ReconcileReservationAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or UniffiException or FormatException
+                                       or PayjoinSenderBroadcastException or System.Net.Http.HttpRequestException
+                                       or Microsoft.EntityFrameworkCore.DbUpdateException)
+            {
+                LogSignatureHandlingFailed(_logger, session.SenderSessionId, ex);
+            }
+        }
+
+        // A run that crashed between completing a session and releasing its reservation left
+        // the reservation holding coins for a session that is over. Finish those releases here.
+        foreach (var session in _senderSessionStore.GetSessionsWithDanglingCoinReservations())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await PayjoinSenderCoinReservationReleaser
+                    .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException
+                                       or Microsoft.EntityFrameworkCore.DbUpdateException)
+            {
+                LogSignatureHandlingFailed(_logger, session.SenderSessionId, ex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Follows what the operator does to a session's coin reservation on BTCPay's own screen.
+    /// The reservation is the signed plain payment, so a manual broadcast there is the fallback
+    /// happening by hand, and a cancellation carries the same intent as this plugin's own stop
+    /// control: end the payjoin, keep the payment. The payment cannot be taken back either way,
+    /// because the receiver already holds the signed original.
+    /// </summary>
+    private async Task ReconcileReservationAsync(PayjoinSenderSessionState session, CancellationToken cancellationToken)
+    {
+        if (session.CoinReservationTransactionId is null)
+        {
+            return;
+        }
+
+        var reservation = await _pendingTransactionService.GetPendingTransaction(
+            new PendingTransactionService.PendingTransactionFullId(
+                PayjoinConstants.BitcoinCode,
+                session.StoreId,
+                session.CoinReservationTransactionId)).ConfigureAwait(false);
+        if (reservation is null)
+        {
+            return;
+        }
+
+        switch (reservation.State)
+        {
+            case PendingTransactionState.Broadcast:
+                // The operator broadcast the plain payment by hand, so the payjoin is over and
+                // the fallback has happened.
+                PayjoinSenderSessionCloser.TryClose(_senderSessionStore.CreatePersister(session.SenderSessionId));
+                _senderSessionStore.CompleteSession(
+                    session.SenderSessionId,
+                    PayjoinSenderSessionStatus.CompletedFallback,
+                    reservation.TransactionId ?? reservation.NoSignatureTransactionId,
+                    failureMessage: null);
+                _senderSessionStore.ClearCoinReservation(session.SenderSessionId);
+                break;
+            case PendingTransactionState.Cancelled:
+            case PendingTransactionState.Expired:
+                await EndSessionAsync(session, "the operator cancelled the reserved payment", cancellationToken).ConfigureAwait(false);
+                break;
+            case PendingTransactionState.Invalidated:
+                // Something else spent the coins. When that something is this session's own
+                // payjoin, the session has already completed and the terminal guard makes this
+                // a no-op; a genuine outside spend ends the session with nothing to broadcast.
+                _senderSessionStore.CompleteSession(
+                    session.SenderSessionId,
+                    PayjoinSenderSessionStatus.Failed,
+                    broadcastTransactionId: null,
+                    "another transaction spent the coins this session committed");
+                _senderSessionStore.ClearCoinReservation(session.SenderSessionId);
+                break;
+            case PendingTransactionState.Pending:
+            case PendingTransactionState.Signed:
+                break;
         }
     }
 
@@ -118,7 +219,7 @@ internal sealed class PayjoinSenderSignatureHandler
                     // Someone broadcast it from BTCPay's own screen. Which transaction that was
                     // decides the outcome: the original is the fallback, and the proposal is the
                     // payjoin itself.
-                    CompleteFromExternalBroadcast(session, pendingTransaction);
+                    await CompleteFromExternalBroadcastAsync(session, pendingTransaction).ConfigureAwait(false);
                     break;
                 case PendingTransactionState.Cancelled:
                     await EndSessionAsync(session, "the operator cancelled the transaction", cancellationToken).ConfigureAwait(false);
@@ -130,6 +231,19 @@ internal sealed class PayjoinSenderSignatureHandler
                     await EndSessionAsync(session, "another transaction spent the same coins", cancellationToken).ConfigureAwait(false);
                     break;
                 case PendingTransactionState.Pending:
+                    // Core stamps the expiry on the row but its own sweep never marks rows
+                    // Expired: the sweep lives on an event loop core never starts. Enforce the
+                    // window here, or a forgotten signing request holds its coins for ever.
+                    if (pendingTransaction.Expiry is { } expiry && expiry <= DateTimeOffset.UtcNow)
+                    {
+                        await _pendingTransactionService.CancelPendingTransaction(
+                            new PendingTransactionService.PendingTransactionFullId(
+                                PayjoinConstants.BitcoinCode,
+                                session.StoreId,
+                                session.PendingTransactionId!)).ConfigureAwait(false);
+                        await EndSessionAsync(session, "the transaction expired before it was signed", cancellationToken).ConfigureAwait(false);
+                    }
+
                     break;
             }
         }
@@ -157,7 +271,7 @@ internal sealed class PayjoinSenderSignatureHandler
 
             if (current.Events.Length == 0)
             {
-                await StartSessionAsync(current, signedPsbt, cancellationToken).ConfigureAwait(false);
+                StartSession(current, signedPsbt);
             }
             else
             {
@@ -182,7 +296,7 @@ internal sealed class PayjoinSenderSignatureHandler
     /// The first round: the signed original exists, so the rust-payjoin sender can finally be
     /// built. Saving its state moves the session to Pending and the poller takes over.
     /// </summary>
-    private async Task StartSessionAsync(PayjoinSenderSessionState session, PSBT signedPsbt, CancellationToken cancellationToken)
+    private void StartSession(PayjoinSenderSessionState session, PSBT signedPsbt)
     {
         // rust-payjoin needs the original complete, because it broadcasts it as the fallback.
         if (!signedPsbt.TryFinalize(out var errors))
@@ -207,26 +321,11 @@ internal sealed class PayjoinSenderSignatureHandler
             return;
         }
 
+        // The signed row stays open on purpose: the store just made it the session's coin
+        // reservation, so core keeps its outpoints away from ordinary sends, and its broadcast
+        // button doubles as the operator's manual fallback. The session's terminal transition
+        // releases the row.
         LogSessionStarted(_logger, session.SenderSessionId, null);
-
-        // The signing request is done and this session now holds the coins. Core keeps a signed
-        // row for ever and keeps excluding its outpoints, so retire it here; otherwise a session
-        // that later fails would leave those coins blocked with nothing left to release them.
-        await RetirePendingTransactionAsync(session, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task RetirePendingTransactionAsync(PayjoinSenderSessionState session, CancellationToken cancellationToken)
-    {
-        if (session.PendingTransactionId is null)
-        {
-            return;
-        }
-
-        await _pendingTransactionService.CancelPendingTransaction(
-            new PendingTransactionService.PendingTransactionFullId(
-                PayjoinConstants.BitcoinCode,
-                session.StoreId,
-                session.PendingTransactionId)).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -255,9 +354,11 @@ internal sealed class PayjoinSenderSignatureHandler
             PayjoinSenderSessionStatus.CompletedPayjoin,
             transactionId,
             failureMessage: null);
+        await PayjoinSenderCoinReservationReleaser
+            .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
     }
 
-    private void CompleteFromExternalBroadcast(PayjoinSenderSessionState session, PendingTransaction pendingTransaction)
+    private async Task CompleteFromExternalBroadcastAsync(PayjoinSenderSessionState session, PendingTransaction pendingTransaction)
     {
         var isProposal = session.Events.Length > 0;
         _senderSessionStore.CompleteSession(
@@ -265,6 +366,8 @@ internal sealed class PayjoinSenderSignatureHandler
             isProposal ? PayjoinSenderSessionStatus.CompletedPayjoin : PayjoinSenderSessionStatus.CompletedFallback,
             pendingTransaction.TransactionId ?? pendingTransaction.NoSignatureTransactionId,
             failureMessage: null);
+        await PayjoinSenderCoinReservationReleaser
+            .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -283,6 +386,8 @@ internal sealed class PayjoinSenderSignatureHandler
                 PayjoinSenderSessionStatus.Failed,
                 broadcastTransactionId: null,
                 reason);
+            await PayjoinSenderCoinReservationReleaser
+                .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
             return;
         }
 
@@ -300,6 +405,8 @@ internal sealed class PayjoinSenderSignatureHandler
             PayjoinSenderSessionStatus.CompletedFallback,
             transactionId,
             failureMessage: reason);
+        await PayjoinSenderCoinReservationReleaser
+            .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
     }
 
     /// <summary>
