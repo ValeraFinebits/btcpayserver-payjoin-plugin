@@ -135,7 +135,7 @@ public class UIPayJoinController : Controller
         var invoicePaymentUrl = await _paymentUrlService.GetInvoicePaymentUrlAsync(invoiceId, cancellationToken).ConfigureAwait(false);
         if (invoicePaymentUrl is null)
         {
-            return RunTestPaymentFailure($"No payjoin payment URL is available for invoice {invoiceId}. The invoice is not payable or has no Bitcoin payment method.");
+            return RunTestPaymentFailure("paymentUrl not available for invoice");
         }
 
         if (invoicePaymentUrl.Status != PayjoinAvailabilityStatus.Active)
