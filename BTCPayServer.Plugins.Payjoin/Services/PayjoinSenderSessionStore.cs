@@ -313,11 +313,15 @@ internal sealed class PayjoinSenderSessionStore
             return false;
         }
 
+        // Bootstrap events are by definition the session's first: a session that still waits
+        // for its signature carries no library state. Numbering from one, instead of after the
+        // stored maximum, makes the unique (session, sequence) index the seeding guard itself.
+        // Two workers can pass the status check together, because the status read and a
+        // maximum read are separate queries and a commit can land between them; with fixed
+        // numbering the loser's insert of sequence one conflicts and its whole save, the
+        // status flip included, rolls back.
         var now = DateTimeOffset.UtcNow;
-        var sequence = context.SenderSessionEvents
-            .Where(x => x.SenderSessionId == senderSessionId)
-            .Select(x => (int?)x.Sequence)
-            .Max() ?? 0;
+        var sequence = 0;
         foreach (var @event in persistedEvents)
         {
             sequence++;
@@ -335,7 +339,15 @@ internal sealed class PayjoinSenderSessionStore
         sessionData.OriginalTransactionHex = originalTransactionHex;
         sessionData.Status = PayjoinSenderSessionStatus.Pending;
         sessionData.UpdatedAt = now;
-        context.SaveChanges();
+        try
+        {
+            context.SaveChanges();
+        }
+        catch (DbUpdateException ex) when (IsSenderSessionEventSequenceConflict(ex))
+        {
+            return false;
+        }
+
         return true;
     }
 
