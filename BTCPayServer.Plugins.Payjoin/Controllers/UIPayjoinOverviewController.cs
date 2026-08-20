@@ -117,8 +117,6 @@ public class UIPayjoinOverviewController : Controller
         var directoryConfigured = directoryUrls.Count > 0;
         var relayConfigured = ohttpRelayUrls.Count > 0;
         var hasColdWallet = !string.IsNullOrWhiteSpace(settings.ColdWalletDerivationScheme);
-        var hasConfirmedReceiverInputs = network is not null &&
-                                         await _availabilityService.HasConfirmedReceiverInputsAsync(currentStore.Id, BitcoinCode, network, HttpContext.RequestAborted).ConfigureAwait(false);
         bool? hasConfirmedReceiverInputs = settings.PayjoinV2Enabled && network is not null
             ? await _availabilityService.HasConfirmedReceiverInputsAsync(currentStore.Id, BitcoinCode, network, HttpContext.RequestAborted).ConfigureAwait(false)
             : null;
