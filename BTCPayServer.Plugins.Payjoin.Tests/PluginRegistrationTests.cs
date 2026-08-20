@@ -51,6 +51,9 @@ public class PluginRegistrationTests
         Assert.Contains(services, descriptor =>
             descriptor.ServiceType == typeof(PayjoinBridgeAttentionService) &&
             descriptor.ImplementationFactory is not null);
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(IPayjoinAttentionRecordSeeder) &&
+            descriptor.ImplementationFactory is not null);
     }
 
     [Fact]
