@@ -1,4 +1,5 @@
 @inject BTCPayServer.Services.BTCPayServerEnvironment Env
+@inject Microsoft.Extensions.Localization.IStringLocalizer StringLocalizer
 
 <style>
     .payjoin-checkout-controls [data-payjoin-mode] {
@@ -30,6 +31,14 @@
     const mountPollSlowDelayMs = 1000;
     const mountPollFastPhaseMs = 2000;
     const mountPollCeilingMs = 120000;
+    const strings = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(new
+    {
+        asyncPayjoin = StringLocalizer["Async Payjoin"].Value,
+        standardBitcoin = StringLocalizer["Standard Bitcoin"].Value,
+        paymentMode = StringLocalizer["Bitcoin payment mode"].Value,
+        testPayment = StringLocalizer["Async Payjoin test payment"].Value,
+        runTestPayment = StringLocalizer["Run Async Payjoin test payment"].Value
+    }));
     const runTestEnabled = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Env.CheatMode));
     const runTestEndpoint = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Env.CheatMode ? Url.Action("RunTestPayment", "UIPayJoin") : null));
     // Bounded backoff: each attempt can cost the server an OHTTP bootstrap.
@@ -64,6 +73,16 @@
     function getModel() {
         const vm = getCheckoutVm();
         return vm && vm.srvModel;
+    }
+
+    function translate(key, fallback) {
+        const i18nextInstance = window.i18next;
+        if (!i18nextInstance || !i18nextInstance.isInitialized) {
+            return fallback;
+        }
+
+        const translated = i18nextInstance.t(key);
+        return translated || fallback;
     }
 
     function shouldShowControls(model) {
@@ -284,23 +303,45 @@
         return document.querySelector('#payment .payment-box');
     }
 
+    function buildModeButton(mode, label) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn';
+        button.dataset.payjoinMode = mode;
+        button.textContent = label;
+        return button;
+    }
+
     function buildControls(model) {
+        const asyncPayjoinLabel = translate('Async Payjoin', strings.asyncPayjoin);
+
         const controls = document.createElement('div');
         controls.id = controlsId;
         controls.className = 'payjoin-checkout-controls mt-3 mb-3';
-        controls.innerHTML = [
-            '<div class="align-items-center justify-content-center gap-1 text-muted" style="font-size: 0.8125rem;" data-payjoin-indicator>',
-            '  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">',
-            '    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>',
-            '    <polyline points="9 12 11 14 15 10"></polyline>',
-            '  </svg>',
-            '  <span>Async Payjoin</span>',
-            '</div>',
-            '<div class="btn-group d-flex w-100 mt-3" role="tablist" aria-label="Bitcoin payment mode">',
-            '  <button type="button" class="btn" role="tab" data-payjoin-mode="payjoin">Async Payjoin</button>',
-            '  <button type="button" class="btn" role="tab" data-payjoin-mode="standard">Standard Bitcoin</button>',
-            '</div>'
+
+        const indicator = document.createElement('div');
+        indicator.className = 'align-items-center justify-content-center gap-1 text-muted';
+        indicator.style.fontSize = '0.8125rem';
+        indicator.setAttribute('data-payjoin-indicator', '');
+        indicator.innerHTML = [
+            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">',
+            '  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>',
+            '  <polyline points="9 12 11 14 15 10"></polyline>',
+            '</svg>'
         ].join('');
+        const indicatorLabel = document.createElement('span');
+        indicatorLabel.textContent = asyncPayjoinLabel;
+        indicator.appendChild(indicatorLabel);
+
+        const group = document.createElement('div');
+        group.className = 'btn-group d-flex w-100 mt-3';
+        group.setAttribute('role', 'group');
+        group.setAttribute('aria-label', translate('Bitcoin payment mode', strings.paymentMode));
+        group.appendChild(buildModeButton('payjoin', asyncPayjoinLabel));
+        group.appendChild(buildModeButton('standard', translate('Standard Bitcoin', strings.standardBitcoin)));
+
+        controls.appendChild(indicator);
+        controls.appendChild(group);
 
         updateControlState(controls, model);
         return controls;
@@ -312,9 +353,6 @@
         button.classList.toggle('btn-outline-secondary', !active);
         // setAttribute is not a no-op when unchanged (classList.toggle is).
         const state = active ? 'true' : 'false';
-        if (button.getAttribute('aria-selected') !== state) {
-            button.setAttribute('aria-selected', state);
-        }
 
         if (button.getAttribute('aria-pressed') !== state) {
             button.setAttribute('aria-pressed', state);
@@ -378,17 +416,19 @@
         wrapper.id = testPaymentId;
         wrapper.className = 'payjoin-test-payment mt-4';
 
+        const runTestLabel = translate('Run Async Payjoin test payment', strings.runTestPayment);
+
         const label = document.createElement('label');
         label.className = 'control-label form-label';
-        label.textContent = 'Async Payjoin test payment';
+        label.textContent = translate('Async Payjoin test payment', strings.testPayment);
 
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn btn-secondary rounded-pill w-100';
         button.dataset.payjoinRunTest = '';
-        button.dataset.label = 'Run Async Payjoin test payment';
+        button.dataset.label = runTestLabel;
         button.dataset.testEndpoint = runTestEndpoint || '';
-        button.textContent = 'Run Async Payjoin test payment';
+        button.textContent = runTestLabel;
 
         wrapper.appendChild(label);
         wrapper.appendChild(button);
