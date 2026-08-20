@@ -10,22 +10,21 @@ using NBXplorer;
 using Xunit;
 using CancelTransition = Payjoin.CancelTransition;
 using ClientResponse = Payjoin.ClientResponse;
-using IPayjoinProposal = Payjoin.IPayjoinProposal;
-using PayjoinOutPoint = Payjoin.OutPoint;
-using PayjoinProposalTransition = Payjoin.PayjoinProposalTransition;
-using PayjoinTxOut = Payjoin.TxOut;
-using ProcessPsbt = Payjoin.ProcessPsbt;
-using RequestResponse = Payjoin.RequestResponse;
-using Initialized = Payjoin.Initialized;
-using WantsOutputs = Payjoin.WantsOutputs;
-using WantsInputs = Payjoin.WantsInputs;
-using WantsFeeRange = Payjoin.WantsFeeRange;
-using ProvisionalProposal = Payjoin.ProvisionalProposal;
 using HasReplyableError = Payjoin.HasReplyableError;
-using UncheckedOriginalPayload = Payjoin.UncheckedOriginalPayload;
+using Initialized = Payjoin.Initialized;
+using IPayjoinProposal = Payjoin.IPayjoinProposal;
 using MaybeInputsOwned = Payjoin.MaybeInputsOwned;
 using MaybeInputsSeen = Payjoin.MaybeInputsSeen;
 using OutputsUnknown = Payjoin.OutputsUnknown;
+using PayjoinProposalTransition = Payjoin.PayjoinProposalTransition;
+using PayjoinTxOut = Payjoin.TxOut;
+using ProcessPsbt = Payjoin.ProcessPsbt;
+using ProvisionalProposal = Payjoin.ProvisionalProposal;
+using RequestResponse = Payjoin.RequestResponse;
+using UncheckedOriginalPayload = Payjoin.UncheckedOriginalPayload;
+using WantsFeeRange = Payjoin.WantsFeeRange;
+using WantsInputs = Payjoin.WantsInputs;
+using WantsOutputs = Payjoin.WantsOutputs;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
 
@@ -374,7 +373,7 @@ public class PayjoinSettlementFlowTests
 
         public Task<(byte[] ResponseBody, TRequestContext RequestContext)> SendAsync<TRequestContext>(
             string storeId,
-            string invoiceId,
+            string sessionId,
             Func<string, TRequestContext> buildRequest,
             Func<TRequestContext, (Uri Url, string ContentType, byte[] Body)> describeRequest,
             CancellationToken cancellationToken)

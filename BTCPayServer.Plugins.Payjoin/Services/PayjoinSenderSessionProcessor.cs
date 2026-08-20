@@ -57,13 +57,8 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
     private static readonly Action<ILogger, string, string, Exception?> LogProposalAwaitingSignature =
         LoggerMessage.Define<string, string>(LogLevel.Information, new EventId(5, nameof(LogProposalAwaitingSignature)),
             "Payjoin sender session {SenderSessionId} needs a second signature on pending transaction {PendingTransactionId}");
-    private static readonly Action<ILogger, string, Exception?> LogSenderRelayUnavailable =
-        LoggerMessage.Define<string>(LogLevel.Warning, new EventId(4, nameof(LogSenderRelayUnavailable)),
-            "Payjoin sender session {SenderSessionId} has no reachable OHTTP relay; it retries next tick");
-
     private readonly PayjoinSenderSessionStore _senderSessionStore;
-    private readonly IPayjoinStoreSettingsRepository _storeSettingsRepository;
-    private readonly IPayjoinReceiverRelayClient _relayClient;
+    private readonly IPayjoinReceiverRelayRequestSender _relayRequestSender;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly StoreRepository _storeRepository;
     private readonly PaymentMethodHandlerDictionary _handlers;
@@ -74,8 +69,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
 
     internal PayjoinSenderSessionProcessor(
         PayjoinSenderSessionStore senderSessionStore,
-        IPayjoinStoreSettingsRepository storeSettingsRepository,
-        IPayjoinReceiverRelayClient relayClient,
+        IPayjoinReceiverRelayRequestSender relayRequestSender,
         BTCPayNetworkProvider networkProvider,
         StoreRepository storeRepository,
         PaymentMethodHandlerDictionary handlers,
@@ -85,8 +79,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         ILogger<PayjoinSenderSessionProcessor> logger)
     {
         _senderSessionStore = senderSessionStore;
-        _storeSettingsRepository = storeSettingsRepository;
-        _relayClient = relayClient;
+        _relayRequestSender = relayRequestSender;
         _networkProvider = networkProvider;
         _storeRepository = storeRepository;
         _handlers = handlers;
@@ -273,19 +266,17 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         JsonSenderSessionPersister persister,
         CancellationToken cancellationToken)
     {
-        var responseBody = await SendThroughRelayAsync(
-            session,
+        var relayResponse = await _relayRequestSender.SendAsync(
+            session.StoreId,
+            session.SenderSessionId,
             relay => sender.CreateV2PostRequest(relay),
+            DescribeRelayRequest,
             cancellationToken).ConfigureAwait(false);
-        if (responseBody is null)
-        {
-            return;
-        }
 
         // The context is a native handle; the relay call hands it over on success, so this
         // caller owns its disposal.
-        using var requestContext = responseBody.Value.Context;
-        using var transition = sender.ProcessResponse(responseBody.Value.Body, requestContext.OhttpCtx);
+        using var requestContext = relayResponse.RequestContext;
+        using var transition = sender.ProcessResponse(relayResponse.ResponseBody, requestContext.OhttpCtx);
         using var polling = transition.Save(persister);
     }
 
@@ -296,17 +287,15 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         BTCPayNetwork network,
         CancellationToken cancellationToken)
     {
-        var responseBody = await SendThroughRelayAsync(
-            session,
+        var relayResponse = await _relayRequestSender.SendAsync(
+            session.StoreId,
+            session.SenderSessionId,
             relay => polling.CreatePollRequest(relay),
+            DescribeRelayRequest,
             cancellationToken).ConfigureAwait(false);
-        if (responseBody is null)
-        {
-            return;
-        }
 
-        using var requestContext = responseBody.Value.Context;
-        using var transition = polling.ProcessResponse(responseBody.Value.Body, requestContext.OhttpCtx);
+        using var requestContext = relayResponse.RequestContext;
+        using var transition = polling.ProcessResponse(relayResponse.ResponseBody, requestContext.OhttpCtx);
         using var outcome = transition.Save(persister);
         if (outcome is not PollingForProposalTransitionOutcome.Progress progress)
         {
@@ -442,44 +431,13 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
     }
 
-    private async Task<(byte[] Body, RequestOhttpContext Context)?> SendThroughRelayAsync(
-        PayjoinSenderSessionState session,
-        Func<string, RequestOhttpContext> buildRequest,
-        CancellationToken cancellationToken)
-    {
-        var storeSettings = await _storeSettingsRepository.GetAsync(session.StoreId).ConfigureAwait(false);
-        var relayUrls = storeSettings?.GetEffectiveOhttpRelayUrls() ?? [];
-        Exception? lastError = null;
-        foreach (var relayUrl in relayUrls)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var requestContext = buildRequest(relayUrl.AbsoluteUri);
-            try
-            {
-                var body = await _relayClient.SendAsync(
-                    new SystemUri(requestContext.Request.Url),
-                    requestContext.Request.ContentType,
-                    requestContext.Request.Body,
-                    cancellationToken).ConfigureAwait(false);
-                return (body, requestContext);
-            }
-            catch (System.Net.Http.HttpRequestException ex)
-            {
-                lastError = ex;
-                requestContext.Dispose();
-            }
-            catch (PayjoinReceiverRelayTimeoutException ex)
-            {
-                // A stalled relay must not stop the rotation: without this the next relay is
-                // never tried, and one dead relay blocks every sender session of the store.
-                lastError = ex;
-                requestContext.Dispose();
-            }
-        }
-
-        LogSenderRelayUnavailable(_logger, session.SenderSessionId, lastError);
-        return null;
-    }
+    private static (SystemUri Url, string ContentType, byte[] Body) DescribeRelayRequest(
+        RequestOhttpContext requestContext) =>
+        (
+            new SystemUri(requestContext.Request.Url, UriKind.Absolute),
+            requestContext.Request.ContentType,
+            requestContext.Request.Body
+        );
 
     /// <summary>
     /// Returns the derivation scheme, and the account key only when the server holds one. A null
