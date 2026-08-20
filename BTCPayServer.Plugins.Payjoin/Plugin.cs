@@ -93,8 +93,7 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinSenderSignatureHandler>>()));
         applicationBuilder.AddSingleton<IPayjoinSenderSessionProcessor>(provider => new PayjoinSenderSessionProcessor(
             provider.GetRequiredService<PayjoinSenderSessionStore>(),
-            provider.GetRequiredService<IPayjoinStoreSettingsRepository>(),
-            provider.GetRequiredService<IPayjoinReceiverRelayClient>(),
+            provider.GetRequiredService<IPayjoinReceiverRelayRequestSender>(),
             provider.GetRequiredService<BTCPayNetworkProvider>(),
             provider.GetRequiredService<BTCPayServer.Services.Stores.StoreRepository>(),
             provider.GetRequiredService<BTCPayServer.Services.Invoices.PaymentMethodHandlerDictionary>(),

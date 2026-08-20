@@ -8,7 +8,6 @@ using Xunit;
 using CancelTransition = Payjoin.CancelTransition;
 using ClientResponse = Payjoin.ClientResponse;
 using IPayjoinProposal = Payjoin.IPayjoinProposal;
-using PayjoinOutPoint = Payjoin.OutPoint;
 using PayjoinProposalTransition = Payjoin.PayjoinProposalTransition;
 using ProcessPsbt = Payjoin.ProcessPsbt;
 using RequestResponse = Payjoin.RequestResponse;
@@ -186,7 +185,7 @@ public class PayjoinReceiverProposalFinalizerTests
     {
         public Task<(byte[] ResponseBody, TRequestContext RequestContext)> SendAsync<TRequestContext>(
             string storeId,
-            string invoiceId,
+            string sessionId,
             Func<string, TRequestContext> buildRequest,
             Func<TRequestContext, (Uri Url, string ContentType, byte[] Body)> describeRequest,
             CancellationToken cancellationToken)
