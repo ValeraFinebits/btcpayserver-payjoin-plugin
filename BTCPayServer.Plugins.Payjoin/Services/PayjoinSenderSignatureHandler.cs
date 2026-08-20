@@ -84,9 +84,7 @@ internal sealed class PayjoinSenderSignatureHandler
                                        or Microsoft.EntityFrameworkCore.DbUpdateException)
             {
                 // One session must not stop the sweep: the others are waiting on their own
-                // transactions and have nothing to do with this failure. DbUpdateException is the
-                // benign end of the listener-versus-sweep race: the unique event-sequence index
-                // let exactly one of them seed the session, and this run lost.
+                // transactions and have nothing to do with this failure.
                 LogSignatureHandlingFailed(_logger, session.SenderSessionId, ex);
             }
         }

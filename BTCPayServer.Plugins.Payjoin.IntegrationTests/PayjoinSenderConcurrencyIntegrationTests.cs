@@ -2,7 +2,6 @@ using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Tests;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
 using Xunit;
@@ -70,20 +69,12 @@ public class PayjoinSenderConcurrencyIntegrationTests : UnitTestBase
 
         // The race is real: the signature listener and the reconcile sweep can both react to
         // the same signed original. The status guard turns the late one away, and when both
-        // read the waiting status together, the unique (session, sequence) event index lets
-        // exactly one seed the session.
+        // pass it together, the unique (session, sequence) event index lets exactly one seed
+        // the session; the loser's save rolls back and it reports false.
         CreateAwaitingSession(store, "signed-race", "bitcoin:bcrt1qsigned?amount=0.001&pj=https://example.test/#K1");
-        var outcomes = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
-        {
-            try
-            {
-                return store.StartSignedSession("signed-race", ["bootstrap-event"], "00");
-            }
-            catch (DbUpdateException)
-            {
-                return false;
-            }
-        }, cts.Token))).ConfigureAwait(true);
+        var outcomes = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(
+            () => store.StartSignedSession("signed-race", ["bootstrap-event"], "00"),
+            cts.Token))).ConfigureAwait(true);
         Assert.Single(outcomes, outcome => outcome);
 
         Assert.True(store.TryGetSession("signed-race", out var session));
