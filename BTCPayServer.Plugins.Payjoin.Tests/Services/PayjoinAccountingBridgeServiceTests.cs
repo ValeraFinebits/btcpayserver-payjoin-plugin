@@ -1,10 +1,5 @@
-using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Services;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
-using Microsoft.Extensions.Options;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
@@ -57,6 +52,94 @@ public class PayjoinAccountingBridgeServiceTests
         var bridge = Assert.Single(expired);
         Assert.Equal("invoice-armed", bridge.InvoiceId);
         Assert.Equal(ExpectedTransactionId, bridge.ExpectedFinalTransactionId);
+    }
+
+    [Fact]
+    public async Task TrySeedAttentionRecordAsyncCreatesAMarkedFailedRecord()
+    {
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
+        var now = DateTimeOffset.UtcNow;
+
+        var seededStatus = await service.TrySeedAttentionRecordAsync(
+            CreateSeedRequest("invoice-seeded-failed", PayjoinAttentionRecordSeedKind.Failed, now),
+            CancellationToken.None);
+
+        Assert.Equal(PayjoinAccountingBridgeStatus.Failed, seededStatus);
+        var bridge = await service.TryGetByInvoiceIdAsync("invoice-seeded-failed", CancellationToken.None);
+        Assert.NotNull(bridge);
+        Assert.Equal(PayjoinAccountingBridgeStatus.Failed, bridge!.Status);
+        Assert.StartsWith("SEEDED:", bridge.FailureMessage, StringComparison.Ordinal);
+        Assert.Null(bridge.ExpectedFinalTransactionId);
+        Assert.Equal(now, bridge.UpdatedAt);
+        Assert.Equal(now + TimeSpan.FromHours(24), bridge.ExpiresAt);
+
+        var attention = await service.GetRequiringAttentionAsync("store-1", CancellationToken.None);
+        Assert.Contains(attention.Bridges, item => item.InvoiceId == bridge.InvoiceId);
+        var retried = await service.TryRetryAsync(bridge.InvoiceId, "store-1", now, CancellationToken.None);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, retried!.Status);
+        Assert.Null(retried.ExpectedFinalTransactionId);
+        Assert.Equal(now + TimeSpan.FromHours(24), retried.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task TrySeedAttentionRecordAsyncCreatesAMarkedExpiredRecordWithoutSweepingOtherInvoices()
+    {
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
+        var now = DateTimeOffset.UtcNow;
+        var unrelated = await CreateBridgeAsync(service, "invoice-unrelated", expiresAt: now.AddHours(2));
+
+        var seededStatus = await service.TrySeedAttentionRecordAsync(
+            CreateSeedRequest("invoice-seeded-expired", PayjoinAttentionRecordSeedKind.Expired, now),
+            CancellationToken.None);
+
+        Assert.Equal(PayjoinAccountingBridgeStatus.Expired, seededStatus);
+        var seeded = await service.TryGetByInvoiceIdAsync("invoice-seeded-expired", CancellationToken.None);
+        Assert.NotNull(seeded);
+        Assert.Equal(PayjoinAccountingBridgeStatus.Expired, seeded!.Status);
+        Assert.StartsWith("SEEDED:", seeded.FailureMessage, StringComparison.Ordinal);
+        Assert.Equal(ExpectedTransactionId[..^1] + "1", seeded.ExpectedFinalTransactionId);
+        Assert.Equal(0, seeded.ExpectedFinalOutputIndex);
+        Assert.Equal(1000, seeded.ExpectedFinalValueSats);
+        Assert.Equal(now, seeded.UpdatedAt);
+        Assert.Equal(now - PayjoinAccountingBridgeService.ArmedBridgeGracePeriod - TimeSpan.FromMinutes(1), seeded.ExpiresAt);
+
+        var unrelatedAfterSeed = await service.TryGetByInvoiceIdAsync("invoice-unrelated", CancellationToken.None);
+        Assert.Equal(unrelated, unrelatedAfterSeed);
+
+        var attention = await service.GetRequiringAttentionAsync("store-1", CancellationToken.None);
+        Assert.Contains(attention.Bridges, item => item.InvoiceId == seeded.InvoiceId);
+        var retried = await service.TryRetryAsync(seeded.InvoiceId, "store-1", now, CancellationToken.None);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, retried!.Status);
+        Assert.Null(retried.ExpectedFinalTransactionId);
+        Assert.Null(retried.ExpectedFinalOutputIndex);
+        Assert.Null(retried.ExpectedFinalValueSats);
+        Assert.Equal(now + TimeSpan.FromHours(24), retried.ExpiresAt);
+
+        var attentionAfterRetry = await service.GetRequiringAttentionAsync("store-1", CancellationToken.None);
+        Assert.DoesNotContain(attentionAfterRetry.Bridges, item => item.InvoiceId == seeded.InvoiceId);
+    }
+
+    [Fact]
+    public async Task TrySeedAttentionRecordAsyncRefusesToOverwriteAnExistingRecord()
+    {
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
+        var now = DateTimeOffset.UtcNow;
+        var existing = await CreateBridgeAsync(
+            service,
+            "invoice-existing",
+            expiresAt: now.AddHours(1),
+            expectedFinalTransactionId: ExpectedTransactionId);
+
+        var seededStatus = await service.TrySeedAttentionRecordAsync(
+            CreateSeedRequest("invoice-existing", PayjoinAttentionRecordSeedKind.Failed, now),
+            CancellationToken.None);
+
+        Assert.Null(seededStatus);
+        var existingAfterSeed = await service.TryGetByInvoiceIdAsync("invoice-existing", CancellationToken.None);
+        Assert.Equal(existing, existingAfterSeed);
     }
 
     [Fact]
@@ -203,4 +286,17 @@ public class PayjoinAccountingBridgeServiceTests
             CancellationToken.None);
     }
 
+    private static SeedPayjoinAttentionRecordRequest CreateSeedRequest(
+        string invoiceId,
+        PayjoinAttentionRecordSeedKind kind,
+        DateTimeOffset seededAt)
+    {
+        return new SeedPayjoinAttentionRecordRequest(
+            invoiceId,
+            "store-1",
+            PayjoinConstants.BitcoinCode,
+            "BTC-BTC",
+            kind,
+            seededAt);
+    }
 }

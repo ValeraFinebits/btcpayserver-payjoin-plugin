@@ -1,6 +1,7 @@
 using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Client;
 using BTCPayServer.Filters;
+using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services;
@@ -8,6 +9,7 @@ using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using Payjoin;
@@ -30,6 +32,10 @@ public class UIPayJoinController : Controller
     private static readonly Action<ILogger, string, Exception?> LogRunTestPaymentFailed =
         LoggerMessage.Define<string>(LogLevel.Error, new EventId(2, nameof(LogRunTestPaymentFailed)),
             "Payjoin test payment for {InvoiceId} failed with an unexpected exception");
+
+    private static readonly Action<ILogger, string, Exception?> LogSeedAttentionRecordFailed =
+        LoggerMessage.Define<string>(LogLevel.Error, new EventId(3, nameof(LogSeedAttentionRecordFailed)),
+            "Seeding a payjoin settlement record for {InvoiceId} failed with an unexpected exception");
 
     private readonly BTCPayServerEnvironment _env;
     private readonly InvoiceRepository _invoiceRepository;
@@ -237,5 +243,109 @@ public class UIPayJoinController : Controller
     private OkObjectResult RunTestPaymentSuccess(string message, string transactionId)
     {
         return Ok(RunTestPaymentResponse.Success(message, transactionId));
+    }
+
+    // TODO: Remove this test endpoint.
+    [CheatModeRoute]
+    // The overview's attention table lists failed settlement records, and expired ones still armed
+    // with an expected final transaction. Neither state can be produced through the UI: the first
+    // needs reconciliation to hit contradictory payment data, the second needs a bridge older than
+    // ArmedBridgeGracePeriod. This seeds them so the table and its Retry action can be exercised.
+    [HttpPost("seed-attention-record")]
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Any exception escaping a plugin controller makes BTCPay disable the plugin and stop the host process.")]
+    public async Task<ActionResult<SeedAttentionRecordResponse>> SeedAttentionRecord(
+        [FromBody] SeedAttentionRecordRequest request,
+        [FromServices] IPayjoinInvoiceLookup invoiceLookup,
+        [FromServices] IAuthorizationService authorizationService,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return BadRequest(SeedAttentionRecordResponse.Failure("A JSON body containing an invoiceId is required."));
+        }
+
+        ArgumentNullException.ThrowIfNull(invoiceLookup);
+        ArgumentNullException.ThrowIfNull(authorizationService);
+
+        if (string.IsNullOrWhiteSpace(request.InvoiceId))
+        {
+            return Ok(SeedAttentionRecordResponse.Failure("invoiceId is required"));
+        }
+
+        var kind = (request.Kind ?? "failed").Trim().ToUpperInvariant();
+        if (kind is not ("FAILED" or "EXPIRED"))
+        {
+            return Ok(SeedAttentionRecordResponse.Failure($"Unknown kind '{request.Kind}'. Use 'failed' or 'expired'."));
+        }
+
+        try
+        {
+            return await SeedAttentionRecordCoreAsync(
+                    request.InvoiceId,
+                    kind,
+                    invoiceLookup,
+                    authorizationService,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_logger is not null)
+            {
+                LogSeedAttentionRecordFailed(_logger, request.InvoiceId, ex);
+            }
+
+            return Ok(SeedAttentionRecordResponse.Failure($"Seeding a settlement record for invoice {request.InvoiceId} failed unexpectedly: {ex.Message}"));
+        }
+    }
+
+    private async Task<ActionResult<SeedAttentionRecordResponse>> SeedAttentionRecordCoreAsync(
+        string invoiceId,
+        string kind,
+        IPayjoinInvoiceLookup invoiceLookup,
+        IAuthorizationService authorizationService,
+        CancellationToken cancellationToken)
+    {
+        var invoice = await invoiceLookup.GetInvoiceAsync(invoiceId).ConfigureAwait(false);
+        if (invoice is null)
+        {
+            return Ok(SeedAttentionRecordResponse.Failure($"No invoice {invoiceId} exists on this server."));
+        }
+
+        var authorization = await authorizationService
+            .AuthorizeAsync(User, invoice.StoreId, Policies.CanModifyStoreSettings)
+            .ConfigureAwait(false);
+        if (!authorization.Succeeded)
+        {
+            return Forbid();
+        }
+
+        var recordSeeder = HttpContext.RequestServices.GetRequiredService<IPayjoinAttentionRecordSeeder>();
+        var seedKind = kind == "FAILED"
+            ? PayjoinAttentionRecordSeedKind.Failed
+            : PayjoinAttentionRecordSeedKind.Expired;
+        var seededStatus = await recordSeeder.TrySeedAttentionRecordAsync(
+            new SeedPayjoinAttentionRecordRequest(
+                invoiceId,
+                invoice.StoreId,
+                PayjoinConstants.BitcoinCode,
+                PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode).ToString(),
+                seedKind,
+                DateTimeOffset.UtcNow),
+            cancellationToken).ConfigureAwait(false);
+        if (seededStatus is null)
+        {
+            return Ok(SeedAttentionRecordResponse.Failure(
+                $"Invoice {invoiceId} already has a settlement record; refusing to overwrite it."));
+        }
+
+        var stateDescription = seedKind == PayjoinAttentionRecordSeedKind.Failed ? "Failed" : "armed Expired";
+        return Ok(SeedAttentionRecordResponse.Success(
+            $"Settlement record for invoice {invoiceId} seeded as {stateDescription}.",
+            seededStatus.Value.ToString()));
     }
 }

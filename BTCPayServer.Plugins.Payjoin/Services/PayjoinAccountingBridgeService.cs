@@ -53,6 +53,27 @@ internal sealed record CreatePayjoinAccountingBridgeRequest(
     long? ExpectedFinalOutputIndex = null,
     long? ExpectedFinalValueSats = null);
 
+internal enum PayjoinAttentionRecordSeedKind
+{
+    Failed,
+    Expired
+}
+
+internal sealed record SeedPayjoinAttentionRecordRequest(
+    string InvoiceId,
+    string StoreId,
+    string CryptoCode,
+    string PaymentMethodId,
+    PayjoinAttentionRecordSeedKind Kind,
+    DateTimeOffset SeededAt);
+
+internal interface IPayjoinAttentionRecordSeeder
+{
+    Task<PayjoinAccountingBridgeStatus?> TrySeedAttentionRecordAsync(
+        SeedPayjoinAttentionRecordRequest request,
+        CancellationToken cancellationToken);
+}
+
 internal interface IPayjoinAccountingBridgeService
 {
     Task<PayjoinAccountingBridgeState> CreateOrGetAsync(CreatePayjoinAccountingBridgeRequest request, CancellationToken cancellationToken);
@@ -78,13 +99,18 @@ internal interface IPayjoinAccountingBridgeService
     Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken);
 }
 
-internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeService
+internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeService, IPayjoinAttentionRecordSeeder
 {
     // A bridge that already knows its expected final transaction represents a proposal the sender may
     // broadcast at any moment, so it outlives the invoice monitoring deadline by this grace period.
     // That absorbs confirmations and transient reconciliation failures landing near the deadline
     // instead of retiring the bridge while its settlement can still be recorded.
     internal static readonly TimeSpan ArmedBridgeGracePeriod = TimeSpan.FromHours(6);
+
+    private static readonly TimeSpan SeededRetryWindow = TimeSpan.FromHours(24);
+    private static readonly TimeSpan SeededExpiredAge = ArmedBridgeGracePeriod + TimeSpan.FromMinutes(1);
+    private const string SeedMarker = "SEEDED:";
+    private const string SeededExpectedFinalTransactionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
 
     // The attention list is bounded so one store cannot render an unbounded table; the total count
     // travels alongside it so the UI can tell operators when older records are not shown.
@@ -153,6 +179,57 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
             }
 
             throw;
+        }
+    }
+
+    public async Task<PayjoinAccountingBridgeStatus?> TrySeedAttentionRecordAsync(
+        SeedPayjoinAttentionRecordRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        using var sessionBuildLock = await _sessionBuildLock
+            .AcquireAsync(request.InvoiceId, cancellationToken)
+            .ConfigureAwait(false);
+        using var context = _dbContextFactory.CreateContext();
+        if (await TryLoadByInvoiceIdAsync(context, request.InvoiceId, cancellationToken).ConfigureAwait(false) is not null)
+        {
+            return null;
+        }
+
+        var isExpired = request.Kind == PayjoinAttentionRecordSeedKind.Expired;
+        var expiresAt = isExpired
+            ? request.SeededAt - SeededExpiredAge
+            : request.SeededAt + SeededRetryWindow;
+        var bridge = new PayjoinAccountingBridgeData
+        {
+            InvoiceId = request.InvoiceId,
+            StoreId = request.StoreId,
+            CryptoCode = request.CryptoCode,
+            PaymentMethodId = request.PaymentMethodId,
+            ExpectedFinalTransactionId = isExpired ? SeededExpectedFinalTransactionId : null,
+            ExpectedFinalOutputIndex = isExpired ? 0 : null,
+            ExpectedFinalValueSats = isExpired ? 1000 : null,
+            FailureMessage = isExpired
+                ? $"{SeedMarker} armed settlement record exceeded its reconciliation window"
+                : $"{SeedMarker} reconciliation data did not match the expected settlement",
+            Status = isExpired
+                ? PayjoinAccountingBridgeStatus.Expired
+                : PayjoinAccountingBridgeStatus.Failed,
+            CreatedAt = isExpired ? expiresAt - TimeSpan.FromMinutes(1) : request.SeededAt,
+            UpdatedAt = request.SeededAt,
+            ExpiresAt = expiresAt
+        };
+        context.AccountingBridges.Add(bridge);
+
+        try
+        {
+            await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return bridge.Status;
+        }
+        catch (DbUpdateException ex) when (IsInvoiceBridgeConflict(ex))
+        {
+            return null;
         }
     }
 
@@ -383,7 +460,15 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
             return null;
         }
 
-        if (bridge.ExpectedFinalTransactionId is null)
+        if (bridge.FailureMessage?.StartsWith(SeedMarker, StringComparison.Ordinal) is true)
+        {
+            bridge.ExpectedFinalTransactionId = null;
+            bridge.ExpectedFinalOutputIndex = null;
+            bridge.ExpectedFinalValueSats = null;
+            bridge.Status = PayjoinAccountingBridgeStatus.PendingFallback;
+            bridge.ExpiresAt = now + SeededRetryWindow;
+        }
+        else if (bridge.ExpectedFinalTransactionId is null)
         {
             // The grace period exists to outlive the invoice monitoring deadline while a known
             // final transaction confirms. A failed unarmed bridge has no such transaction, so
