@@ -137,14 +137,15 @@ public class UIPayjoinOverviewController : Controller
         var directoryConfigured = directoryUrls.Count > 0;
         var relayConfigured = ohttpRelayUrls.Count > 0;
         var hasColdWallet = !string.IsNullOrWhiteSpace(settings.ColdWalletDerivationScheme);
-        var hasConfirmedReceiverInputs = network is not null &&
-                                         await _availabilityService.HasConfirmedReceiverInputsAsync(currentStore.Id, BitcoinCode, network, HttpContext.RequestAborted).ConfigureAwait(false);
+        bool? hasConfirmedReceiverInputs = settings.PayjoinV2Enabled && network is not null
+            ? await _availabilityService.HasConfirmedReceiverInputsAsync(currentStore.Id, BitcoinCode, network, HttpContext.RequestAborted).ConfigureAwait(false)
+            : null;
 
         var v1FallbackEffective = network is not null && IsPayjoinV1Effective(currentStore, network);
         var defaultCheckoutMode = ResolveDefaultCheckoutMode(settings.PayjoinV2Enabled, v1FallbackEffective);
         var fallbackTarget = ResolveFallbackTarget(settings.PayjoinV2Enabled, v1FallbackEffective);
 
-        var status = ResolveStatus(directoryConfigured, relayConfigured, network is not null, hasConfirmedReceiverInputs, v1FallbackEffective);
+        var status = ResolveStatus(settings.PayjoinV2Enabled, directoryConfigured, relayConfigured, network is not null, hasConfirmedReceiverInputs is true, v1FallbackEffective);
         return new CurrentStorePayjoinStatusViewModel(
             currentStore.Id,
             currentStore.StoreName,
@@ -158,8 +159,27 @@ public class UIPayjoinOverviewController : Controller
             status);
     }
 
-    internal PayjoinCurrentStoreStatus ResolveStatus(bool directoryConfigured, bool relayConfigured, bool networkAvailable, bool hasConfirmedReceiverInputs, bool v1FallbackEffective)
+    internal PayjoinCurrentStoreStatus ResolveStatus(
+        bool payjoinV2Enabled,
+        bool directoryConfigured,
+        bool relayConfigured,
+        bool networkAvailable,
+        bool hasConfirmedReceiverInputs,
+        bool v1FallbackEffective)
     {
+        if (!payjoinV2Enabled)
+        {
+            var disabledMessage = !networkAvailable
+                ? StringLocalizer["Async Payjoin is disabled for this store. The BTC network is not available on this server, so checkout cannot serve Bitcoin payments."].Value
+                : v1FallbackEffective
+                    ? StringLocalizer["Async Payjoin is disabled for this store, so checkout serves built-in Payjoin v1 (BIP 78). Enable it in the store's Async Payjoin settings."].Value
+                    : StringLocalizer["Async Payjoin is disabled for this store, so checkout serves a standard Bitcoin payment. Enable it in the store's Async Payjoin settings."].Value;
+            return new PayjoinCurrentStoreStatus(
+                "secondary",
+                StringLocalizer["Disabled"].Value,
+                disabledMessage);
+        }
+
         if (!networkAvailable)
         {
             return new PayjoinCurrentStoreStatus(
@@ -188,8 +208,8 @@ public class UIPayjoinOverviewController : Controller
         }
 
         var readyMessage = v1FallbackEffective
-            ? StringLocalizer["Async Payjoin prerequisites are in place. Checkout may still fall back to built-in Payjoin v1 (BIP 78) if OHTTP dependencies are unavailable."].Value
-            : StringLocalizer["Async Payjoin prerequisites are in place. Checkout may still fall back to a standard Bitcoin payment if OHTTP dependencies are unavailable."].Value;
+            ? StringLocalizer["Async Payjoin prerequisites are configured. This page does not check directory or OHTTP relay reachability. Runtime failures may cause the payment to fall back to built-in Payjoin v1 (BIP 78)."].Value
+            : StringLocalizer["Async Payjoin prerequisites are configured. This page does not check directory or OHTTP relay reachability. Runtime failures may cause the payment to fall back to a standard Bitcoin payment."].Value;
         return new PayjoinCurrentStoreStatus(
             "success",
             StringLocalizer["Basic prerequisites present"].Value,
@@ -281,7 +301,7 @@ public sealed class CurrentStorePayjoinStatusViewModel
         IReadOnlyList<Uri> directoryUrls,
         IReadOnlyList<Uri> ohttpRelayUrls,
         bool hasColdWallet,
-        bool hasConfirmedReceiverInputs,
+        bool? hasConfirmedReceiverInputs,
         bool v1FallbackEffective,
         PayjoinCheckoutMode defaultCheckoutMode,
         PayjoinCheckoutMode? fallbackTarget,
@@ -309,7 +329,7 @@ public sealed class CurrentStorePayjoinStatusViewModel
 
     public bool HasColdWallet { get; }
 
-    public bool HasConfirmedReceiverInputs { get; }
+    public bool? HasConfirmedReceiverInputs { get; }
 
     public bool V1FallbackEffective { get; }
 
