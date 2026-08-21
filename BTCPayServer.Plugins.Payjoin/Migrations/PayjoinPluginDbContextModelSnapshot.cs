@@ -335,6 +335,7 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                         .HasColumnType("text");
 
                     b.Property<int>("Status")
+                        .IsConcurrencyToken()
                         .HasColumnType("integer");
 
                     b.Property<string>("StoreId")
@@ -347,11 +348,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.HasKey("SenderSessionId")
                         .HasName("PK_SenderSessions");
 
-                    b.HasIndex("Bip21")
-                        .IsUnique()
-                        .HasDatabaseName("IX_SenderSessions_Bip21_Live")
-                        .HasFilter("\"Status\" IN (0, 4)");
-
                     b.HasIndex("OriginalTransactionId")
                         .HasDatabaseName("IX_SenderSessions_OriginalTransactionId");
 
@@ -363,6 +359,11 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.HasIndex("Status", "CreatedAt")
                         .HasDatabaseName("IX_SenderSessions_Status_CreatedAt");
+
+                    b.HasIndex("StoreId", "Bip21")
+                        .IsUnique()
+                        .HasDatabaseName("IX_SenderSessions_Bip21_Live")
+                        .HasFilter("\"Status\" IN (0, 4)");
 
                     b.ToTable("SenderSessions", "BTCPayServer.Plugins.Payjoin");
                 });
@@ -399,6 +400,26 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.ToTable("SenderSessionEvents", "BTCPayServer.Plugins.Payjoin");
                 });
 
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionOutpointData", b =>
+                {
+                    b.Property<string>("Outpoint")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("SenderSessionId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Outpoint")
+                        .HasName("PK_SenderSessionOutpoints");
+
+                    b.HasIndex("SenderSessionId")
+                        .HasDatabaseName("IX_SenderSessionOutpoints_SenderSessionId");
+
+                    b.ToTable("SenderSessionOutpoints", "BTCPayServer.Plugins.Payjoin");
+                });
+
             modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverInputReservationData", b =>
                 {
                     b.HasOne("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverSessionData", "Session")
@@ -431,6 +452,18 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("FK_SenderSessionEvents_SenderSessions_SenderSessionId");
+
+                    b.Navigation("Session");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionOutpointData", b =>
+                {
+                    b.HasOne("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionData", "Session")
+                        .WithMany()
+                        .HasForeignKey("SenderSessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_SenderSessionOutpoints_SenderSessions_SenderSessionId");
 
                     b.Navigation("Session");
                 });

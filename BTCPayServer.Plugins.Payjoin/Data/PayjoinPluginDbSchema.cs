@@ -23,6 +23,10 @@ internal static class PayjoinPluginDbSchema
     internal const string SenderSessionEventsTable = "SenderSessionEvents";
     internal const string SenderSessionEventsPrimaryKey = "PK_SenderSessionEvents";
     internal const string SenderSessionEventsSessionForeignKey = "FK_SenderSessionEvents_SenderSessions_SenderSessionId";
+    internal const string SenderSessionOutpointsTable = "SenderSessionOutpoints";
+    internal const string SenderSessionOutpointsPrimaryKey = "PK_SenderSessionOutpoints";
+    internal const string SenderSessionOutpointsSessionForeignKey = "FK_SenderSessionOutpoints_SenderSessions_SenderSessionId";
+    internal const string SenderSessionOutpointsSessionIndex = "IX_SenderSessionOutpoints_SenderSessionId";
 
     internal const string ReceiverSessionEventsInvoiceSequenceIndex = "IX_ReceiverSessionEvents_InvoiceId_Sequence";
     internal const string SenderSessionEventsSessionSequenceIndex = "IX_SenderSessionEvents_SenderSessionId_Sequence";
@@ -45,6 +49,8 @@ internal static class PayjoinPluginDbSchema
     internal const int ReceiverAddressMaxLength = 128;
     internal const int SenderSessionIdMaxLength = 64;
     internal const int TransactionIdMaxLength = 64;
+    // A txid (64 hex), a separator and an output index.
+    internal const int OutpointMaxLength = 80;
     internal const int CryptoCodeMaxLength = 16;
     internal const int PaymentMethodIdMaxLength = 64;
     internal const int BridgeFailureMessageMaxLength = 1024;

@@ -125,6 +125,40 @@ public class PayjoinSenderWalletSendIntegrationTests : UnitTestBase
         Assert.Empty(tester.PayTester.GetService<PayjoinSenderSessionStore>().GetSessions(payer.StoreId));
     }
 
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task ABindingErrorRefusesTheSubmissionBeforeAnythingIsBuilt()
+    {
+        // A model the binder could not fully read must not start a session or create a signing
+        // request, however usable the readable part looks.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, payer.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var sendModel = new WalletSendModel
+        {
+            PayJoinBIP21 = "bitcoin:tb1qsomewhere?amount=0.001&pj=https://example.test/#K1",
+            Outputs =
+            [
+                new WalletSendModel.TransactionOutput { DestinationAddress = "tb1qsomewhere", Amount = 0.001m }
+            ]
+        };
+
+        using var controller = CreateController(tester);
+        controller.ModelState.AddModelError(nameof(WalletSendModel.FeeSatoshiPerByte), "The value 'abc' is not valid.");
+        var posted = await controller.SendFromWallet(payer.StoreId, sendModel, asyncPayjoinBip21: null, cts.Token).ConfigureAwait(true);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(posted);
+        Assert.Equal("WalletSend", redirect.ActionName);
+        Assert.Empty(tester.PayTester.GetService<PayjoinSenderSessionStore>().GetSessions(payer.StoreId));
+        var pending = await tester.PayTester.GetService<BTCPayServer.HostedServices.PendingTransactionService>()
+            .GetPendingTransactions(PayjoinConstants.BitcoinCode, payer.StoreId)
+            .WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.Empty(pending);
+    }
+
     private static UIPayjoinSenderController CreateController(ServerTester tester)
     {
         var provider = tester.PayTester.ServiceProvider.GetRequiredService<IServiceScopeFactory>().CreateScope().ServiceProvider;

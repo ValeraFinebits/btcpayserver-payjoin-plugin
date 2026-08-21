@@ -13,7 +13,10 @@ public class PayjoinSenderSessionStoreTests
 {
     private const string OriginalTxId = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     private const long FeeRateSatPerKwu = 1250;
-    private const string OutpointUsed = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc-0";
+    // Each session spends its own coin: the outpoint table's primary key holds even on the
+    // InMemory provider, so two sessions must not share an outpoint unless the test wants the
+    // refusal itself.
+    private static string OutpointFor(string senderSessionId) => $"{senderSessionId}-outpoint:0";
     // A minimal consensus-valid transaction; the store keeps this opaque, so its shape is free.
     private const string SignedOriginalHex = "02000000000101cccc00000000";
 
@@ -90,12 +93,12 @@ public class PayjoinSenderSessionStoreTests
 
         // A second attempt on one URI can select different coins, so the URI is what identifies
         // the payment.
-        Assert.True(store.HasPendingSessionForBip21(created.Bip21));
-        Assert.False(store.HasPendingSessionForBip21("bitcoin:tb1qother?amount=0.001&pj=https://example.test/#K1"));
+        Assert.True(store.HasPendingSessionForBip21(created.StoreId, created.Bip21));
+        Assert.False(store.HasPendingSessionForBip21(created.StoreId, "bitcoin:tb1qother?amount=0.001&pj=https://example.test/#K1"));
 
         // A session that ended releases the URI, so a failed payment can be retried.
         Assert.True(store.CompleteSession("session-uri", PayjoinSenderSessionStatus.Failed, null, "relay unreachable"));
-        Assert.False(store.HasPendingSessionForBip21(created.Bip21));
+        Assert.False(store.HasPendingSessionForBip21(created.StoreId, created.Bip21));
     }
 
     [Fact]
@@ -203,8 +206,13 @@ public class PayjoinSenderSessionStoreTests
         Assert.True(store.TryGetSession("session-race", out var session));
         Assert.Equal(PayjoinSenderSessionStatus.CompletedFallback, session!.Status);
         Assert.Equal("aaaa", session.BroadcastTransactionId);
-        // The signing request is over, so a late signature finds no session waiting on it.
-        Assert.Null(session.PendingTransactionId);
+        // The handle to the signing request survives completion so the release step can
+        // withdraw the row; the terminal status is what turns a late signature away, and the
+        // release clears the handle afterwards.
+        Assert.Equal("pending-race", session.PendingTransactionId);
+        store.ClearReleasedResources("session-race");
+        Assert.True(store.TryGetSession("session-race", out var released));
+        Assert.Null(released!.PendingTransactionId);
         Assert.False(store.TryGetSessionByPendingTransactionId("pending-race", out _));
     }
 
@@ -217,7 +225,7 @@ public class PayjoinSenderSessionStoreTests
 
         // Nothing else this store builds may spend what a live session already committed, even
         // though a hot-wallet session creates no pending transaction to hold them.
-        Assert.Equal([OutpointUsed], store.GetOutpointsHeldByLiveSessions("store-1"));
+        Assert.Equal([OutpointFor("session-coins")], store.GetOutpointsHeldByLiveSessions("store-1"));
         Assert.Empty(store.GetOutpointsHeldByLiveSessions("store-other"));
 
         Assert.True(store.CompleteSession("session-coins", PayjoinSenderSessionStatus.CompletedPayjoin, "eeee", null));
@@ -263,6 +271,102 @@ public class PayjoinSenderSessionStoreTests
             store.CompleteSession("session-not-terminal", PayjoinSenderSessionStatus.AwaitingSignature, null, null));
     }
 
+    [Fact]
+    public void AwaitSignatureCannotResurrectACompletedSession()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateSession(store, "session-resurrect");
+
+        Assert.True(store.CompleteSession("session-resurrect", PayjoinSenderSessionStatus.Failed, null, "test"));
+
+        // A poller that read the session as running a moment ago parks it after the operator
+        // stopped it. The park must lose; a completed session stays completed.
+        Assert.False(store.AwaitSignature("session-resurrect", "pending-late"));
+        Assert.True(store.TryGetSession("session-resurrect", out var session));
+        Assert.Equal(PayjoinSenderSessionStatus.Failed, session!.Status);
+    }
+
+    [Fact]
+    public void ASecondSessionForTheSameCoinIsRefused()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var first = CreateSession(store, "session-coin-a");
+
+        // A different URI and a different store change nothing: the coin is the resource, and
+        // stores can share a wallet, so the guard is global.
+        Assert.Throws<PayjoinSenderDuplicateSessionException>(() => store.CreateSession(
+            "session-coin-b",
+            "store-2",
+            "bitcoin:tb1qother?amount=0.002&pj=https://example.test/#K1",
+            "tb1qother",
+            200_000,
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ["bootstrap-event"],
+            FeeRateSatPerKwu,
+            first.OutpointsUsed));
+
+        // A finished session frees its coins for the next payment.
+        Assert.True(store.CompleteSession("session-coin-a", PayjoinSenderSessionStatus.CompletedPayjoin, "eeee", null));
+        store.CreateSession(
+            "session-coin-c",
+            "store-2",
+            "bitcoin:tb1qthird?amount=0.003&pj=https://example.test/#K1",
+            "tb1qthird",
+            300_000,
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            ["bootstrap-event"],
+            FeeRateSatPerKwu,
+            first.OutpointsUsed);
+    }
+
+    [Fact]
+    public void AParkedSessionKeepsItsCoinReservationVisibleToTheSweep()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        store.CreateSession(
+            "session-parked",
+            "store-1",
+            "bitcoin:tb1qparked?amount=0.001&pj=https://example.test/#K1",
+            "tb1qparked",
+            100_000,
+            OriginalTxId,
+            [],
+            FeeRateSatPerKwu,
+            [OutpointFor("session-parked")],
+            originalTransactionHex: "00",
+            pendingTransactionId: "pending-proposal",
+            PayjoinSenderSessionStatus.AwaitingSignature,
+            requestBaseUrl: "https://example.test/",
+            coinReservationTransactionId: "reservation-parked");
+
+        // The operator can broadcast or cancel the reserved plain payment while the session
+        // waits for its second signature, so the sweep must still see it.
+        var live = Assert.Single(store.GetLiveSessionsWithCoinReservations());
+        Assert.Equal("session-parked", live.SenderSessionId);
+        Assert.Equal("reservation-parked", live.CoinReservationTransactionId);
+    }
+
+    [Fact]
+    public void DanglingResourcesAreListedUntilCleared()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        CreateAwaitingSignatureSession(store, "session-dangling", "pending-dangling");
+
+        Assert.Empty(store.GetSessionsWithDanglingResources());
+        Assert.True(store.CompleteSession("session-dangling", PayjoinSenderSessionStatus.Failed, null, "test"));
+
+        // Completion keeps the handles so the release can withdraw the rows; the sweep lists
+        // the session until the release records itself by clearing them.
+        var dangling = Assert.Single(store.GetSessionsWithDanglingResources());
+        Assert.Equal("session-dangling", dangling.SenderSessionId);
+        store.ClearReleasedResources("session-dangling");
+        Assert.Empty(store.GetSessionsWithDanglingResources());
+    }
+
     private static PayjoinSenderSessionState CreateSession(
         PayjoinSenderSessionStore store,
         string senderSessionId,
@@ -277,7 +381,7 @@ public class PayjoinSenderSessionStoreTests
             originalTransactionId,
             ["bootstrap-event"],
             FeeRateSatPerKwu,
-            [OutpointUsed]);
+            [OutpointFor(senderSessionId)]);
     }
 
     private static PayjoinSenderSessionState CreateAwaitingSignatureSession(
@@ -294,7 +398,7 @@ public class PayjoinSenderSessionStoreTests
             OriginalTxId,
             [],
             FeeRateSatPerKwu,
-            [OutpointUsed],
+            [OutpointFor(senderSessionId)],
             null,
             pendingTransactionId,
             PayjoinSenderSessionStatus.AwaitingSignature,
