@@ -65,6 +65,26 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
+            migrationBuilder.CreateTable(
+                name: "SenderSessionOutpoints",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                columns: table => new
+                {
+                    Outpoint = table.Column<string>(type: "character varying(80)", maxLength: 80, nullable: false),
+                    SenderSessionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_SenderSessionOutpoints", x => x.Outpoint);
+                    table.ForeignKey(
+                        name: "FK_SenderSessionOutpoints_SenderSessions_SenderSessionId",
+                        column: x => x.SenderSessionId,
+                        principalSchema: "BTCPayServer.Plugins.Payjoin",
+                        principalTable: "SenderSessions",
+                        principalColumn: "SenderSessionId",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
             migrationBuilder.CreateIndex(
                 name: "IX_SenderSessionEvents_SenderSessionId_Sequence",
                 schema: "BTCPayServer.Plugins.Payjoin",
@@ -73,10 +93,16 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "IX_SenderSessionOutpoints_SenderSessionId",
+                schema: "BTCPayServer.Plugins.Payjoin",
+                table: "SenderSessionOutpoints",
+                column: "SenderSessionId");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_SenderSessions_Bip21_Live",
                 schema: "BTCPayServer.Plugins.Payjoin",
                 table: "SenderSessions",
-                column: "Bip21",
+                columns: new[] { "StoreId", "Bip21" },
                 unique: true,
                 filter: "\"Status\" IN (0, 4)");
 
@@ -111,6 +137,10 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
             System.ArgumentNullException.ThrowIfNull(migrationBuilder);
             migrationBuilder.DropTable(
                 name: "SenderSessionEvents",
+                schema: "BTCPayServer.Plugins.Payjoin");
+
+            migrationBuilder.DropTable(
+                name: "SenderSessionOutpoints",
                 schema: "BTCPayServer.Plugins.Payjoin");
 
             migrationBuilder.DropTable(

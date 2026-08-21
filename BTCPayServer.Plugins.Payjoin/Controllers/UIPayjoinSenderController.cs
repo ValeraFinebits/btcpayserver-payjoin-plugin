@@ -19,7 +19,10 @@ using System.Threading.Tasks;
 namespace BTCPayServer.Plugins.Payjoin.Controllers;
 
 [Route("~/stores/{storeId}/payjoin/send")]
-[Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanModifyStoreSettings)]
+// Authentication only at the class level. ASP.NET Core combines class and action policies with
+// AND, so a policy here would be added to every action's own requirement rather than replaced
+// by it; each action states its policy itself.
+[Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie)]
 public class UIPayjoinSenderController : Controller
 {
     private readonly PayjoinSenderService _senderService;
@@ -46,12 +49,24 @@ public class UIPayjoinSenderController : Controller
     /// round with a receiver who is not online.
     /// </summary>
     [HttpPost("from-wallet")]
-    // The operator arrives from BTCPay's send screen, so this asks for the permission that screen
-    // asks for rather than the store-settings permission the rest of this controller uses.
+    // The operator arrives from BTCPay's send screen, so this asks for the permission that
+    // screen asks for.
     [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = WalletPolicies.CanCreateWalletTransactions)]
     public async Task<IActionResult> SendFromWallet(string storeId, WalletSendModel model, string? asyncPayjoinBip21, CancellationToken cancellationToken)
     {
         System.ArgumentNullException.ThrowIfNull(model);
+        if (!ModelState.IsValid)
+        {
+            var bindingError = ModelState.Values
+                .SelectMany(x => x.Errors)
+                .Select(x => x.ErrorMessage)
+                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
+            return RedirectWithError(
+                storeId,
+                new WalletId(storeId, PayjoinConstants.BitcoinCode),
+                bindingError ?? "The form could not be read. Check the fields and try again.");
+        }
+
         // The send screen carries the URI twice. Core's PayJoinBIP21 field drives the v1 flow,
         // which a v2 endpoint does not answer, so the extension clears it in the browser and
         // posts the URI under its own name instead. The model's copy stays as a fallback for
@@ -169,6 +184,7 @@ public class UIPayjoinSenderController : Controller
     }
 
     [HttpGet]
+    [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanModifyStoreSettings)]
     public IActionResult Send(string storeId)
     {
         return View(BuildViewModel(storeId));
@@ -206,6 +222,9 @@ public class UIPayjoinSenderController : Controller
     }
 
     [HttpPost("{senderSessionId}/cancel")]
+    // Stopping a payjoin broadcasts the plain payment, so it is a wallet operation, not a
+    // settings one: whoever may start these payments may also stop them.
+    [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = WalletPolicies.CanCreateWalletTransactions)]
     public async Task<IActionResult> Cancel(string storeId, string senderSessionId, CancellationToken cancellationToken)
     {
         var result = await _senderSessionProcessor

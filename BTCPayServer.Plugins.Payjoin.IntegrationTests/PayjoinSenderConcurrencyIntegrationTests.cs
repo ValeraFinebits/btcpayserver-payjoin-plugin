@@ -37,6 +37,10 @@ public class PayjoinSenderConcurrencyIntegrationTests : UnitTestBase
         Assert.Throws<PayjoinSenderDuplicateSessionException>(() =>
             CreateAwaitingSession(store, "uri-loser", uri));
 
+        // Another store paying the same URI is its own payment: the live index is scoped by
+        // store, so only a duplicate within one store is refused.
+        CreateAwaitingSession(store, "uri-other-store", uri, storeId: "store-concurrency-b");
+
         // A terminal session frees the URI for the next payment.
         Assert.True(store.CompleteSession("uri-winner", PayjoinSenderSessionStatus.Failed, null, "test"));
         CreateAwaitingSession(store, "uri-after-completion", uri);
@@ -150,11 +154,65 @@ public class PayjoinSenderConcurrencyIntegrationTests : UnitTestBase
         Assert.Equal(txId.ToString(), minedDuplicate);
     }
 
-    private static void CreateAwaitingSession(PayjoinSenderSessionStore store, string senderSessionId, string bip21)
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task BroadcastClassifiesASpentInputRejectionAsPermanent()
+    {
+        // A conflicting spend can never be accepted by retrying, and the session code decides
+        // between retry and fallback on this classification, so it must match what the running
+        // node actually answers: once for a mempool conflict, once for inputs a mined
+        // transaction has spent.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
+
+        var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
+        Assert.NotNull(network);
+        var explorerClient = tester.PayTester.GetService<BTCPayServer.ExplorerClientProvider>().GetExplorerClient(network);
+
+        var unspent = (await tester.ExplorerNode.ListUnspentAsync().WaitAsync(cts.Token).ConfigureAwait(true))
+            .First(u => u.Amount > Money.Coins(0.001m));
+        var winner = await BuildNodeSpendAsync(tester, network!, unspent.OutPoint, unspent.Amount, cts.Token).ConfigureAwait(true);
+        var conflict = await BuildNodeSpendAsync(tester, network!, unspent.OutPoint, unspent.Amount, cts.Token).ConfigureAwait(true);
+
+        await tester.ExplorerNode.SendRawTransactionAsync(winner, cts.Token).ConfigureAwait(true);
+
+        // The winner sits in the mempool: the conflict is refused, and the refusal is final.
+        var mempoolRejection = await Assert.ThrowsAsync<PayjoinSenderBroadcastException>(() =>
+            PayjoinSenderBroadcaster.BroadcastAsync(explorerClient, conflict, cts.Token)).ConfigureAwait(true);
+        Assert.True(mempoolRejection.Permanent, mempoolRejection.Message);
+
+        var rewardAddress = await tester.ExplorerNode.GetNewAddressAsync(cts.Token).ConfigureAwait(true);
+        await tester.ExplorerNode.GenerateToAddressAsync(1, rewardAddress, cts.Token).ConfigureAwait(true);
+
+        // The winner is mined: the coins are gone, and that refusal is final too.
+        var spentRejection = await Assert.ThrowsAsync<PayjoinSenderBroadcastException>(() =>
+            PayjoinSenderBroadcaster.BroadcastAsync(explorerClient, conflict, cts.Token)).ConfigureAwait(true);
+        Assert.True(spentRejection.Permanent, spentRejection.Message);
+    }
+
+    private static async Task<Transaction> BuildNodeSpendAsync(
+        ServerTester tester,
+        BTCPayNetwork network,
+        OutPoint outpoint,
+        Money inputValue,
+        CancellationToken cancellationToken)
+    {
+        var destination = await tester.ExplorerNode.GetNewAddressAsync(cancellationToken).ConfigureAwait(true);
+        var transaction = network.NBitcoinNetwork.CreateTransaction();
+        transaction.Inputs.Add(new TxIn(outpoint));
+        transaction.Outputs.Add(inputValue - Money.Coins(0.0002m), destination);
+        var response = await tester.ExplorerNode
+            .SendCommandAsync("signrawtransactionwithwallet", transaction.ToHex())
+            .WaitAsync(cancellationToken).ConfigureAwait(true);
+        return Transaction.Parse(response.Result["hex"]!.ToString(), network.NBitcoinNetwork);
+    }
+
+    private static void CreateAwaitingSession(PayjoinSenderSessionStore store, string senderSessionId, string bip21, string storeId = "store-concurrency")
     {
         store.CreateSession(
             senderSessionId,
-            "store-concurrency",
+            storeId,
             bip21,
             "bcrt1qdestination",
             100_000,

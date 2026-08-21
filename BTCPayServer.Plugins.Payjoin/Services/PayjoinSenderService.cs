@@ -144,13 +144,13 @@ internal sealed class PayjoinSenderService
             return PayjoinSenderStartResult.Failed("The BTC network is not available.");
         }
 
-        // One start per URI at a time inside this process. The dedup check and the session
-        // insert are separate steps with a wallet call between them, so without this a
-        // double-click could pass the check twice; the unique live-Bip21 index is the same
-        // guard across processes and restarts.
+        // One start per store and URI at a time inside this process. The dedup check and the
+        // session insert are separate steps with a wallet call between them, so without this a
+        // double-click could pass the check twice; the unique live index is the same guard
+        // across processes and restarts.
         var trimmedBip21 = bip21.Trim();
         using var uriLease = await _sessionBuildLock
-            .AcquireAsync("sender:" + trimmedBip21, cancellationToken).ConfigureAwait(false);
+            .AcquireAsync($"sender:{storeId}:{trimmedBip21}", cancellationToken).ConfigureAwait(false);
 
         // Parse and validate through the library, so URI-format knowledge stays in one place.
         // The whole flow runs inside the URI's disposal scope because the sender builder at
@@ -190,7 +190,7 @@ internal sealed class PayjoinSenderService
 
         // Check the URI before building anything. Two attempts on one URI can select different
         // coins, so the transaction id below does not catch a repeated submission on its own.
-        if (_senderSessionStore.HasPendingSessionForBip21(bip21))
+        if (_senderSessionStore.HasPendingSessionForBip21(storeId, bip21))
         {
             return PayjoinSenderStartResult.Failed("A payjoin session already pays this URI.");
         }
@@ -206,6 +206,23 @@ internal sealed class PayjoinSenderService
         if (derivationScheme is null)
         {
             return PayjoinSenderStartResult.Failed("The store has no BTC wallet.");
+        }
+
+        // The coin selection arrives as form text, so parse it before anything is built; a
+        // malformed reference is a refusal, not an exception.
+        List<NBitcoin.OutPoint>? includeOnlyOutpoints = null;
+        if (selectedInputs is { Count: > 0 })
+        {
+            includeOnlyOutpoints = new List<NBitcoin.OutPoint>(selectedInputs.Count);
+            foreach (var selectedInput in selectedInputs)
+            {
+                if (!NBitcoin.OutPoint.TryParse(selectedInput, out var outpoint) || outpoint is null)
+                {
+                    return PayjoinSenderStartResult.Failed("A selected coin reference is not valid. Reopen coin selection and try again.");
+                }
+
+                includeOnlyOutpoints.Add(outpoint);
+            }
         }
 
         var explorerClient = _explorerClientProvider.GetExplorerClient(network);
@@ -232,9 +249,7 @@ internal sealed class PayjoinSenderService
                 },
                 FeePreference = new FeePreference { ExplicitFeeRate = feeRate },
                 // Coin selection from BTCPay's send screen, when the operator opened it.
-                IncludeOnlyOutpoints = selectedInputs is { Count: > 0 }
-                    ? selectedInputs.Select(NBitcoin.OutPoint.Parse).ToList()
-                    : null,
+                IncludeOnlyOutpoints = includeOnlyOutpoints,
                 // Coins already committed are not available: a pending transaction holds some,
                 // and a live payjoin session holds the rest. Core's own send flow applies the
                 // same exclusion for pending transactions, so the two cannot pick one UTXO twice.
@@ -301,9 +316,9 @@ internal sealed class PayjoinSenderService
                     requestBaseUrl.ToString());
                 sessionRecorded = true;
             }
-            catch (PayjoinSenderDuplicateSessionException)
+            catch (PayjoinSenderDuplicateSessionException ex)
             {
-                return PayjoinSenderStartResult.Failed("A payjoin session already pays this URI.");
+                return PayjoinSenderStartResult.Failed(ex.Message);
             }
             finally
             {
@@ -354,9 +369,9 @@ internal sealed class PayjoinSenderService
                 coinReservationTransactionId: coinReservationTransactionId);
             hotSessionRecorded = true;
         }
-        catch (PayjoinSenderDuplicateSessionException)
+        catch (PayjoinSenderDuplicateSessionException ex)
         {
-            return PayjoinSenderStartResult.Failed("A payjoin session already pays this URI.");
+            return PayjoinSenderStartResult.Failed(ex.Message);
         }
         finally
         {

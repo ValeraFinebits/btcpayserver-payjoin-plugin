@@ -96,50 +96,59 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         // no event at all, so this sweep is what makes the off-server path reliable.
         await _signatureHandler.ReconcileAsync(stoppingToken).ConfigureAwait(false);
 
-        foreach (var session in _senderSessionStore.GetPendingSessions())
+        // Each session runs its own guarded task: sessions advance independently, and one
+        // session's long relay poll must not delay every session behind it.
+        await Task.WhenAll(_senderSessionStore.GetPendingSessions()
+            .Select(session => ProcessSessionGuardedAsync(session, stoppingToken))).ConfigureAwait(false);
+    }
+
+    private async Task ProcessSessionGuardedAsync(PayjoinSenderSessionState session, CancellationToken stoppingToken)
+    {
+        try
         {
-            stoppingToken.ThrowIfCancellationRequested();
-            try
-            {
-                await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
-            }
-            catch (PayjoinReceiverRelayTimeoutException ex)
-            {
-                // A stalled relay is this session's problem, not the tick's. It derives from
-                // TaskCanceledException, so without this it would leave the loop as a
-                // cancellation and every session after it would be skipped.
-                LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (SenderPersistedException.Transient ex)
-            {
-                LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
-            }
-            catch (SenderReplayException ex)
-            {
-                await FailSessionAsync(session, $"sender session replay failed: {ex.Message}", ex, stoppingToken).ConfigureAwait(false);
-            }
-            catch (UniffiException ex)
-            {
-                await FailSessionAsync(session, $"sender session failed: {ex.Message}", ex, stoppingToken).ConfigureAwait(false);
-            }
-            catch (System.Net.Http.HttpRequestException ex)
-            {
-                LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
-            }
-            catch (PayjoinSenderBroadcastException ex)
-            {
-                // The transaction is signed and valid as far as this plugin can tell, so a node
-                // that refuses it now gets another chance on the next tick.
-                LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
-            }
-            catch (InvalidOperationException ex)
-            {
-                await FailSessionAsync(session, ex.Message, ex, stoppingToken).ConfigureAwait(false);
-            }
+            await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
+        }
+        catch (PayjoinReceiverRelayTimeoutException ex)
+        {
+            // A stalled relay is this session's problem, not the tick's. It derives from
+            // TaskCanceledException, so without this it would leave as a cancellation.
+            LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (SenderPersistedException.Transient ex)
+        {
+            LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
+        }
+        catch (SenderReplayException ex)
+        {
+            await FailSessionAsync(session, $"sender session replay failed: {ex.Message}", ex, stoppingToken).ConfigureAwait(false);
+        }
+        catch (UniffiException ex)
+        {
+            await FailSessionAsync(session, $"sender session failed: {ex.Message}", ex, stoppingToken).ConfigureAwait(false);
+        }
+        catch (System.Net.Http.HttpRequestException ex)
+        {
+            LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
+        }
+        catch (PayjoinSenderBroadcastException ex)
+        {
+            // The transaction is signed and valid as far as this plugin can tell, so a node
+            // that refuses it now gets another chance on the next tick.
+            LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
+        }
+        catch (InvalidOperationException ex)
+        {
+            await FailSessionAsync(session, ex.Message, ex, stoppingToken).ConfigureAwait(false);
+        }
+        catch (Microsoft.EntityFrameworkCore.DbUpdateException ex)
+        {
+            // A concurrent writer won a store transition; whatever it did stands and this
+            // session is picked up again next tick.
+            LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
         }
     }
 
@@ -182,7 +191,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
                 PayjoinSenderSessionStatus.Failed,
                 broadcastTransactionId: null,
                 "the operator cancelled the payment before it was signed");
-            await PayjoinSenderCoinReservationReleaser
+            await PayjoinSenderSessionResourceReleaser
                 .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
             return PayjoinSenderCancelResult.Dropped();
         }
@@ -215,7 +224,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             PayjoinSenderSessionStatus.CompletedFallback,
             fallbackTxId,
             failureMessage: null);
-        await PayjoinSenderCoinReservationReleaser
+        await PayjoinSenderSessionResourceReleaser
             .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
         return PayjoinSenderCancelResult.Broadcast(fallbackTxId);
     }
@@ -390,7 +399,18 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         }
 
         var payjoinTransaction = proposalPsbt.ExtractTransaction();
-        await BroadcastAsync(network, payjoinTransaction, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await BroadcastAsync(network, payjoinTransaction, cancellationToken).ConfigureAwait(false);
+        }
+        catch (PayjoinSenderBroadcastException ex) when (ex.Permanent)
+        {
+            // The payjoin can never be accepted, most likely because the receiver's input was
+            // spent in the meantime. The payment still happens: the original spends only this
+            // wallet's coins.
+            await FailSessionAsync(session, $"the payjoin transaction was refused: {ex.Message}", ex, cancellationToken).ConfigureAwait(false);
+            return;
+        }
 
         var payjoinTxId = payjoinTransaction.GetHash().ToString();
         LogSenderSessionBroadcast(_logger, session.SenderSessionId, payjoinTxId, null);
@@ -399,7 +419,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             PayjoinSenderSessionStatus.CompletedPayjoin,
             payjoinTxId,
             failureMessage: null);
-        await PayjoinSenderCoinReservationReleaser
+        await PayjoinSenderSessionResourceReleaser
             .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
     }
 
@@ -415,7 +435,17 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         // transaction, then close the session through the library so the event log
         // records the handoff.
         var fallbackTransaction = Transaction.Load(pendingFallback.FallbackTx(), network.NBitcoinNetwork);
-        await BroadcastAsync(network, fallbackTransaction, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await BroadcastAsync(network, fallbackTransaction, cancellationToken).ConfigureAwait(false);
+        }
+        catch (PayjoinSenderBroadcastException ex) when (ex.Permanent)
+        {
+            // The fallback can never be accepted: something else spent the coins. End the
+            // session; the terminator hits the same refusal and records the failure.
+            await FailSessionAsync(session, $"the plain payment was refused: {ex.Message}", ex, cancellationToken).ConfigureAwait(false);
+            return;
+        }
 
         using var transition = pendingFallback.Close();
         transition.Save(persister);
@@ -427,7 +457,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             PayjoinSenderSessionStatus.CompletedFallback,
             fallbackTxId,
             failureMessage: null);
-        await PayjoinSenderCoinReservationReleaser
+        await PayjoinSenderSessionResourceReleaser
             .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
     }
 
@@ -517,12 +547,9 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
     }
 
     /// <summary>
-    /// Ends a session the plugin can no longer drive. The payjoin is over, but the payment need
-    /// not be: once the original is signed the operator has authorised it, and the receiver
-    /// already holds a copy it could broadcast at any moment, so recording a failure while
-    /// keeping the transaction off the network would only misstate what can still happen.
-    /// Whenever the signed original exists it goes out and the session completes as a fallback;
-    /// only a session with nothing signed ends with nothing broadcast.
+    /// Ends a session the plugin can no longer drive, through the shared terminator: the
+    /// signed original goes out when it exists, and a fallback the node refuses transiently
+    /// leaves the session in place for the next tick to retry.
     /// </summary>
     private async Task FailSessionAsync(
         PayjoinSenderSessionState session,
@@ -531,57 +558,34 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         CancellationToken cancellationToken)
     {
         LogSenderSessionFailed(_logger, session.SenderSessionId, exception);
-        if (session.OriginalTransactionHex is not null)
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
+        if (network is null)
         {
-            var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
-            if (network is not null)
-            {
-                Transaction fallbackTransaction;
-                try
-                {
-                    fallbackTransaction = Transaction.Parse(session.OriginalTransactionHex, network.NBitcoinNetwork);
-                    await BroadcastAsync(network, fallbackTransaction, cancellationToken).ConfigureAwait(false);
-                }
-                catch (PayjoinSenderBroadcastException ex)
-                {
-                    // The node refused the fallback for now. Leave the session where it is: the
-                    // next tick hits the same failure and retries this broadcast.
-                    LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
-                    return;
-                }
-                catch (FormatException ex)
-                {
-                    LogSenderSessionFailed(_logger, session.SenderSessionId, ex);
-                    _senderSessionStore.CompleteSession(
-                        session.SenderSessionId,
-                        PayjoinSenderSessionStatus.Failed,
-                        broadcastTransactionId: null,
-                        $"{message}; the stored fallback could not be parsed");
-                    await PayjoinSenderCoinReservationReleaser
-                        .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
-                    return;
-                }
-
-                PayjoinSenderSessionCloser.TryClose(_senderSessionStore.CreatePersister(session.SenderSessionId));
-                var fallbackTxId = fallbackTransaction.GetHash().ToString();
-                LogSenderSessionBroadcast(_logger, session.SenderSessionId, fallbackTxId, null);
-                _senderSessionStore.CompleteSession(
-                    session.SenderSessionId,
-                    PayjoinSenderSessionStatus.CompletedFallback,
-                    fallbackTxId,
-                    message);
-                await PayjoinSenderCoinReservationReleaser
-                    .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
-                return;
-            }
+            _senderSessionStore.CompleteSession(
+                session.SenderSessionId,
+                PayjoinSenderSessionStatus.Failed,
+                broadcastTransactionId: null,
+                message);
+            await PayjoinSenderSessionResourceReleaser
+                .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
+            return;
         }
 
-        _senderSessionStore.CompleteSession(
-            session.SenderSessionId,
-            PayjoinSenderSessionStatus.Failed,
-            broadcastTransactionId: null,
-            message);
-        await PayjoinSenderCoinReservationReleaser
-            .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
+        var outcome = await PayjoinSenderSessionTerminator.EndAsync(
+            _senderSessionStore,
+            _pendingTransactionService,
+            _explorerClientProvider.GetExplorerClient(network),
+            network.NBitcoinNetwork,
+            session,
+            message,
+            cancellationToken).ConfigureAwait(false);
+        if (outcome == PayjoinSenderTerminalOutcome.FallbackBroadcast)
+        {
+            LogSenderSessionBroadcast(_logger, session.SenderSessionId, session.OriginalTransactionId, null);
+        }
+        else if (outcome == PayjoinSenderTerminalOutcome.RetryLater)
+        {
+            LogSenderSessionTransient(_logger, session.SenderSessionId, null);
+        }
     }
 }
