@@ -2,16 +2,16 @@ using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Abstractions.Extensions;
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
-using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Data;
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Models;
+using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Plugins.Wallets;
 using BTCPayServer.Plugins.Wallets.Views.ViewModels;
 using BTCPayServer.Services;
-using BTCPayServer.Services.Wallets;
-using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,6 +29,15 @@ public class UIPayjoinSenderController : Controller
     private readonly PayjoinSenderSessionStore _senderSessionStore;
     private readonly IPayjoinSenderSessionProcessor _senderSessionProcessor;
     private readonly WalletRepository _walletRepository;
+
+    public UIPayjoinSenderController(System.IServiceProvider serviceProvider)
+        : this(
+            serviceProvider.GetRequiredService<PayjoinSenderService>(),
+            serviceProvider.GetRequiredService<PayjoinSenderSessionStore>(),
+            serviceProvider.GetRequiredService<IPayjoinSenderSessionProcessor>(),
+            serviceProvider.GetRequiredService<WalletRepository>())
+    {
+    }
 
     internal UIPayjoinSenderController(
         PayjoinSenderService senderService,
