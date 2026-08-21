@@ -126,6 +126,10 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                 LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
                 RemoveSession(session.InvoiceId, "receiver session failed with invalid operation");
             }
+            catch (ReceiverPersistedException ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+            }
             catch (UniffiException ex)
             {
                 LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);

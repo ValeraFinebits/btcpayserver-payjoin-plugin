@@ -233,7 +233,7 @@ public class PayjoinReceiverSessionProcessorTests
     public async Task ProcessTickAsyncDispatchesReplayedPendingFallbackForClosure()
     {
         // Arrange
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-replayed-pending-fallback");
         var guard = new ReplayedStateGuard(() => new ReceiveSession.ReceiverPendingFallback(null!));
