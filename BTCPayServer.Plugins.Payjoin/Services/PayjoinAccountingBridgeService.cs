@@ -29,6 +29,8 @@ internal sealed record PayjoinAccountingBridgeState(
     DateTimeOffset? ReconciledAt,
     DateTimeOffset? ExpiresAt)
 {
+    public string? SettlementKeyPath { get; init; }
+
     public bool HasExpectedFinalOutputIndex => ExpectedFinalOutputIndex.HasValue;
 
     public bool HasEffectiveInvoiceValue => EffectiveInvoiceValueSats.HasValue;
@@ -51,7 +53,10 @@ internal sealed record CreatePayjoinAccountingBridgeRequest(
     string? SettlementScript = null,
     string? ExpectedFinalTransactionId = null,
     long? ExpectedFinalOutputIndex = null,
-    long? ExpectedFinalValueSats = null);
+    long? ExpectedFinalValueSats = null)
+{
+    public string? SettlementKeyPath { get; init; }
+}
 
 internal interface IPayjoinAccountingBridgeService
 {
@@ -127,6 +132,7 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
             FallbackValueSats = request.FallbackValueSats,
             EffectiveInvoiceValueSats = request.EffectiveInvoiceValueSats,
             SettlementScript = request.SettlementScript,
+            SettlementKeyPath = request.SettlementKeyPath,
             ExpectedFinalTransactionId = request.ExpectedFinalTransactionId,
             ExpectedFinalOutputIndex = request.ExpectedFinalOutputIndex,
             ExpectedFinalValueSats = request.ExpectedFinalValueSats,
@@ -288,6 +294,7 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
         bridge.FallbackOutputIndex = null;
         bridge.FallbackValueSats = null;
         bridge.SettlementScript = null;
+        bridge.SettlementKeyPath = null;
         bridge.ExpectedFinalTransactionId = null;
         bridge.ExpectedFinalOutputIndex = null;
         bridge.ExpectedFinalValueSats = null;
@@ -450,6 +457,9 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
             bridge.CreatedAt,
             bridge.UpdatedAt,
             bridge.ReconciledAt,
-            bridge.ExpiresAt);
+            bridge.ExpiresAt)
+        {
+            SettlementKeyPath = bridge.SettlementKeyPath
+        };
     }
 }

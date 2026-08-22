@@ -36,4 +36,5 @@ internal static class PayjoinPluginDbSchema
     internal const int PaymentMethodIdMaxLength = 64;
     internal const int BridgeFailureMessageMaxLength = 1024;
     internal const int BridgeSettlementScriptMaxLength = 512;
+    internal const int BridgeSettlementKeyPathMaxLength = 512;
 }
