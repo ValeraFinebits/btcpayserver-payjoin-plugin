@@ -33,6 +33,8 @@ internal sealed class PayjoinAccountingBridgeData
 
     public string? SettlementScript { get; set; }
 
+    public string? SettlementKeyPath { get; set; }
+
     public string? ExpectedFinalTransactionId { get; set; }
 
     public long? ExpectedFinalOutputIndex { get; set; }

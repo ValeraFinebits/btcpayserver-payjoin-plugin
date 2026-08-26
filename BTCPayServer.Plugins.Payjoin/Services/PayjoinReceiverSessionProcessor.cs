@@ -1,5 +1,4 @@
 using BTCPayServer.Payments;
-using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
@@ -386,6 +385,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             bridge =>
             {
                 bridge.SettlementScript = settlementScriptHex;
+                bridge.SettlementKeyPath = settlementOutputs.SettlementKeyPath.ToString();
                 bridge.EffectiveInvoiceValueSats = settlementAmountSats;
             });
     }
@@ -504,6 +504,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         var valueSats = fallbackOutputMatch.ValueSats!.Value;
         var invoice = await _invoiceLookup.GetInvoiceAsync(session.InvoiceId).ConfigureAwait(false);
         var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        // TODO: Require the invoice-pinned amount and reject a missing or mismatched sender PSBT amount.
         var effectiveInvoiceValueSats = invoice?.GetPaymentPrompt(paymentMethodId)?.Calculate().Due is { } due && due > 0m
             ? Money.Coins(due).Satoshi
             : valueSats;
