@@ -19,6 +19,11 @@ internal interface IPayjoinReceiverStateProcessor
         HasReplyableError replyableError,
         CancellationToken cancellationToken);
 
+    Task ProcessPendingFallbackAsync(
+        PayjoinReceiverStateContext context,
+        ReceiverPendingFallback pendingFallback,
+        CancellationToken cancellationToken);
+
     Task ProcessUncheckedProposalAsync(
         PayjoinReceiverStateContext context,
         UncheckedOriginalPayload proposal,
@@ -43,6 +48,10 @@ internal interface IPayjoinReceiverStateProcessor
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken);
 }
+
+internal sealed record PayjoinOriginalTransactionFacts(
+    IReadOnlyList<NBitcoin.OutPoint> InputOutpoints,
+    IReadOnlyList<byte[]> OutputScripts);
 
 internal sealed class PayjoinReceiverStateContext
 {
@@ -74,15 +83,11 @@ internal sealed class PayjoinReceiverStateContext
 
     internal Func<PayjoinReceiverSessionState, bool> RemoveCloseRequestedSession { get; }
 
-    /// <summary>
-    /// Output scripts of the sender's original transaction, extracted from the session replay when
-    /// available. Used to resolve output ownership ahead of the synchronous rust-payjoin callbacks.
-    /// </summary>
+    internal IReadOnlyList<NBitcoin.OutPoint> OriginalInputOutpoints { get; set; } = Array.Empty<NBitcoin.OutPoint>();
+
     internal IReadOnlyList<byte[]> OriginalOutputScripts { get; set; } = Array.Empty<byte[]>();
 
-    /// <summary>
-    /// Ownership data resolved once per processing tick and shared by the ownership checks in the
-    /// same chain, so the wallet is not queried again between the inputs and outputs checks.
-    /// </summary>
-    internal PayjoinScriptOwnershipResolver? OwnershipResolver { get; set; }
+    internal PayjoinInputOwnershipResolver? InputOwnershipResolver { get; set; }
+
+    internal PayjoinScriptOwnershipResolver? OutputOwnershipResolver { get; set; }
 }
