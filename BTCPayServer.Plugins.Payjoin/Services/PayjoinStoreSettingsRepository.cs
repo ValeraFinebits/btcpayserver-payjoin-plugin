@@ -22,12 +22,7 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
     public async Task<PayjoinStoreSettings> GetAsync(string storeId)
     {
         var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false);
-        if (store is null)
-        {
-            return new PayjoinStoreSettings();
-        }
-
-        return ReadSettings(store.GetStoreBlob());
+        return store is null ? new PayjoinStoreSettings() : ReadSettings(store.GetStoreBlob());
     }
 
     public async Task<IReadOnlyList<(string StoreId, PayjoinStoreSettings Settings)>> GetAllAsync()
@@ -49,14 +44,7 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
             throw new ArgumentNullException(nameof(settings));
         }
 
-        var normalizedSettings = new PayjoinStoreSettings
-        {
-            PayjoinV2Enabled = settings.PayjoinV2Enabled,
-            DirectoryUrls = PayjoinStoreSettings.NormalizeDirectoryUrls(settings.DirectoryUrls),
-            OhttpRelayUrls = PayjoinStoreSettings.NormalizeOhttpRelayUrls(settings.OhttpRelayUrls),
-            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme
-        };
-        normalizedSettings.NormalizeUrlSettings();
+        var normalizedSettings = Normalize(settings);
 
         var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false);
         if (store is null)
@@ -67,8 +55,22 @@ public sealed class PayjoinStoreSettingsRepository : IPayjoinStoreSettingsReposi
         var blob = store.GetStoreBlob();
         blob.AdditionalData ??= new Newtonsoft.Json.Linq.JObject();
         blob.AdditionalData[Key] = Newtonsoft.Json.Linq.JToken.FromObject(normalizedSettings);
-        store.SetStoreBlob(blob);
+        _ = store.SetStoreBlob(blob);
         await _storeRepository.UpdateStore(store).ConfigureAwait(false);
+    }
+
+    internal static PayjoinStoreSettings Normalize(PayjoinStoreSettings settings)
+    {
+        var normalizedSettings = new PayjoinStoreSettings
+        {
+            PayjoinV2Enabled = settings.PayjoinV2Enabled,
+            DirectoryUrls = PayjoinStoreSettings.NormalizeDirectoryUrls(settings.DirectoryUrls),
+            OhttpRelayUrls = PayjoinStoreSettings.NormalizeOhttpRelayUrls(settings.OhttpRelayUrls),
+            ColdWalletDerivationScheme = settings.ColdWalletDerivationScheme,
+            MaxFeeRateSatPerVb = settings.MaxFeeRateSatPerVb
+        };
+        normalizedSettings.NormalizeUrlSettings();
+        return normalizedSettings;
     }
 
     internal static PayjoinStoreSettings ReadSettings(StoreBlob blob)
