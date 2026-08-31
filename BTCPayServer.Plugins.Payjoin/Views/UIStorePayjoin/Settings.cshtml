@@ -3,9 +3,24 @@
 @using BTCPayServer.Abstractions.Models
 @using BTCPayServer.Client
 @using Microsoft.AspNetCore.Mvc.TagHelpers
+@using System.Collections.Generic
+@using System.Linq
 @model BTCPayServer.Plugins.Payjoin.Models.PayjoinStoreSettingsViewModel
 @{
     ViewData.SetLayoutModel(new LayoutModel("Payjoin", "Async Payjoin Settings").SetCategory(WellKnownCategories.Store));
+}
+@functions {
+    private IReadOnlyList<string> ErrorsFor(string key)
+    {
+        return ViewData.ModelState.TryGetValue(key, out var entry)
+            ? entry.Errors.Select(error => error.ErrorMessage).Where(message => !string.IsNullOrEmpty(message)).ToList()
+            : new List<string>();
+    }
+
+    private string DescribedBy(string elementId, bool hasErrors)
+    {
+        return hasErrors ? $"{elementId}-error {elementId}-help" : $"{elementId}-help";
+    }
 }
 
 <form method="post" permissioned="@Policies.CanModifyStoreSettings">
@@ -20,36 +35,80 @@
         <div class="col-xxl-constrain col-xl-8">
             <div class="form-group">
                 <label asp-for="PayjoinV2Enabled" class="form-label" text-translate="true">Enable Async Payjoin</label>
-                <input asp-for="PayjoinV2Enabled" type="checkbox" class="form-check-input" />
-                <div class="form-text" text-translate="true">Technical protocol: Payjoin V2 (BIP 77).</div>
+                <input asp-for="PayjoinV2Enabled" type="checkbox" class="form-check-input" aria-describedby="PayjoinV2Enabled-help" />
+                <div id="PayjoinV2Enabled-help" class="form-text" text-translate="true">Technical protocol: Payjoin V2 (BIP 77).</div>
             </div>
 
+            @{
+                var directoryErrors = ErrorsFor(nameof(Model.DirectoryUrlsText));
+            }
             <div class="form-group">
                 <label asp-for="DirectoryUrlsText" class="form-label" text-translate="true">Directory URLs</label>
-                <textarea asp-for="DirectoryUrlsText" class="form-control" id="PayjoinDirectoryUrls" rows="3"></textarea>
-                <span asp-validation-for="DirectoryUrlsText" class="text-danger"></span>
-                <div class="form-text" text-translate="true">Enter one Payjoin directory URL per line. Multiple directories improve resilience when one directory is unavailable.</div>
+                <textarea asp-for="DirectoryUrlsText" class="form-control" id="PayjoinDirectoryUrls" rows="3"
+                          aria-invalid="@(directoryErrors.Count > 0 ? "true" : null)"
+                          aria-describedby="@DescribedBy("PayjoinDirectoryUrls", directoryErrors.Count > 0)"></textarea>
+                @if (directoryErrors.Count > 0)
+                {
+                    <div id="PayjoinDirectoryUrls-error" class="text-danger">
+                        @foreach (var error in directoryErrors)
+                        {
+                            <div>@error</div>
+                        }
+                    </div>
+                }
+                <div id="PayjoinDirectoryUrls-help" class="form-text" text-translate="true">Enter one Payjoin directory URL per line. Multiple directories improve resilience when one directory is unavailable.</div>
             </div>
 
+            @{
+                var relayErrors = ErrorsFor(nameof(Model.OhttpRelayUrlsText));
+            }
             <div class="form-group">
                 <label asp-for="OhttpRelayUrlsText" class="form-label" text-translate="true">OHTTP Relay URLs</label>
-                <textarea asp-for="OhttpRelayUrlsText" class="form-control" id="PayjoinOhttpRelayUrls" rows="4"></textarea>
-                <span asp-validation-for="OhttpRelayUrlsText" class="text-danger"></span>
-                <div class="form-text" text-translate="true">Enter one OHTTP relay URL per line. Multiple relays improve reliability when a relay is unavailable.</div>
+                <textarea asp-for="OhttpRelayUrlsText" class="form-control" id="PayjoinOhttpRelayUrls" rows="4"
+                          aria-invalid="@(relayErrors.Count > 0 ? "true" : null)"
+                          aria-describedby="@DescribedBy("PayjoinOhttpRelayUrls", relayErrors.Count > 0)"></textarea>
+                @if (relayErrors.Count > 0)
+                {
+                    <div id="PayjoinOhttpRelayUrls-error" class="text-danger">
+                        @foreach (var error in relayErrors)
+                        {
+                            <div>@error</div>
+                        }
+                    </div>
+                }
+                <div id="PayjoinOhttpRelayUrls-help" class="form-text" text-translate="true">Enter one OHTTP relay URL per line. Multiple relays improve reliability when a relay is unavailable.</div>
             </div>
 
+            @{
+                var coldWalletErrors = ErrorsFor(nameof(Model.ColdWalletDerivationScheme));
+            }
             <div class="form-group">
                 <label asp-for="ColdWalletDerivationScheme" class="form-label" text-translate="true">Cold wallet</label>
-                <input asp-for="ColdWalletDerivationScheme" class="form-control" id="PayjoinColdWallet" placeholder="xpub... or output descriptor" />
-                <span asp-validation-for="ColdWalletDerivationScheme" class="text-danger"></span>
-                <div class="form-text" text-translate="true">Optional. Provide an extended public key or output descriptor for a cold storage wallet. Async Payjoin change outputs will be directed to this wallet, sweeping excess funds to cold storage.</div>
+                <input asp-for="ColdWalletDerivationScheme" class="form-control" id="PayjoinColdWallet" placeholder="xpub... or output descriptor"
+                       aria-invalid="@(coldWalletErrors.Count > 0 ? "true" : null)"
+                       aria-describedby="@DescribedBy("PayjoinColdWallet", coldWalletErrors.Count > 0)" />
+                @if (coldWalletErrors.Count > 0)
+                {
+                    <div id="PayjoinColdWallet-error" class="text-danger">
+                        @foreach (var error in coldWalletErrors)
+                        {
+                            <div>@error</div>
+                        }
+                    </div>
+                }
+                <div id="PayjoinColdWallet-help" class="form-text" text-translate="true">Optional. Provide an extended public key or output descriptor for a cold storage wallet. Async Payjoin change outputs will be directed to this wallet, sweeping excess funds to cold storage. When a sender permits output substitution the settling transaction pays a cold wallet address rather than the invoice address, so the invoice and receipt will show a destination that does not appear on-chain, and the hot wallet records a negative amount for the contributed input.</div>
             </div>
 
+            @{
+                var maxFeeRateErrors = ErrorsFor(nameof(Model.MaxFeeRateSatPerVb));
+            }
             <div class="form-group">
                 <label asp-for="MaxFeeRateSatPerVb" class="form-label" text-translate="true">Maximum fee rate (sat/vB)</label>
-                <input asp-for="MaxFeeRateSatPerVb" class="form-control" id="PayjoinMaxFeeRate" type="number" min="1" placeholder="automatic" />
-                <div class="form-text" text-translate="true">Upper bound for the fee rate a payjoin may reach. Leave empty to follow the network fee estimate.</div>
-                <span asp-validation-for="MaxFeeRateSatPerVb" class="text-danger"></span>
+                <input asp-for="MaxFeeRateSatPerVb" class="form-control" id="PayjoinMaxFeeRate" type="number" min="1" placeholder="automatic"
+                       aria-invalid="@(maxFeeRateErrors.Count > 0 ? "true" : null)"
+                       aria-describedby="@DescribedBy("PayjoinMaxFeeRate", true)" />
+                <span asp-validation-for="MaxFeeRateSatPerVb" id="PayjoinMaxFeeRate-error" class="text-danger"></span>
+                <div id="PayjoinMaxFeeRate-help" class="form-text" text-translate="true">Upper bound for the fee rate a payjoin may reach. Leave empty to follow the network fee estimate.</div>
             </div>
         </div>
     </div>
