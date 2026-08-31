@@ -38,6 +38,9 @@ public class PayjoinReceiverPollerTests
         await poller.StopAsync(CancellationToken.None).ConfigureAwait(true);
 
         // Assert
+        var executeTask = poller.ExecuteTask;
+        Assert.NotNull(executeTask);
+        await executeTask.ConfigureAwait(true);
         var logEntry = Assert.Single(logger.Entries);
         Assert.Equal(LogLevel.Warning, logEntry.LogLevel);
         Assert.Equal(new EventId(1, "LogPayjoinReceiverPollingFailed"), logEntry.EventId);
