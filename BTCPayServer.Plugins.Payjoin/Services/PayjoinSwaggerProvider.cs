@@ -44,6 +44,9 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
               },
               "404": {
                 "description": "The store was not found"
+              },
+              "503": {
+                "description": "The store's saved PayJoin settings exist but cannot be read, so there is nothing truthful to return - the defaults are a policy this store may not have chosen. PayJoin is switched off for the store's checkouts until the settings are replaced with a PUT to this endpoint."
               }
             },
             "security": [
@@ -204,7 +207,8 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
             "additionalProperties": false,
             "required": [
               "bip21",
-              "status"
+              "status",
+              "retryable"
             ],
             "properties": {
               "bip21": {
@@ -225,7 +229,11 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
               "unavailableReason": {
                 "type": "string",
                 "nullable": true,
-                "description": "Human-readable reason why PayJoin is unavailable. Null when status is Active. Do not branch on this text; branch on the status field. These strings are English prose and may change at any time."
+                "description": "Human-readable reason why PayJoin is unavailable. Null when status is Active. Do not branch on this text; branch on the status and retryable fields. These strings are English prose and may change at any time."
+              },
+              "retryable": {
+                "type": "boolean",
+                "description": "Whether requesting this invoice again could produce a different answer. False when status is Active - there is nothing left to ask for. Note that TemporarilyUnavailable does not imply true: a session can be healthy while the answer is settled for this invoice, in which case retrying cannot change it."
               }
             }
           }

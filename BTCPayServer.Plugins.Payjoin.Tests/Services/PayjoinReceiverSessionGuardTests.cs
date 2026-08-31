@@ -1,13 +1,8 @@
-using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBXplorer;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using NSubstitute;
 using Payjoin;
 using Xunit;
@@ -20,10 +15,10 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryExpireSessionRemovesExpiredSession()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
-        var session = sessionStore.CreateSession(
+        var session = sessionStore.GetOrCreateSession(
             "invoice-expired",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -39,10 +34,10 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryExpireSessionKeepsActiveSession()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
-        var session = sessionStore.CreateSession(
+        var session = sessionStore.GetOrCreateSession(
             "invoice-active",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -55,13 +50,32 @@ public class PayjoinReceiverSessionGuardTests
         Assert.True(sessionStore.TryGetSession(session.InvoiceId, out _));
     }
 
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(10, false)]
+    public void GuardExpiresASessionExactlyWhenItStopsBeingServable(int monitoringMinutesFromNow, bool expectedExpired)
+    {
+        using var context = new SessionStoreFixture();
+        var sessionStore = context.CreateStore();
+        var guard = CreateGuard(sessionStore);
+        var session = sessionStore.GetOrCreateSession(
+            $"invoice-deadline-{monitoringMinutesFromNow}",
+            "bcrt1qexampleaddress0000000000000000000000000",
+            "store-1",
+            DateTimeOffset.UtcNow.AddMinutes(monitoringMinutesFromNow),
+            ["bootstrap-event"]);
+
+        Assert.Equal(!expectedExpired, session.GetServability().IsServable());
+        Assert.Equal(expectedExpired, guard.TryExpireSession(session));
+    }
+
     [Fact]
     public void TryRemoveCloseRequestedSessionReturnsFalseWhenCloseNotRequested()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
-        var session = sessionStore.CreateSession(
+        var session = sessionStore.GetOrCreateSession(
             "invoice-open",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -78,10 +92,10 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryRemoveCloseRequestedSessionKeepsSessionWhenStateHasReplyableError()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
-        var session = sessionStore.CreateSession(
+        var session = sessionStore.GetOrCreateSession(
             "invoice-close-replyable-error",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -100,10 +114,10 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryRemoveCloseRequestedSessionKeepsSessionWhenInitializedPollAfterCloseRequestNotConsumed()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
-        var session = sessionStore.CreateSession(
+        var session = sessionStore.GetOrCreateSession(
             "invoice-close-initialized-keep",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -122,7 +136,7 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryRemoveCloseRequestedSessionRemovesSessionWhenInitializedPollAfterCloseRequestConsumed()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
         var closeRequested = CreateCloseRequestedSession(
@@ -142,7 +156,7 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryRemoveCloseRequestedSessionKeepsSessionBrieflyWhenInitializedPollAfterCloseRequestConsumedForSettledInvoice()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
         var closeRequested = CreateCloseRequestedSession(
@@ -163,7 +177,7 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryRemoveCloseRequestedSessionRemovesSessionWhenInitializedPollAfterCloseRequestConsumedForSettledInvoiceAfterGrace()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
         var closeRequested = CreateCloseRequestedSession(
@@ -184,7 +198,7 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryRemoveCloseRequestedSessionKeepsSessionBrieflyWhenInitializedPollAfterCloseRequestConsumedRecently()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
         var closeRequested = CreateCloseRequestedSession(
@@ -204,10 +218,10 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryRemoveCloseRequestedSessionRemovesSessionWhenStateCannotReply()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
-        var session = sessionStore.CreateSession(
+        var session = sessionStore.GetOrCreateSession(
             "invoice-close-remove",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -226,10 +240,10 @@ public class PayjoinReceiverSessionGuardTests
     [Fact]
     public void TryRemoveCloseRequestedSessionKeepsSessionWhenStateCanReply()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var sessionStore = context.CreateStore();
         var guard = CreateGuard(sessionStore);
-        var session = sessionStore.CreateSession(
+        var session = sessionStore.GetOrCreateSession(
             "invoice-close-keep",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -285,14 +299,14 @@ public class PayjoinReceiverSessionGuardTests
     }
 
     private static PayjoinReceiverSessionState CreateCloseRequestedSession(
-        TestContext context,
+        SessionStoreFixture context,
         PayjoinReceiverSessionStore sessionStore,
         string invoiceId,
         DateTimeOffset closeRequestedAt,
         bool initializedPollAfterCloseRequestConsumed,
         InvoiceStatus closeInvoiceStatus = InvoiceStatus.Expired)
     {
-        var session = sessionStore.CreateSession(
+        var session = sessionStore.GetOrCreateSession(
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -311,45 +325,4 @@ public class PayjoinReceiverSessionGuardTests
         return closeRequested!;
     }
 
-    private sealed class TestContext : IDisposable
-    {
-        private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
-        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
-
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
-
-        public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
-
-        public void Dispose()
-        {
-            using var db = _dbContextFactory.CreateContext();
-            db.Database.EnsureDeleted();
-        }
-    }
-
-    internal sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
-    {
-        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
-        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
-
-        public TestPayjoinPluginDbContextFactory()
-            : base(Options.Create(new DatabaseOptions
-            {
-                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
-            }))
-        {
-            var databaseName = $"payjoin-session-guard-tests-{Guid.NewGuid():N}";
-            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
-                .Options;
-
-            using var db = CreateContext();
-            db.Database.EnsureCreated();
-        }
-
-        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
-        {
-            return new PayjoinPluginDbContext(_dbContextOptions);
-        }
-    }
 }

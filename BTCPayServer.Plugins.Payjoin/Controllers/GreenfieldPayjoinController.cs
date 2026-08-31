@@ -50,6 +50,12 @@ public sealed class GreenfieldPayjoinController : ControllerBase
         }
 
         var settings = await _settingsRepository.GetAsync(storeId).ConfigureAwait(false);
+        if (settings is null)
+        {
+            return this.CreateAPIError(503, "payjoin-settings-unreadable",
+                "The store's payjoin settings could not be read. Replace them with a PUT to this endpoint.");
+        }
+
         return Ok(PayjoinStoreSettingsData.FromSettings(settings));
     }
 

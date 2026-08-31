@@ -1,5 +1,4 @@
 @inject BTCPayServer.Services.BTCPayServerEnvironment Env
-@inject Microsoft.Extensions.Localization.IStringLocalizer StringLocalizer
 
 <style>
     .payjoin-checkout-controls [data-payjoin-mode] {
@@ -18,22 +17,44 @@
 
 <script>
 (function () {
+    if (window.__payjoinCheckoutBound) {
+        return;
+    }
+
+    window.__payjoinCheckoutBound = true;
+
     const controlsId = 'PayJoinCheckoutControls';
     const testPaymentId = 'PayJoinCheckoutTestPayment';
-    const bootstrapRetryDelayMs = 100;
-    const maxBootstrapRetryCount = 100;
-    const standardPayInWalletTitleKey = 'BIP21 payment link';
-    const standardPayInWalletPayjoinTitleKey = 'BIP21 payment link with PayJoin support';
-    const standardPayInWalletTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(StringLocalizer["BIP21 payment link"].Value));
-    const standardPayInWalletPayjoinTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(StringLocalizer["BIP21 payment link with PayJoin support"].Value));
-    const payInWalletPayjoinTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(StringLocalizer["BIP21 payment link with Async Payjoin support"].Value));
+    // Fast then slow: Vue can mount late on slow connections. Stops once attached.
+    const mountPollFastDelayMs = 100;
+    const mountPollSlowDelayMs = 1000;
+    const mountPollFastPhaseMs = 2000;
+    const mountPollCeilingMs = 120000;
     const runTestEnabled = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Env.CheatMode));
-    const runTestEndpoint = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Url.Action("RunTestPayment", "UIPayJoin")));
+    const runTestEndpoint = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Env.CheatMode ? Url.Action("RunTestPayment", "UIPayJoin") : null));
+    // Bounded backoff: each attempt can cost the server an OHTTP bootstrap.
+    const payjoinRequestBaseDelayMs = 2000;
+    const payjoinRequestMaxDelayMs = 30000;
+    const maxPayjoinRequestAttempts = 130;
     let selectedPaymentMode = null;
-    let paymentUrlFetchInvoiceId = null;
-    let tickScheduled = false;
-    let observerStarted = false;
-    let bootstrapRetryCount = 0;
+    let watchedVm = null;
+    let mountPollStartedAt = 0;
+
+    // A checkout document is bound to one invoice; navigating to another creates a new JS context.
+    const retryState = {
+        attempts: 0,
+        inFlight: false,
+        nextAttemptAt: 0,
+        timer: null,
+        stopped: false,
+        paused: false,
+        clearTimer: function () {
+            if (this.timer !== null) {
+                window.clearTimeout(this.timer);
+                this.timer = null;
+            }
+        }
+    };
 
     function getCheckoutVm() {
         const checkout = document.getElementById('Checkout');
@@ -45,17 +66,6 @@
         return vm && vm.srvModel;
     }
 
-    function replaceSrvModel(vm, nextModel) {
-        if (!vm) {
-            return;
-        }
-
-        vm.srvModel = nextModel;
-        if (vm.$forceUpdate) {
-            vm.$forceUpdate();
-        }
-    }
-
     function shouldShowControls(model) {
         return model &&
             model.status === 'New' &&
@@ -65,185 +75,159 @@
             model.payjoinPaymentUrl !== model.payjoinPlainBitcoinUrl;
     }
 
-    function extractQueryParameter(url, key) {
-        const querySeparatorIndex = url.indexOf('?');
-        if (querySeparatorIndex < 0 || querySeparatorIndex === url.length - 1) {
-            return null;
+    function payjoinRequestDelayMs() {
+        return Math.min(
+            payjoinRequestBaseDelayMs * Math.pow(2, Math.max(0, retryState.attempts - 1)),
+            payjoinRequestMaxDelayMs);
+    }
+
+    function schedulePayjoinRequestRetry() {
+        retryState.clearTimer();
+
+        if (retryState.stopped) {
+            return;
         }
 
-        const segments = url.slice(querySeparatorIndex + 1).split('&');
-        for (const segment of segments) {
-            const segmentKey = segment.split('=', 1)[0];
-            if (segmentKey.toLowerCase() === key.toLowerCase()) {
-                return segment;
+        if (document.visibilityState === 'hidden') {
+            retryState.paused = true;
+            return;
+        }
+
+        if (retryState.attempts >= maxPayjoinRequestAttempts) {
+            console.warn('PayJoin stopped asking for a payment URL after ' + retryState.attempts + ' attempts; reload the page to try again');
+            retryState.stopped = true;
+            return;
+        }
+
+        const delay = payjoinRequestDelayMs();
+        retryState.timer = window.setTimeout(function () {
+            retryState.timer = null;
+            const currentModel = getModel();
+            if (currentModel) {
+                requestPayjoinPaymentUrl(currentModel);
+                return;
             }
-        }
 
-        return null;
-    }
-
-    function hasQueryKey(segment, key) {
-        return segment.split('=', 1)[0].toLowerCase() === key.toLowerCase();
-    }
-
-    function parseAmount(url) {
-        const segment = extractQueryParameter(url, 'amount');
-        if (!segment) {
-            return null;
-        }
-
-        const value = Number.parseFloat(segment.slice(segment.indexOf('=') + 1));
-        return Number.isFinite(value) ? value : null;
-    }
-
-    function mergePayjoinIntoPaymentUrl(baseUrl, payjoinUrl) {
-        if (!baseUrl) {
-            return payjoinUrl;
-        }
-
-        if (!payjoinUrl) {
-            return baseUrl;
-        }
-
-        const endpointParameter = extractQueryParameter(payjoinUrl, 'pj');
-        const payjoinParameters = [];
-        if (endpointParameter) {
-            const outputSubstitutionParameter = extractQueryParameter(payjoinUrl, 'pjos');
-            if (outputSubstitutionParameter) {
-                payjoinParameters.push(outputSubstitutionParameter);
+            // A missing model can mean Vue is mid-mount; keep the chain alive while Checkout exists.
+            if (document.getElementById('Checkout')) {
+                schedulePayjoinRequestRetry();
             }
-            payjoinParameters.push(endpointParameter);
-        }
-
-        const querySeparatorIndex = baseUrl.indexOf('?');
-        const prefix = querySeparatorIndex >= 0 ? baseUrl.slice(0, querySeparatorIndex) : baseUrl;
-        const query = querySeparatorIndex >= 0 ? baseUrl.slice(querySeparatorIndex + 1) : '';
-        const segments = query
-            ? query.split('&').filter(segment => segment && !hasQueryKey(segment, 'pj') && !hasQueryKey(segment, 'pjos'))
-            : [];
-
-        if (payjoinParameters.length > 0) {
-            const lightningIndex = segments.findIndex(segment => hasQueryKey(segment, 'lightning'));
-            const insertIndex = lightningIndex >= 0 ? lightningIndex : segments.length;
-            segments.splice(insertIndex, 0, ...payjoinParameters);
-        }
-
-        return segments.length === 0 ? prefix : prefix + '?' + segments.join('&');
+        }, delay);
     }
 
-    function normalizePaymentUrlResponse(payload) {
-        if (!payload) {
-            return null;
-        }
-
-        const bip21 = typeof payload.bip21 !== 'undefined' ? payload.bip21 : payload.Bip21;
-        const availabilityStatus = typeof payload.status !== 'undefined' ? payload.status : payload.Status;
-
-        if (typeof bip21 === 'undefined' || typeof availabilityStatus === 'undefined') {
-            console.error('PayJoin payment URL response has unexpected field names', Object.keys(payload));
-            return null;
-        }
-
-        if (typeof payload.bip21 === 'undefined' || typeof payload.status === 'undefined') {
-            console.warn('PayJoin payment URL response used PascalCase field names; the host serializer no longer matches what this plugin was tested against');
-        }
-
-        return {
-            bip21: bip21,
-            availabilityStatus: availabilityStatus
-        };
-    }
-
-    function applyFetchedPaymentUrl(model, paymentUrlResponse) {
-        if (!paymentUrlResponse ||
-            !paymentUrlResponse.bip21 ||
-            paymentUrlResponse.availabilityStatus !== 'Active') {
-            return;
-        }
-
-        const bip21 = paymentUrlResponse.bip21;
-        const vm = getCheckoutVm();
-        if (!vm || !vm.srvModel || vm.srvModel.invoiceId !== model.invoiceId) {
-            return;
-        }
-
-        const plainUrl = vm.srvModel.payjoinPlainBitcoinUrl;
-        const plainUrlQr = vm.srvModel.payjoinPlainBitcoinUrlQR;
-
-        if (!plainUrl || !plainUrlQr) {
-            return;
-        }
-
-        if (parseAmount(bip21) !== parseAmount(plainUrl)) {
-            console.warn('PayJoin payment URL discarded: the receiver session expects a different amount than the invoice now asks for');
-            return;
-        }
-
-        const nextModel = Object.assign({}, vm.srvModel, {
-            payjoinPaymentUrl: mergePayjoinIntoPaymentUrl(plainUrl, bip21),
-            payjoinPaymentUrlQR: mergePayjoinIntoPaymentUrl(plainUrlQr, bip21)
-        });
-
-        replaceSrvModel(vm, nextModel);
-    }
-
+    // Only bootstraps the first session; the merged URL is built server-side into the checkout model.
     function requestPayjoinPaymentUrl(model) {
+        if (retryState.stopped) {
+            return;
+        }
+
         if (!model ||
             model.status !== 'New' ||
             model.paymentMethodId !== 'BTC-CHAIN' ||
             !model.payjoinPaymentUrlEndpoint ||
             !model.payjoinPlainBitcoinUrl ||
             model.payjoinPaymentUrl ||
-            paymentUrlFetchInvoiceId === model.invoiceId) {
+            model.payjoinV2Enabled === false ||
+            // The backoff and in-flight marker gate every caller, not only the retry timer.
+            retryState.inFlight ||
+            Date.now() < retryState.nextAttemptAt) {
             return;
         }
 
-        paymentUrlFetchInvoiceId = model.invoiceId;
+        if (document.visibilityState === 'hidden') {
+            retryState.paused = true;
+            return;
+        }
+
+        retryState.inFlight = true;
+        retryState.attempts++;
+        retryState.paused = false;
         fetch(model.payjoinPaymentUrlEndpoint, {
             method: 'GET',
             credentials: 'same-origin',
             headers: { 'Accept': 'application/json' }
         })
-            .then(response => response.ok ? response.json() : null)
-            .then(response => applyFetchedPaymentUrl(model, normalizePaymentUrlResponse(response)))
+            .then(function (response) {
+                if (response.ok) {
+                    return response.json();
+                }
+
+                // 4xx is terminal, 5xx retryable; 404 (invoice not ready yet) and 429 (transient) excluded.
+                const terminalRefusal = response.status >= 400 && response.status < 500 &&
+                    response.status !== 404 && response.status !== 429;
+                if (terminalRefusal) {
+                    console.warn('PayJoin payment URL endpoint refused the request with ' + response.status + '; not retrying');
+                    retryState.stopped = true;
+                }
+
+                return null;
+            })
+            .then(payload => refreshCheckoutModel(payload))
             .catch(error => console.error('PayJoin payment URL fetch failed', error))
             .finally(function () {
-                scheduleTick();
+                retryState.inFlight = false;
+
+                // Rescheduled even on Active: the merged URL may not have reached the model yet.
+                if (!retryState.stopped) {
+                    retryState.nextAttemptAt = Date.now() + payjoinRequestDelayMs();
+                    schedulePayjoinRequestRetry();
+                }
             });
     }
 
-    function translateTitle(key, fallback) {
-        const i18nextInstance = window.i18next;
-        if (!i18nextInstance || !i18nextInstance.isInitialized) {
-            return fallback;
+    // Tolerate PascalCase from the host serializer, warning once so the change is visible.
+    function readField(payload, name, warnOnPascal) {
+        let value = payload[name];
+        if (typeof value === 'undefined') {
+            value = payload[name.charAt(0).toUpperCase() + name.slice(1)];
+            if (typeof value !== 'undefined' && warnOnPascal) {
+                console.warn('PayJoin payment URL response used PascalCase field names; the host serializer no longer matches what this plugin was tested against');
+            }
         }
-
-        const translated = i18nextInstance.t(key);
-        return translated || fallback;
+        return value;
     }
 
-    function getPaymentLinkTitle(mode, paymentUrl) {
-        if (mode === 'payjoin') {
-            return payInWalletPayjoinTitle;
+    function refreshCheckoutModel(payload) {
+        if (!payload) {
+            return;
         }
 
-        return extractQueryParameter(paymentUrl, 'pj')
-            ? translateTitle(standardPayInWalletPayjoinTitleKey, standardPayInWalletPayjoinTitle)
-            : translateTitle(standardPayInWalletTitleKey, standardPayInWalletTitle);
-    }
-
-    function refreshPaymentDom(paymentUrl, paymentUrlQr, mode) {
-        const payInWallet = getPayInWalletButton();
-        if (payInWallet) {
-            payInWallet.setAttribute('href', paymentUrl);
-            payInWallet.setAttribute('title', getPaymentLinkTitle(mode, paymentUrl));
+        const availabilityStatus = readField(payload, 'status', true);
+        if (typeof availabilityStatus === 'undefined') {
+            console.error('PayJoin payment URL response has unexpected field names', Object.keys(payload));
+            return;
         }
 
-        const qrContainer = document.querySelector('#payment .payment-box .qr-container');
-        if (qrContainer) {
-            qrContainer.dataset.qrValue = paymentUrlQr;
-            qrContainer.dataset.clipboard = paymentUrl;
+        if (typeof availabilityStatus !== 'string') {
+            console.error('PayJoin payment URL response returned a non-string status; the host serializer no longer matches what this plugin was tested against', availabilityStatus);
+            return;
         }
+
+        if (availabilityStatus !== 'Active') {
+            // Only an explicit false ends the chain; invalid responses remain subject to the attempt ceiling.
+            const retryable = readField(payload, 'retryable', false);
+            if (retryable === false) {
+                retryState.stopped = true;
+            }
+
+            return;
+        }
+
+        const vm = getCheckoutVm();
+        if (!vm || !vm.srvModel) {
+            return;
+        }
+
+        // fetchData re-runs GetCheckoutModel, where the payjoin URL is merged into the model.
+        if (typeof vm.fetchData !== 'function') {
+            console.error('PayJoin cannot refresh the checkout model: BTCPay no longer exposes fetchData');
+            return;
+        }
+
+        // NOT awaited into our chain: a fetchData that never settles must not strand it.
+        Promise.resolve(vm.fetchData()).catch(function (error) {
+            console.error('PayJoin asked BTCPay to refresh the checkout model and the refresh failed', error);
+        });
     }
 
     function getPaymentFields(model, mode) {
@@ -260,83 +244,36 @@
         };
     }
 
-    function getSelectedPaymentMode(model) {
-        if (selectedPaymentMode) {
-            return selectedPaymentMode;
-        }
-
-        return model.payjoinV2Enabled === false ? 'standard' : 'payjoin';
-    }
-
-    function syncPaymentDom(model) {
-        if (!shouldShowControls(model)) {
-            return;
-        }
-
-        const mode = getSelectedPaymentMode(model);
-        const paymentFields = getPaymentFields(model, mode);
-        if (!paymentFields.url || !paymentFields.qr) {
-            return;
-        }
-
-        refreshPaymentDom(paymentFields.url, paymentFields.qr, mode);
-    }
-
-    function setPaymentUrl(paymentUrl, paymentUrlQr) {
-        const vm = getCheckoutVm();
-        const model = vm && vm.srvModel;
-        if (!model || !paymentUrl || !paymentUrlQr) {
-            return;
-        }
-
-        const nextModel = Object.assign({}, model, {
-            invoiceBitcoinUrl: paymentUrl,
-            invoiceBitcoinUrlQR: paymentUrlQr
-        });
-
-        replaceSrvModel(vm, nextModel);
-
-        const mode = nextModel.invoiceBitcoinUrl === nextModel.payjoinPaymentUrl ? 'payjoin' : 'standard';
-        refreshPaymentDom(paymentUrl, paymentUrlQr, mode);
-        if (vm.$nextTick) {
-            vm.$nextTick(function () {
-                refreshPaymentDom(paymentUrl, paymentUrlQr, mode);
-                scheduleTick();
-            });
-        } else {
-            scheduleTick();
-        }
-    }
-
+    // The model is the ONLY thing this script writes; Vue owns the DOM attributes.
     function applySelectedPaymentMode(model) {
         if (!shouldShowControls(model)) {
             return;
         }
 
-        const mode = getSelectedPaymentMode(model);
-        const paymentFields = getPaymentFields(model, mode);
-        if (!paymentFields.url || !paymentFields.qr) {
+        const fields = getPaymentFields(model, selectedPaymentMode || 'payjoin');
+        if (!fields.url || !fields.qr) {
             return;
         }
 
-        if (model.invoiceBitcoinUrl !== paymentFields.url || model.invoiceBitcoinUrlQR !== paymentFields.qr) {
-            setPaymentUrl(paymentFields.url, paymentFields.qr);
+        // Guarded so our own write does not re-trigger the watcher.
+        if (model.invoiceBitcoinUrl === fields.url && model.invoiceBitcoinUrlQR === fields.qr) {
+            return;
+        }
+
+        const vm = getCheckoutVm();
+        if (vm) {
+            vm.srvModel = Object.assign({}, model, {
+                invoiceBitcoinUrl: fields.url,
+                invoiceBitcoinUrlQR: fields.qr
+            });
         }
     }
 
-    function getControls() {
-        return document.getElementById(controlsId);
-    }
-
-    function removeControls() {
-        const controls = getControls();
-        if (controls) {
-            controls.remove();
+    function removeById(id) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.remove();
         }
-    }
-
-    function getPayInWalletButton() {
-        return document.querySelector('#payment .payment-box #PayInWallet');
     }
 
     function getQrContainer() {
@@ -345,20 +282,6 @@
 
     function getPaymentBox() {
         return document.querySelector('#payment .payment-box');
-    }
-
-    function getActiveTabStyle() {
-        const payInWallet = getPayInWalletButton();
-        if (!payInWallet || !window.getComputedStyle) {
-            return null;
-        }
-
-        const style = window.getComputedStyle(payInWallet);
-        return {
-            backgroundColor: style.backgroundColor,
-            borderColor: style.borderColor,
-            color: style.color
-        };
     }
 
     function buildControls(model) {
@@ -383,34 +306,28 @@
         return controls;
     }
 
-    function updateTabState(button, active, activeStyle) {
+    function updateTabState(button, active) {
         button.classList.toggle('active', active);
         button.classList.toggle('btn-primary', active);
         button.classList.toggle('btn-outline-secondary', !active);
-        button.setAttribute('aria-selected', active ? 'true' : 'false');
-        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        // setAttribute is not a no-op when unchanged (classList.toggle is).
+        const state = active ? 'true' : 'false';
+        if (button.getAttribute('aria-selected') !== state) {
+            button.setAttribute('aria-selected', state);
+        }
 
-        if (active && activeStyle) {
-            button.style.backgroundColor = activeStyle.backgroundColor;
-            button.style.borderColor = activeStyle.borderColor;
-            button.style.color = activeStyle.color;
-        } else {
-            button.style.removeProperty('background-color');
-            button.style.removeProperty('border-color');
-            button.style.removeProperty('color');
+        if (button.getAttribute('aria-pressed') !== state) {
+            button.setAttribute('aria-pressed', state);
         }
     }
 
     function updateControlState(controls, model) {
-        const payjoinButton = controls.querySelector('[data-payjoin-mode="payjoin"]');
-        const standardButton = controls.querySelector('[data-payjoin-mode="standard"]');
         const payjoinActive = model.invoiceBitcoinUrl === model.payjoinPaymentUrl;
-        const standardActive = model.invoiceBitcoinUrl === model.payjoinPlainBitcoinUrl;
-        const activeStyle = getActiveTabStyle();
+        // Only the payjoin class: the stylesheet keys the indicator off it and its :not().
         controls.classList.toggle('payjoin-mode-payjoin', payjoinActive);
-        controls.classList.toggle('payjoin-mode-standard', standardActive);
-        updateTabState(payjoinButton, payjoinActive, activeStyle);
-        updateTabState(standardButton, standardActive, activeStyle);
+        updateTabState(controls.querySelector('[data-payjoin-mode="payjoin"]'), payjoinActive);
+        updateTabState(controls.querySelector('[data-payjoin-mode="standard"]'),
+                       model.invoiceBitcoinUrl === model.payjoinPlainBitcoinUrl);
     }
 
     function placeControls(controls, qrContainer, paymentBox) {
@@ -434,7 +351,7 @@
     function renderControls() {
         const model = getModel();
         if (!shouldShowControls(model)) {
-            removeControls();
+            removeById(controlsId);
             return;
         }
 
@@ -444,7 +361,7 @@
             return;
         }
 
-        let controls = getControls();
+        let controls = document.getElementById(controlsId);
         if (!controls) {
             controls = buildControls(model);
             placeControls(controls, qrContainer, paymentBox);
@@ -453,29 +370,6 @@
 
         if (placeControls(controls, qrContainer, paymentBox)) {
             updateControlState(controls, model);
-        }
-    }
-
-    function scheduleTick() {
-        if (tickScheduled) {
-            return;
-        }
-
-        tickScheduled = true;
-        window.requestAnimationFrame(function () {
-            tickScheduled = false;
-            tick();
-        });
-    }
-
-    function getTestPayment() {
-        return document.getElementById(testPaymentId);
-    }
-
-    function removeTestPayment() {
-        const testPayment = getTestPayment();
-        if (testPayment) {
-            testPayment.remove();
         }
     }
 
@@ -514,7 +408,7 @@
     function renderTestPayment() {
         const model = getModel();
         if (!runTestEnabled || !shouldShowControls(model)) {
-            removeTestPayment();
+            removeById(testPaymentId);
             return;
         }
 
@@ -523,7 +417,7 @@
             return;
         }
 
-        let testPayment = getTestPayment();
+        let testPayment = document.getElementById(testPaymentId);
         if (!testPayment) {
             testPayment = buildTestPayment(model);
             const fakePaymentForm = cheatSection.querySelector('form#test-payment');
@@ -541,44 +435,50 @@
         updateTestPayment(testPayment, model);
     }
 
-    const observer = new MutationObserver(scheduleTick);
+    function sync() {
+        // Every entry point re-tries to subscribe, in case Vue mounted after the startup poll gave up.
+        attachModelWatcher();
 
-    function startObserver() {
-        if (observerStarted) {
-            return;
-        }
-
-        const target = document.getElementById('Checkout') || document.getElementById('payment');
-        if (!target) {
-            return;
-        }
-
-        observerStarted = true;
-        observer.observe(target, { childList: true, subtree: true });
-    }
-
-    function tick() {
         const model = getModel();
-        startObserver();
         requestPayjoinPaymentUrl(model);
         applySelectedPaymentMode(model);
-        syncPaymentDom(model);
         renderControls();
         renderTestPayment();
+    }
 
-        if (bootstrapRetryCount >= maxBootstrapRetryCount) {
+    // The watch fires on model changes only, not on a timer - which is why the request chain keeps its own.
+    function attachModelWatcher() {
+        const vm = getCheckoutVm();
+        if (!vm || typeof vm.$watch !== 'function') {
+            return false;
+        }
+
+        if (watchedVm === vm) {
+            return true;
+        }
+
+        watchedVm = vm;
+        vm.$watch('srvModel', sync);
+        return true;
+    }
+
+    function pollForCheckout() {
+        if (mountPollStartedAt === 0) {
+            mountPollStartedAt = Date.now();
+        }
+
+        sync();
+        if (watchedVm !== null) {
             return;
         }
 
-        if (!model ||
-            (model.status === 'New' &&
-             model.paymentMethodId === 'BTC-CHAIN' &&
-             model.payjoinPaymentUrlEndpoint &&
-             model.payjoinPlainBitcoinUrl &&
-             !model.payjoinPaymentUrl)) {
-            bootstrapRetryCount++;
-            window.setTimeout(scheduleTick, bootstrapRetryDelayMs);
+        const elapsed = Date.now() - mountPollStartedAt;
+        if (elapsed >= mountPollCeilingMs) {
+            return;
         }
+
+        const delay = elapsed < mountPollFastPhaseMs ? mountPollFastDelayMs : mountPollSlowDelayMs;
+        window.setTimeout(pollForCheckout, delay);
     }
 
     document.addEventListener('click', function (event) {
@@ -593,15 +493,26 @@
         }
 
         selectedPaymentMode = modeButton.dataset.payjoinMode === 'standard' ? 'standard' : 'payjoin';
-        const paymentFields = getPaymentFields(model, selectedPaymentMode);
-        setPaymentUrl(paymentFields.url, paymentFields.qr);
+        sync();
     });
 
-    document.addEventListener('DOMContentLoaded', function () {
-        startObserver();
-        scheduleTick();
+    // Resumes the chain paused while hidden; nothing else calls into it once the retry timer is gone.
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState !== 'visible') {
+            return;
+        }
+
+        sync();
+
+        if (!retryState.paused) {
+            return;
+        }
+
+        retryState.paused = false;
+        schedulePayjoinRequestRetry();
     });
-    tick();
+
+    pollForCheckout();
 })();
 </script>
 

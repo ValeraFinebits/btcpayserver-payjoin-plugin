@@ -334,7 +334,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         await PayjoinIntegrationTestSupport.DisablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
 
-        var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(context.Merchant.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
+        var storeSettings = await PayjoinIntegrationTestSupport.ReadStoreSettingsAsync(tester, context.Merchant.StoreId, cts.Token).ConfigureAwait(true);
         Assert.False(storeSettings.PayjoinV2Enabled);
         Assert.Equal(coldDerivation.ToString(), storeSettings.ColdWalletDerivationScheme);
         Assert.Equal(expectedDirectoryUrls, storeSettings.DirectoryUrls);
@@ -760,6 +760,32 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
+    public async Task CheckoutModelCarriesMergedPayjoinUrlOnceSessionExists()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
+
+        var checkoutModel = await PayjoinIntegrationTestSupport.GetCheckoutModelAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var payjoinUrl = checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey].ToObject<string>()!;
+        var payjoinUrlQr = checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlQrKey].ToObject<string>()!;
+        var plainUrl = checkoutModel.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey].ToObject<string>()!;
+
+        Assert.Contains("pj=", payjoinUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pj=", payjoinUrlQr, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("pj=", plainUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(plainUrl, checkoutModel.InvoiceBitcoinUrl);
+        Assert.NotEqual(payjoinUrl, checkoutModel.InvoiceBitcoinUrl);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
     public async Task PaymentUrlEndpointServesCamelCaseNamesAndCollapsedStatusOverHttp()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
@@ -777,9 +803,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         var payload = await GetPaymentUrlJsonAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
 
-        Assert.Equal(["bip21", "status"], payload.Properties().Select(property => property.Name));
+        Assert.Equal(["status", "retryable"], payload.Properties().Select(property => property.Name));
         Assert.Equal("Active", payload["status"]!.Value<string>());
-        Assert.Contains("pj=", payload["bip21"]!.Value<string>()!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(payload["retryable"]!.Value<bool>());
     }
 
     [Fact]
@@ -801,9 +827,9 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         var payload = await GetPaymentUrlJsonAsync(tester, invoice.Id, cts.Token).ConfigureAwait(true);
 
-        Assert.Equal(["bip21", "status"], payload.Properties().Select(property => property.Name));
+        Assert.Equal(["status", "retryable"], payload.Properties().Select(property => property.Name));
         Assert.Equal("Unavailable", payload["status"]!.Value<string>());
-        Assert.DoesNotContain("pj=", payload["bip21"]!.Value<string>()!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(payload["retryable"]!.Value<bool>());
     }
 
     private static async Task<JObject> GetPaymentUrlJsonAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)

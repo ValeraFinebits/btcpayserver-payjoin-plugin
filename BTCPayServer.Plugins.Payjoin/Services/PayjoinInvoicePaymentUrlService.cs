@@ -91,7 +91,8 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
                 return CreateResponse(PayjoinUriResult.Unavailable(
                     fallbackPaymentUrl,
                     PayjoinAvailabilityStatus.TemporarilyUnavailable,
-                    "store settings are unavailable"));
+                    PayjoinUnavailableReasons.StoreSettingsUnavailable,
+                    retryable: false));
             }
 
             return await BuildPaymentUrlAsync(
@@ -117,7 +118,7 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
             return CreateResponse(PayjoinUriResult.Unavailable(
                 fallbackPaymentUrl,
                 PayjoinAvailabilityStatus.TemporarilyUnavailable,
-                "payjoin payment URL generation failed"));
+                PayjoinUnavailableReasons.PaymentUrlGenerationFailed));
         }
     }
 
@@ -150,7 +151,8 @@ public sealed class PayjoinInvoicePaymentUrlService : IPayjoinInvoicePaymentUrlS
         {
             Bip21 = result.PaymentUrl,
             Status = result.Status,
-            UnavailableReason = result.Reason
+            UnavailableReason = result.Reason,
+            Retryable = result.Retryable
         };
     }
 }

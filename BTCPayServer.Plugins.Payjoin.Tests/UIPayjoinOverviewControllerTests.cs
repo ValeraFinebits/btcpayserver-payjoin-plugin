@@ -1,4 +1,4 @@
-using BTCPayServer.Abstractions.Constants;
+﻿using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
 using BTCPayServer.Data;
@@ -162,7 +162,7 @@ public class UIPayjoinOverviewControllerTests
         public UIPayjoinOverviewController CreateController()
         {
             var storeSettingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
-            storeSettingsRepository.GetAsync(StoreId).Returns(Task.FromResult(new PayjoinStoreSettings()));
+            storeSettingsRepository.GetAsync(StoreId).Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings()));
 
             // No BTC network is registered, so the overview reports the network as unavailable
             // and never consults the availability service; the attention section is what these
