@@ -25,14 +25,14 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
 
     public async Task<(byte[] ResponseBody, TRequestContext RequestContext)> SendAsync<TRequestContext>(
         string storeId,
-        string invoiceId,
+        string sessionId,
         Func<string, TRequestContext> buildRequest,
         Func<TRequestContext, (SystemUri Url, string ContentType, byte[] Body)> describeRequest,
         CancellationToken cancellationToken)
         where TRequestContext : IDisposable
     {
         ArgumentNullException.ThrowIfNull(storeId);
-        ArgumentNullException.ThrowIfNull(invoiceId);
+        ArgumentNullException.ThrowIfNull(sessionId);
         ArgumentNullException.ThrowIfNull(buildRequest);
         ArgumentNullException.ThrowIfNull(describeRequest);
 
@@ -89,7 +89,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
             ExceptionDispatchInfo.Capture(lastTransportError).Throw();
         }
 
-        throw new PayjoinReceiverRelayTimeoutException($"No configured OHTTP relays are currently available for invoice '{invoiceId}'.");
+        throw new PayjoinReceiverRelayTimeoutException($"No configured OHTTP relays are currently available for payjoin session '{sessionId}'.");
     }
 
     private static void RemoveRelay(List<SystemUri> remainingRelays, SystemUri relayUrl)

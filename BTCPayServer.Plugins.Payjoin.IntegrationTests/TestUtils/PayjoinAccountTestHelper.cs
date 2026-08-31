@@ -20,19 +20,24 @@ internal static class PayjoinAccountTestHelper
         await tester.StartAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
 
         var network = GetBitcoinNetwork(tester);
-        var merchant = await CreateInitializedAccountAsync(tester, network, confirmFunding, initialFundingUtxoCount, cancellationToken).ConfigureAwait(true);
+        var merchant = await CreateInitializedAccountAsync(tester, network, confirmFunding, initialFundingUtxoCount, cancellationToken: cancellationToken).ConfigureAwait(true);
 
         return new TestContext(network, merchant);
     }
 
-    public static async Task<TestAccount> CreateInitializedAccountAsync(ServerTester tester, BTCPayNetwork network, bool confirmFunding = true, int initialFundingUtxoCount = DefaultInitialFundingUtxoCount, CancellationToken cancellationToken = default)
+    /// <param name="serverHoldsKeys">
+    /// False registers the wallet without giving NBXplorer the private keys, which is what a cold
+    /// wallet, a hardware device or a multisig group looks like to BTCPay. The test still holds the
+    /// seed through the account's own response, so it can sign the way an operator would.
+    /// </param>
+    public static async Task<TestAccount> CreateInitializedAccountAsync(ServerTester tester, BTCPayNetwork network, bool confirmFunding = true, int initialFundingUtxoCount = DefaultInitialFundingUtxoCount, bool serverHoldsKeys = true, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tester);
         ArgumentNullException.ThrowIfNull(network);
 
         var user = tester.NewAccount();
         await user.GrantAccessAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
-        await user.RegisterDerivationSchemeAsync(PayjoinConstants.BitcoinCode, ScriptPubKeyType.Segwit, true).WaitAsync(cancellationToken).ConfigureAwait(true);
+        await user.RegisterDerivationSchemeAsync(PayjoinConstants.BitcoinCode, ScriptPubKeyType.Segwit, serverHoldsKeys).WaitAsync(cancellationToken).ConfigureAwait(true);
         await FundWalletAsync(user, network, initialFundingUtxoCount, cancellationToken).ConfigureAwait(true);
         if (confirmFunding)
         {

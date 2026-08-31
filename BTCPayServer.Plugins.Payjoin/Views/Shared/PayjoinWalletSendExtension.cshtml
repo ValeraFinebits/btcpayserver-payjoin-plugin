@@ -1,0 +1,70 @@
+@using BTCPayServer
+@using BTCPayServer.Plugins.Wallets.Views.ViewModels
+@using Microsoft.AspNetCore.Routing
+@model WalletSendModel
+@*
+    Injected into core's wallet send screen (onchain-wallet-send), inside its form. Core already
+    resolves a pasted BIP 21 URI server-side: LoadFromBIP21 sets PayJoinBIP21 whenever the URI
+    carries a pj= endpoint. That covers both payjoin versions, but core's own flow speaks the
+    synchronous v1 protocol, so a v2 endpoint would fail there and the payment would go out plain.
+
+    This block adds the v2 route as another submit button on the same form, so the operator keeps
+    coin selection, labels, fee-rate presets, the balance and the fiat conversion.
+*@
+@{
+    // A BIP 77 pj endpoint carries its session parameters in a URI fragment. A v1 endpoint has none.
+    var isAsyncPayjoin = false;
+    if (!string.IsNullOrEmpty(Model?.PayJoinBIP21) &&
+        System.Text.RegularExpressions.Regex.Match(Model.PayJoinBIP21, "[?&]pj=([^&]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase) is { Success: true } pjMatch)
+    {
+        isAsyncPayjoin = System.Uri.UnescapeDataString(pjMatch.Groups[1].Value).Contains('#', StringComparison.Ordinal);
+    }
+
+    var storeId = ViewContext.RouteData.Values["walletId"] as string is { } walletIdValue &&
+                  WalletId.TryParse(walletIdValue, out var walletId)
+        ? walletId.StoreId
+        : null;
+}
+
+@if (isAsyncPayjoin && storeId is not null)
+{
+    <div class="alert alert-info mt-3" id="payjoin-async-offer">
+        <p text-translate="true">
+            This destination supports async payjoin. The receiver does not have to be online now:
+            the payjoin completes in the background, and the plain payment goes out on its own if
+            it does not. A wallet that cannot sign on the server asks for a second signature when
+            the receiver answers.
+        </p>
+        @* Our own copy of the URI. The script below clears core's PayJoinBIP21 field to disarm
+           the v1 flow, and that field is inside the same form this button submits, so the URI
+           has to travel under a name core does not read. *@
+        <input type="hidden" name="AsyncPayjoinBip21" value="@Model!.PayJoinBIP21" />
+        <button type="submit" class="btn btn-primary" name="command" value="payjoin-async"
+                asp-controller="UIPayjoinSender" asp-action="SendFromWallet" asp-route-storeId="@storeId"
+                formmethod="post" text-translate="true">
+            Send as async payjoin
+        </button>
+    </div>
+    <script>
+        // Core renders its own payjoin field for any pj= endpoint. It drives the v1 request,
+        // which this endpoint does not answer, so core's Sign button would fail and fall back to
+        // a plain payment. The field is bound to a string, so it renders as a text input however
+        // it is styled: clear the value rather than unchecking anything, or it still submits.
+        (function () {
+            var field = document.getElementById('PayJoinBIP21');
+            if (!field) {
+                return;
+            }
+
+            field.value = '';
+            if (field.type === 'checkbox') {
+                field.checked = false;
+            }
+
+            var row = field.closest('div');
+            if (row) {
+                row.classList.add('d-none');
+            }
+        })();
+    </script>
+}

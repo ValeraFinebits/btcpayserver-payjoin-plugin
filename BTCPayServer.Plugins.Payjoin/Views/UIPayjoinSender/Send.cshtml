@@ -1,0 +1,105 @@
+@using BTCPayServer.Abstractions.Extensions
+@using BTCPayServer.Abstractions.Models
+@using Microsoft.AspNetCore.Mvc.TagHelpers
+@model BTCPayServer.Plugins.Payjoin.Models.PayjoinSenderViewModel
+@{
+    ViewData.SetLayoutModel(new LayoutModel("PayjoinSend", "Async Payjoin Payments").SetCategory(WellKnownCategories.Store));
+}
+
+<div class="sticky-header">
+    <h2 text-translate="true">Async Payjoin Payments</h2>
+    <a asp-area="Wallets" asp-controller="UIWallets" asp-action="WalletSend"
+       asp-route-walletId="@Model.WalletId" class="btn btn-primary" text-translate="true">
+        Send
+    </a>
+</div>
+
+<partial name="_StatusMessage" />
+
+<div class="row">
+    <div class="col-xxl-constrain col-xl-8">
+        <p class="text-muted" text-translate="true">
+            Payments start on the wallet send screen: paste a BIP 21 URI that advertises payjoin
+            support, and the async option appears there. This page follows the sessions those
+            payments run in. A session delivers the payjoin when the receiver responds, and it
+            broadcasts the plain payment when the payjoin window closes. Nothing is broadcast
+            before one of the two happens. A payment can be cancelled until its signed original
+            has been shared with the receiver; after that it can only be paid now, without the
+            payjoin. A hot wallet signs on the server. Any other wallet signs
+            on the usual BTCPay screen, with the vault, a hardware device, a seed or the other
+            multisig signers, and it signs a second time when the receiver returns a proposal.
+        </p>
+    </div>
+</div>
+
+@if (Model.Sessions.Count == 0)
+{
+    <p class="text-secondary" text-translate="true">No async payjoin payments yet.</p>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th text-translate="true">Created</th>
+                    <th text-translate="true">Destination</th>
+                    <th class="text-end" text-translate="true">Amount (sats)</th>
+                    <th text-translate="true">Status</th>
+                    <th text-translate="true">Transaction</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var session in Model.Sessions)
+                {
+                    <tr>
+                        <td>@session.CreatedAt.ToBrowserDate()</td>
+                        <td class="font-monospace text-truncate" style="max-width:16ch">@session.DestinationAddress</td>
+                        <td class="text-end">@session.AmountSats</td>
+                        <td>
+                            @session.Status
+                            @if (session.PendingTransactionId is not null && Model.WalletId is not null)
+                            {
+                                <div class="small">
+                                    <a asp-area="Wallets" asp-controller="UIWallets" asp-action="ViewPendingTransaction"
+                                       asp-route-walletId="@Model.WalletId"
+                                       asp-route-pendingTransactionId="@session.PendingTransactionId"
+                                       text-translate="true">Sign the transaction</a>
+                                    <div class="text-muted" text-translate="true">
+                                        Sign only. This session broadcasts the transaction itself, so
+                                        the broadcast button on that screen is not necessary.
+                                    </div>
+                                </div>
+                            }
+                            @if (session.FailureMessage is not null)
+                            {
+                                <div class="text-muted small">@session.FailureMessage</div>
+                            }
+                        </td>
+                        <td class="font-monospace text-truncate" style="max-width:16ch">@(session.BroadcastTransactionId ?? "-")</td>
+                        <td class="text-end">
+                            @if (session.CanCancel && !session.PaymentShared)
+                            {
+                                <form method="post" asp-action="Cancel" asp-route-storeId="@Model.StoreId" asp-route-senderSessionId="@session.SenderSessionId">
+                                    <button type="submit" class="btn btn-link btn-sm p-0" text-translate="true">Cancel the payment</button>
+                                    <div class="text-muted small" text-translate="true">Nothing is broadcast. The coins are free again.</div>
+                                </form>
+                            }
+                            else if (session.CanCancel)
+                            {
+                                <form method="post" asp-action="Cancel" asp-route-storeId="@Model.StoreId" asp-route-senderSessionId="@session.SenderSessionId">
+                                    <button type="submit" class="btn btn-link btn-sm p-0" text-translate="true">Pay now without payjoin</button>
+                                    <div class="text-muted small" text-translate="true">
+                                        The receiver already holds the signed payment, so it cannot be cancelled.
+                                        This sends it now as a plain transaction instead of waiting for the payjoin.
+                                    </div>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}

@@ -23,6 +23,12 @@ public class PayjoinPluginDbContext : DbContext
 
     internal DbSet<PayjoinReceiverSeenInputData> ReceiverSeenInputs { get; set; } = null!;
 
+    internal DbSet<PayjoinSenderSessionData> SenderSessions { get; set; } = null!;
+
+    internal DbSet<PayjoinSenderSessionEventData> SenderSessionEvents { get; set; } = null!;
+
+    internal DbSet<PayjoinSenderSessionOutpointData> SenderSessionOutpoints { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         System.ArgumentNullException.ThrowIfNull(modelBuilder);

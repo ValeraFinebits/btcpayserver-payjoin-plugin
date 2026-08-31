@@ -10,4 +10,7 @@
     <li class="nav-item nav-item-sub" permission="@Policies.CanViewStoreSettings">
         <a asp-area="" asp-controller="UIStorePayjoin" asp-action="Settings" asp-route-storeId="@Model.Store?.Id" layout-menu-item="Payjoin" text-translate="true">Async Payjoin</a>
     </li>
+    <li class="nav-item nav-item-sub" permission="@Policies.CanModifyStoreSettings">
+        <a asp-area="" asp-controller="UIPayjoinSender" asp-action="Send" asp-route-storeId="@Model.Store?.Id" layout-menu-item="PayjoinSend" text-translate="true">Send Async Payjoin</a>
+    </li>
 }
