@@ -81,11 +81,17 @@ public class UIPayJoinControllerTests
     }
 
     [Fact]
-    public async Task RunTestPaymentThrowsWhenRequestIsNull()
+    public async Task RunTestPaymentReturnsBadRequestWhenRequestIsNull()
     {
         using var controller = CreateController();
 
-        await Assert.ThrowsAsync<ArgumentNullException>(() => controller.RunTestPayment(null!, TestContext.Current.CancellationToken));
+        var result = await controller.RunTestPayment(null!, TestContext.Current.CancellationToken);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var response = Assert.IsType<RunTestPaymentResponse>(badRequest.Value);
+        Assert.False(response.Succeeded);
+        Assert.Contains("invoiceId", response.Message, StringComparison.Ordinal);
+        Assert.Null(response.TransactionId);
     }
 
     [Fact]
