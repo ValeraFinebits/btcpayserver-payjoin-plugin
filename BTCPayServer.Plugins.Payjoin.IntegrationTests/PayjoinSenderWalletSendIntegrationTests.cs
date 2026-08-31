@@ -25,6 +25,8 @@ namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
 [Collection(nameof(NonParallelizableCollectionDefinition))]
 public class PayjoinSenderWalletSendIntegrationTests : UnitTestBase
 {
+    private static readonly BTCPayServer.Abstractions.RequestBaseUrl TestRequestBaseUrl = BTCPayServer.Abstractions.RequestBaseUrl.FromUrl(new Uri("http://127.0.0.1/"));
+
     public PayjoinSenderWalletSendIntegrationTests(ITestOutputHelper helper) : base(helper)
     {
     }
@@ -153,6 +155,139 @@ public class PayjoinSenderWalletSendIntegrationTests : UnitTestBase
         var redirect = Assert.IsType<RedirectToActionResult>(posted);
         Assert.Equal("WalletSend", redirect.ActionName);
         Assert.Empty(tester.PayTester.GetService<PayjoinSenderSessionStore>().GetSessions(payer.StoreId));
+        var pending = await tester.PayTester.GetService<BTCPayServer.HostedServices.PendingTransactionService>()
+            .GetPendingTransactions(PayjoinConstants.BitcoinCode, payer.StoreId)
+            .WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.Empty(pending);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task AnUnfundablePaymentIsRefusedWithAnError()
+    {
+        // The wallet cannot fund the amount plus its fee. That is an answer for the operator,
+        // not an exception: an exception escaping a plugin action makes core disable the plugin
+        // and restart the host.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, payer.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var invoice = await context.Merchant.BitPay.CreateInvoiceAsync(new NBitpayClient.Invoice
+        {
+            Price = 1_000m,
+            Currency = PayjoinConstants.BitcoinCode,
+            FullNotifications = true
+        }).WaitAsync(cts.Token).ConfigureAwait(true);
+        var bip21Response = await PayjoinIntegrationTestSupport.GetBip21Async(tester, invoice.Id, cts.Token).ConfigureAwait(true);
+        var uriBuilder = new BitcoinUrlBuilder(bip21Response.Bip21, context.Network.NBitcoinNetwork);
+        var sendModel = new WalletSendModel
+        {
+            FeeSatoshiPerByte = 5m,
+            Outputs =
+            [
+                new WalletSendModel.TransactionOutput
+                {
+                    DestinationAddress = uriBuilder.Address!.ToString(),
+                    Amount = uriBuilder.Amount!.ToDecimal(MoneyUnit.BTC)
+                }
+            ]
+        };
+
+        using var controller = CreateController(tester);
+        var posted = await controller.SendFromWallet(payer.StoreId, sendModel, bip21Response.Bip21, cts.Token).ConfigureAwait(true);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(posted);
+        Assert.Equal("WalletSend", redirect.ActionName);
+        Assert.Empty(tester.PayTester.GetService<PayjoinSenderSessionStore>().GetSessions(payer.StoreId));
+        var pending = await tester.PayTester.GetService<BTCPayServer.HostedServices.PendingTransactionService>()
+            .GetPendingTransactions(PayjoinConstants.BitcoinCode, payer.StoreId)
+            .WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.Empty(pending);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task CancellingAnUnsharedHotSessionDropsThePayment()
+    {
+        // Before the signed original has been posted to the directory nobody else holds it, so
+        // cancel means cancel: nothing is broadcast and the coins are free again.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, payer.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        // Keep the poller from posting the original, so the session is still unshared when the
+        // operator cancels.
+        var poller = tester.PayTester.ServiceProvider
+            .GetServices<Microsoft.Extensions.Hosting.IHostedService>()
+            .OfType<PayjoinSenderPoller>()
+            .Single();
+        await poller.StopAsync(cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var senderService = tester.PayTester.GetService<PayjoinSenderService>();
+        var started = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, selectedInputs: null, cts.Token).ConfigureAwait(true);
+        Assert.True(started.Success, started.Error);
+        var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();
+        Assert.NotEmpty(senderSessionStore.GetOutpointsHeldByLiveSessions(payer.StoreId));
+
+        using var controller = CreateController(tester);
+        var cancelled = await controller.Cancel(payer.StoreId, started.SenderSessionId!, cts.Token).ConfigureAwait(true);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(cancelled);
+        Assert.Equal("Send", redirect.ActionName);
+        Assert.True(senderSessionStore.TryGetSession(started.SenderSessionId!, out var session));
+        Assert.Equal(PayjoinSenderSessionStatus.Failed, session!.Status);
+        Assert.Null(session.BroadcastTransactionId);
+        // Coins free again: neither the plugin's own guard nor core's exclusion holds them.
+        Assert.Empty(senderSessionStore.GetOutpointsHeldByLiveSessions(payer.StoreId));
+        var pending = await tester.PayTester.GetService<BTCPayServer.HostedServices.PendingTransactionService>()
+            .GetPendingTransactions(PayjoinConstants.BitcoinCode, payer.StoreId)
+            .WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.Empty(pending);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task CancellingASessionAwaitingItsFirstSignatureDropsThePayment()
+    {
+        // A wallet that cannot sign on the server: the original is only a signing request, so
+        // cancelling withdraws the request, broadcasts nothing and frees the coins.
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(
+            tester,
+            context.Network,
+            serverHoldsKeys: false,
+            cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, payer.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var senderService = tester.PayTester.GetService<PayjoinSenderService>();
+        var started = await senderService.StartAsync(payer.StoreId, bip21Response.Bip21, feeRateSatPerVb: 5m, TestRequestBaseUrl, selectedInputs: null, cts.Token).ConfigureAwait(true);
+        Assert.True(started.Success, started.Error);
+        Assert.NotNull(started.PendingTransactionId);
+
+        using var controller = CreateController(tester);
+        var cancelled = await controller.Cancel(payer.StoreId, started.SenderSessionId!, cts.Token).ConfigureAwait(true);
+
+        Assert.IsType<RedirectToActionResult>(cancelled);
+        var senderSessionStore = tester.PayTester.GetService<PayjoinSenderSessionStore>();
+        Assert.True(senderSessionStore.TryGetSession(started.SenderSessionId!, out var session));
+        Assert.Equal(PayjoinSenderSessionStatus.Failed, session!.Status);
+        Assert.Null(session.BroadcastTransactionId);
+        Assert.Empty(senderSessionStore.GetOutpointsHeldByLiveSessions(payer.StoreId));
         var pending = await tester.PayTester.GetService<BTCPayServer.HostedServices.PendingTransactionService>()
             .GetPendingTransactions(PayjoinConstants.BitcoinCode, payer.StoreId)
             .WaitAsync(cts.Token).ConfigureAwait(true);

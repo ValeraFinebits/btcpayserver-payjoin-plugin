@@ -230,7 +230,10 @@ internal sealed class PayjoinSenderService
             ? new FeeRate(explicitRate)
             : await _feeProviderFactory.CreateFeeProvider(network).GetFeeRateAsync().ConfigureAwait(false);
 
-        var psbtResponse = await explorerClient.CreatePSBTAsync(
+        CreatePSBTResponse? psbtResponse;
+        try
+        {
+            psbtResponse = await explorerClient.CreatePSBTAsync(
             derivationScheme.AccountDerivation,
             new CreatePSBTRequest
             {
@@ -256,6 +259,15 @@ internal sealed class PayjoinSenderService
                 ExcludeOutpoints = await GetCommittedOutpointsAsync(storeId, network).ConfigureAwait(false)
             },
             cancellationToken).ConfigureAwait(false);
+        }
+        catch (NBXplorerException ex)
+        {
+            // The wallet cannot fund this payment (most often "Not enough funds for doing this
+            // transaction"). That is an answer for the operator, not an exception for the host.
+            return PayjoinSenderStartResult.Failed(
+                $"The wallet could not build the payment: {ex.Error?.Message ?? ex.Message}");
+        }
+
         if (psbtResponse is null)
         {
             return PayjoinSenderStartResult.Failed("The wallet could not create the transaction.");

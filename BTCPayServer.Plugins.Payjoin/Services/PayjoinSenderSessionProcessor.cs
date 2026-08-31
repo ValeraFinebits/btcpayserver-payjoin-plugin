@@ -22,6 +22,9 @@ internal interface IPayjoinSenderSessionProcessor
     Task ProcessTickAsync(CancellationToken stoppingToken);
 
     Task<PayjoinSenderCancelResult> CancelAsync(string storeId, string senderSessionId, CancellationToken cancellationToken);
+
+    /// <summary>True once the signed original has been posted to the directory.</summary>
+    bool HasBeenShared(PayjoinSenderSessionState session);
 }
 
 /// <summary>The outcome of an operator's request to stop a session.</summary>
@@ -182,15 +185,22 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         // has decided, so nothing further should be asked of them.
         await CancelPendingTransactionAsync(session).ConfigureAwait(false);
 
-        // A session with no signed original has nothing to broadcast: the coins were never
-        // committed to the network, so the payment simply does not happen.
-        if (session.OriginalTransactionHex is null)
+        // Whether the payment can still be dropped turns on one fact: has the signed original
+        // left this server? Before it is posted to the directory nobody else holds it, so cancel
+        // means cancel — nothing is broadcast and the coins are free again. That covers a
+        // session still waiting for its first signature and a hot session the poller has not
+        // posted yet. Once the original has been posted, the receiver holds a fully signed
+        // transaction it can broadcast at any time; "dropped" would then misdescribe coins that
+        // are not free, so the only honest action left is to make the payment now, without the
+        // payjoin.
+        if (session.OriginalTransactionHex is null || !HasBeenShared(session))
         {
+            PayjoinSenderSessionCloser.TryClose(_senderSessionStore.CreatePersister(session.SenderSessionId));
             _senderSessionStore.CompleteSession(
                 session.SenderSessionId,
                 PayjoinSenderSessionStatus.Failed,
                 broadcastTransactionId: null,
-                "the operator cancelled the payment before it was signed");
+                "the operator cancelled the payment before it was shared with the receiver");
             await PayjoinSenderSessionResourceReleaser
                 .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
             return PayjoinSenderCancelResult.Dropped();
@@ -227,6 +237,32 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         await PayjoinSenderSessionResourceReleaser
             .ReleaseAsync(_pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
         return PayjoinSenderCancelResult.Broadcast(fallbackTxId);
+    }
+
+    /// <summary>
+    /// True once the signed original has been posted to the directory. The library's replay
+    /// answers this exactly: a session still in WithReplyKey has built the request but never
+    /// sent it; every later state means the receiver may hold the original.
+    /// </summary>
+    public bool HasBeenShared(PayjoinSenderSessionState session)
+    {
+        if (session.Events.Length == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var replay = PayjoinMethods.ReplaySenderEventLog(_senderSessionStore.CreatePersister(session.SenderSessionId));
+            using var state = replay.State();
+            return state is not SendSession.WithReplyKey;
+        }
+        catch (Exception ex) when (ex is SenderReplayException or SenderPersistedException or UniffiException)
+        {
+            // A log that cannot be replayed cannot prove the original stayed home; assume the
+            // receiver may have it and keep the payment.
+            return true;
+        }
     }
 
     private async Task CancelPendingTransactionAsync(PayjoinSenderSessionState session)

@@ -28,9 +28,14 @@ public class PayjoinSenderSessionViewModel
     // The view links it to BTCPay's own pending-transaction screen.
     public string? PendingTransactionId { get; init; }
 
-    // A live session can be stopped. Stopping does not stop the payment: whenever the original
-    // is signed, it goes out as a plain transaction instead of a payjoin.
+    // A live session can be stopped. What stopping means depends on PaymentShared.
     public required bool CanCancel { get; init; }
+
+    // True once the signed original has been posted to the receiver's directory. Before that,
+    // stopping drops the payment and frees the coins. After it, the receiver holds a signed
+    // transaction it can broadcast at any time, so the only honest action is to make the
+    // payment now without the payjoin.
+    public bool PaymentShared { get; init; }
 
     public string? BroadcastTransactionId { get; init; }
 

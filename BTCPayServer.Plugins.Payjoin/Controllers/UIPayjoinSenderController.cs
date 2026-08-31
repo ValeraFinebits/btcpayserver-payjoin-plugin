@@ -22,6 +22,7 @@ namespace BTCPayServer.Plugins.Payjoin.Controllers;
 // Authentication only at the class level. ASP.NET Core combines class and action policies with
 // AND, so a policy here would be added to every action's own requirement rather than replaced
 // by it; each action states its policy itself.
+[PayjoinExceptionFilter(PayjoinErrorShape.Redirect)]
 [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie)]
 public class UIPayjoinSenderController : Controller
 {
@@ -244,8 +245,8 @@ public class UIPayjoinSenderController : Controller
         {
             Severity = StatusMessageModel.StatusSeverity.Success,
             Message = result.BroadcastTransactionId is null
-                ? "The payjoin session ended. Nothing was broadcast, so the coins are free again."
-                : $"The payjoin session ended and the plain payment was broadcast as {result.BroadcastTransactionId}."
+                ? "The payment was cancelled. Nothing was broadcast, so the coins are free again."
+                : $"The payjoin was skipped and the plain payment was broadcast as {result.BroadcastTransactionId}."
         });
         return RedirectToAction(nameof(Send), new { storeId });
     }
@@ -277,6 +278,8 @@ public class UIPayjoinSenderController : Controller
                         : null,
                     CanCancel = x.Status is PayjoinSenderSessionStatus.Pending
                         or PayjoinSenderSessionStatus.AwaitingSignature,
+                    PaymentShared = (x.Status is PayjoinSenderSessionStatus.Pending
+                        or PayjoinSenderSessionStatus.AwaitingSignature) && _senderSessionProcessor.HasBeenShared(x),
                     BroadcastTransactionId = x.BroadcastTransactionId,
                     FailureMessage = x.FailureMessage,
                     CreatedAt = x.CreatedAt
