@@ -183,6 +183,15 @@ public sealed class PayjoinUriSessionService
                 return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, "payjoin URI does not advertise payjoin support");
             }
 
+            if (!HasExpectedAmount(pjUri.AmountSats(), due))
+            {
+                return LogExpectedFallbackAndReturnBip21(
+                    bip21,
+                    invoiceId,
+                    PayjoinAvailabilityStatus.TemporarilyUnavailable,
+                    "the receiver session expects a different amount than the invoice now asks for");
+            }
+
             return PayjoinUriResult.Active(payjoinUri);
         }
         catch (Exception e) when (e is ReceiverReplayException or UniffiException)
@@ -253,6 +262,17 @@ public sealed class PayjoinUriSessionService
         {
             await _accountingBridgeService.ResetForNewSessionAsync(invoiceId, effectiveInvoiceValueSats, monitoringExpiresAt, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    internal static bool HasExpectedAmount(ulong? amountSats, decimal due)
+    {
+        if (amountSats is null)
+        {
+            return false;
+        }
+
+        var dueSats = Money.Coins(due).Satoshi;
+        return dueSats >= 0 && amountSats.Value == (ulong)dueSats;
     }
 
     internal static bool HasSupportedPayjoinEndpoint(string paymentUrl)
