@@ -4,7 +4,10 @@ using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
+using BTCPayServer.Data;
+using Payjoin;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -56,6 +59,27 @@ public class PayjoinSenderSessionStoreTests
     }
 
     [Fact]
+    public void CompetingFfiTransitionsRejectTheStaleSaveAndRemainReplayable()
+    {
+        using var testContext = new RelationalPluginTestContext();
+        var store = testContext.CreateSenderStore();
+        PayjoinSenderSafetyTests.CreateSession(store, "ffi-race");
+        var first = store.CreatePersister("ffi-race");
+        var stale = store.CreatePersister("ffi-race");
+        using var firstReplay = PayjoinMethods.ReplaySenderEventLog(first);
+        using var staleReplay = PayjoinMethods.ReplaySenderEventLog(stale);
+        using var firstState = firstReplay.State();
+        using var staleState = staleReplay.State();
+        using var winner = Assert.IsType<SendSession.WithReplyKey>(firstState).Inner.Cancel();
+        using var loser = Assert.IsType<SendSession.WithReplyKey>(staleState).Inner.Cancel();
+        using var saved = winner.Save(first);
+        Assert.Throws<SenderPersistedException.Storage>(() => loser.Save(stale));
+        using var replay = PayjoinMethods.ReplaySenderEventLog(store.CreatePersister("ffi-race"));
+        using var state = replay.State();
+        Assert.IsType<SendSession.SenderPendingFallback>(state);
+    }
+
+    [Fact]
     public void ACompletedSessionRejectsAnAppendEvenFromAnAlreadyLoadedPersister()
     {
         using var testContext = new TestContext();
@@ -65,6 +89,25 @@ public class PayjoinSenderSessionStoreTests
         store.CompleteSession("terminal", PayjoinSenderSessionStatus.Failed, null, "cancelled");
         Assert.Throws<DbUpdateConcurrencyException>(() => persister.Save("late-event"));
         Assert.Equal(["bootstrap-event"], persister.Load());
+    }
+
+    [Fact]
+    public async Task APreviousSigningRoundCannotBeUsedAsTheCurrentProposal()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var original = CreateAwaitingSignatureSession(store, "stale-signature", "round-A");
+        store.StartSignedSession("stale-signature", ["bootstrap"], SignedOriginalHex);
+        store.AwaitSignature("stale-signature", "round-B");
+        var handler = new PayjoinSenderSignatureHandler(store, null!, null!, null!, NullLogger<PayjoinSenderSignatureHandler>.Instance);
+        // No network or signing dependencies are available: stale work must return before use.
+        await handler.HandleSignedAsync(original, new PendingTransaction
+        {
+            Id = "round-A", State = PendingTransactionState.Signed
+        }, CancellationToken.None);
+        Assert.True(store.TryGetSession("stale-signature", out var current));
+        Assert.Equal("round-B", current!.PendingTransactionId);
+        Assert.Equal(PayjoinSenderSessionStatus.AwaitingSignature, current.Status);
     }
 
     [Fact]
