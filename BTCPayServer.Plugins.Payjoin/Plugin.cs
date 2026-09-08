@@ -23,6 +23,7 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddUIExtension("store-nav", "PayjoinStoreNavExtension");
         applicationBuilder.AddUIExtension("checkout-bitcoin-post-content", "PayJoinBitcoinCheckoutPostContent");
         applicationBuilder.AddUIExtension("checkout-end", "PayJoinBitcoinCheckoutEnd");
+        applicationBuilder.AddUIExtension("onchain-wallet-send", "PayjoinWalletSendExtension");
         applicationBuilder.AddSingleton<PayjoinAvailabilityService>();
         applicationBuilder.AddSingleton<PayjoinSessionUriReader>();
         applicationBuilder.AddSingleton<PayjoinBitcoinCheckoutModelExtension>();
