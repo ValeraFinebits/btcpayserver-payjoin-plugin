@@ -283,6 +283,153 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.ToTable("ReceiverSessionEvents", "BTCPayServer.Plugins.Payjoin");
                 });
 
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionData", b =>
+                {
+                    b.Property<string>("SenderSessionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("AmountSats")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Bip21")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("BroadcastTransactionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("CoinReservationTransactionId")
+                        .IsConcurrencyToken()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DestinationAddress")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<long>("FeeRateSatPerKwu")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("PaymentExposed")
+                        .IsConcurrencyToken()
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("OriginalTransactionHex")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OriginalTransactionId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.PrimitiveCollection<string[]>("OutpointsUsed")
+                        .IsRequired()
+                        .HasColumnType("text[]");
+
+                    b.Property<string>("PendingTransactionId")
+                        .IsConcurrencyToken()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("RequestBaseUrl")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Status")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer");
+
+                    b.Property<string>("StoreId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("SenderSessionId")
+                        .HasName("PK_SenderSessions");
+
+                    b.HasIndex("OriginalTransactionId")
+                        .HasDatabaseName("IX_SenderSessions_OriginalTransactionId");
+
+                    b.HasIndex("PendingTransactionId")
+                        .HasDatabaseName("IX_SenderSessions_PendingTransactionId");
+
+                    b.HasIndex("StoreId")
+                        .HasDatabaseName("IX_SenderSessions_StoreId");
+
+                    b.HasIndex("Status", "CreatedAt")
+                        .HasDatabaseName("IX_SenderSessions_Status_CreatedAt");
+
+                    b.HasIndex("StoreId", "Bip21")
+                        .IsUnique()
+                        .HasDatabaseName("IX_SenderSessions_Bip21_Live")
+                        .HasFilter("\"Status\" IN (0, 4)");
+
+                    b.ToTable("SenderSessions", "BTCPayServer.Plugins.Payjoin");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionEventData", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Event")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SenderSessionId")
+                        .IsRequired()
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id")
+                        .HasName("PK_SenderSessionEvents");
+
+                    b.HasIndex("SenderSessionId", "Sequence")
+                        .IsUnique()
+                        .HasDatabaseName("IX_SenderSessionEvents_SenderSessionId_Sequence");
+
+                    b.ToTable("SenderSessionEvents", "BTCPayServer.Plugins.Payjoin");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionOutpointData", b =>
+                {
+                    b.Property<string>("Outpoint")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("SenderSessionId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Outpoint")
+                        .HasName("PK_SenderSessionOutpoints");
+
+                    b.HasIndex("SenderSessionId")
+                        .HasDatabaseName("IX_SenderSessionOutpoints_SenderSessionId");
+
+                    b.ToTable("SenderSessionOutpoints", "BTCPayServer.Plugins.Payjoin");
+                });
+
             modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverInputReservationData", b =>
                 {
                     b.HasOne("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverSessionData", "Session")
@@ -307,11 +454,40 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Navigation("Session");
                 });
 
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionEventData", b =>
+                {
+                    b.HasOne("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionData", "Session")
+                        .WithMany("Events")
+                        .HasForeignKey("SenderSessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_SenderSessionEvents_SenderSessions_SenderSessionId");
+
+                    b.Navigation("Session");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionOutpointData", b =>
+                {
+                    b.HasOne("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionData", "Session")
+                        .WithMany()
+                        .HasForeignKey("SenderSessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_SenderSessionOutpoints_SenderSessions_SenderSessionId");
+
+                    b.Navigation("Session");
+                });
+
             modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinReceiverSessionData", b =>
                 {
                     b.Navigation("Events");
 
                     b.Navigation("InputReservations");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Plugins.Payjoin.Data.PayjoinSenderSessionData", b =>
+                {
+                    b.Navigation("Events");
                 });
 #pragma warning restore 612, 618
         }
