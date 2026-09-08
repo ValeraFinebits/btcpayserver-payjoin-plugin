@@ -18,13 +18,16 @@ public class PayjoinPluginSchemaTests
     }
 
     [Fact]
-    public void AttemptVersionRenameRequiresNoSchemaOperationsFromTheLastHistoricalMigration()
+    public void AttemptVersionRenameRequiresNoReceiverSchemaOperationsFromTheLastHistoricalMigration()
     {
         using var context = CreateDesignTimeContext();
         var migrations = context.GetService<IMigrationsAssembly>();
         var lastMigration = migrations.CreateMigration(migrations.Migrations.Last().Value, context.Database.ProviderName!);
         var previous = context.GetService<IModelRuntimeInitializer>().Initialize(lastMigration.TargetModel, designTime: true);
-        var current = context.GetService<IDesignTimeModel>().Model;
+        // The historical receiver migration predates the sender tables. Compare the receiver
+        // model here; CurrentModelMatchesMigrationSnapshot still checks the complete model.
+        using var receiverContext = new ReceiverOnlyDesignTimeContext();
+        var current = receiverContext.GetService<IDesignTimeModel>().Model;
         Assert.Empty(context.GetService<IMigrationsModelDiffer>().GetDifferences(previous.GetRelationalModel(), current.GetRelationalModel()));
         var version = context.Model.FindEntityType(typeof(PayjoinReceiverSessionData))!.FindProperty(nameof(PayjoinReceiverSessionData.AttemptVersion))!;
         Assert.Equal("DestructiveWriteStamp", version.GetColumnName());
@@ -60,13 +63,22 @@ public class PayjoinPluginSchemaTests
         AssertForeignKey(receiverInputReservations, receiverSessions, PayjoinPluginDbSchema.ReceiverInputReservationsSessionForeignKey, DeleteBehavior.Cascade, nameof(PayjoinReceiverInputReservationData.InvoiceId));
     }
 
-    private static PayjoinPluginDbContext CreateDesignTimeContext()
-    {
-        var options = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
+    private static PayjoinPluginDbContext CreateDesignTimeContext() => new(CreateDesignTimeOptions(), designTime: true);
+
+    private static DbContextOptions<PayjoinPluginDbContext> CreateDesignTimeOptions() =>
+        new DbContextOptionsBuilder<PayjoinPluginDbContext>()
             .UseNpgsql("Host=127.0.0.1;Database=designtimebtcpay;Username=postgres")
             .Options;
 
-        return new PayjoinPluginDbContext(options, designTime: true);
+    private sealed class ReceiverOnlyDesignTimeContext() : PayjoinPluginDbContext(CreateDesignTimeOptions(), designTime: true)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+            modelBuilder.Ignore<PayjoinSenderSessionEventData>();
+            modelBuilder.Ignore<PayjoinSenderSessionOutpointData>();
+            modelBuilder.Ignore<PayjoinSenderSessionData>();
+        }
     }
 
     private static IEntityType AssertEntity<TEntity>(IModel model, string tableName)

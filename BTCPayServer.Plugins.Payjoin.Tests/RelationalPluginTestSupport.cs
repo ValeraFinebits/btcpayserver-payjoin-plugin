@@ -22,6 +22,7 @@ internal sealed class RelationalPluginTestContext : IDisposable
 
     public PayjoinReceiverSessionStore CreateStore(IPayjoinInvoiceEventPublisher? invoiceEvents = null) =>
         new(_dbContextFactory, _uniqueConstraintViolationDetector, invoiceEvents: invoiceEvents);
+    public PayjoinSenderSessionStore CreateSenderStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
     public PayjoinReceiverSessionStore CreateStore(ILogger<PayjoinReceiverSessionStore> logger) =>
         new(_dbContextFactory, _uniqueConstraintViolationDetector, logger: logger);
@@ -53,6 +54,12 @@ internal sealed class RelationalPluginTestContext : IDisposable
     {
         get => _dbContextFactory.BeforeNextSaveChanges;
         set => _dbContextFactory.BeforeNextSaveChanges = value;
+    }
+
+    public Action? BeforeSaveChanges
+    {
+        get => _dbContextFactory.BeforeSaveChanges;
+        set => _dbContextFactory.BeforeSaveChanges = value;
     }
 
     public void BreakDatabase() => _dbContextFactory.Dispose();
@@ -104,6 +111,7 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
     }
 
     public bool FailSaveChanges { get; set; }
+    public Action? BeforeSaveChanges { get; set; }
 
     public Action<string>? OnReaderExecuting { get; set; }
 
@@ -191,9 +199,10 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
 
         private void PrepareSaveChanges()
         {
-            var beforeSaveChanges = _factory.BeforeNextSaveChanges;
+            var beforeNextSaveChanges = _factory.BeforeNextSaveChanges;
             _factory.BeforeNextSaveChanges = null;
-            beforeSaveChanges?.Invoke();
+            beforeNextSaveChanges?.Invoke();
+            _factory.BeforeSaveChanges?.Invoke();
 
             if (_factory.FailSaveChanges)
             {
