@@ -84,6 +84,7 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton(provider => new PayjoinSenderSessionStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
             provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+        applicationBuilder.AddSingleton<PayjoinSenderService>();
         applicationBuilder.AddHostedService<PluginMigrationRunner>();
         applicationBuilder.AddHostedService<PayjoinInvoiceEventHostedService>();
         applicationBuilder.AddHostedService(provider => new PayjoinReceiverPoller(
