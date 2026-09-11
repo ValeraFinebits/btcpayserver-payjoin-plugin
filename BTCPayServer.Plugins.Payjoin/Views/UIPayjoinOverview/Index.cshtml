@@ -13,6 +13,20 @@
         PayjoinCheckoutMode.PayjoinV1 => StringLocalizer["Payjoin v1 (BIP 78)"].Value,
         _ => StringLocalizer["Standard Bitcoin"].Value
     };
+
+    string ReceiverInputsLabel(bool? hasConfirmedReceiverInputs) => hasConfirmedReceiverInputs switch
+    {
+        true => StringLocalizer["Present"].Value,
+        false => StringLocalizer["Pending"].Value,
+        null => StringLocalizer["Not checked"].Value
+    };
+
+    string ReceiverInputsBadgeClass(bool? hasConfirmedReceiverInputs) => hasConfirmedReceiverInputs switch
+    {
+        true => "bg-success",
+        false => "bg-warning text-dark",
+        null => "bg-secondary"
+    };
 }
 
 <div class="sticky-header">
@@ -41,7 +55,7 @@
                         <h3 class="mb-1">@(string.IsNullOrEmpty(store.StoreName) ? StringLocalizer["Unnamed Store"].Value : store.StoreName)</h3>
                         <div class="text-muted">@store.StoreId</div>
                     </div>
-                    <span class="badge @(store.Status.Severity == "success" ? "bg-success" : store.Status.Severity == "warning" ? "bg-warning text-dark" : "bg-danger")">
+                    <span class="badge @(store.Status.Severity == "success" ? "bg-success" : store.Status.Severity == "warning" ? "bg-warning text-dark" : store.Status.Severity == "secondary" ? "bg-secondary" : "bg-danger")">
                         @store.Status.Title
                     </span>
                 </div>
@@ -62,7 +76,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="text-muted mb-2" text-translate="true">Receiver inputs</div>
-                <div class="h4 mb-0">@(store.HasConfirmedReceiverInputs ? StringLocalizer["Present"].Value : StringLocalizer["Pending"].Value)</div>
+                <div class="h4 mb-0">@ReceiverInputsLabel(store.HasConfirmedReceiverInputs)</div>
             </div>
         </div>
     </div>
@@ -167,10 +181,10 @@ else if (store.Status.Severity == "danger")
                     </div>
                     <div class="d-flex align-items-center justify-content-between">
                         <span text-translate="true">Confirmed receiver inputs</span>
-                        <span class="badge @(store.HasConfirmedReceiverInputs ? "bg-success" : "bg-warning text-dark")">@(store.HasConfirmedReceiverInputs ? StringLocalizer["Present"].Value : StringLocalizer["Pending"].Value)</span>
+                        <span class="badge @ReceiverInputsBadgeClass(store.HasConfirmedReceiverInputs)">@ReceiverInputsLabel(store.HasConfirmedReceiverInputs)</span>
                     </div>
                 </div>
-                <p class="text-muted small mt-3 mb-0" text-translate="true">"Configured" only means the URL is set; actual availability is confirmed only by real payments.</p>
+                <p class="text-muted small mt-3 mb-0" text-translate="true">"Configured" only means the URL is set. This page does not probe the directory or the relays; runtime availability can still change and may cause a payment to fall back.</p>
             </div>
         </div>
     </div>

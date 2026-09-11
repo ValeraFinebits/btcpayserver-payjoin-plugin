@@ -15,12 +15,42 @@ public class UIPayjoinOverviewStatusTests
     }
 
     [Theory]
+    [InlineData(true, true, "built-in Payjoin v1")]
+    [InlineData(true, false, "standard Bitcoin payment")]
+    [InlineData(false, false, "BTC network is not available")]
+    public void DisabledStoreIsReportedAsDisabledRatherThanAsAMissingPrerequisite(
+        bool networkAvailable,
+        bool v1FallbackEffective,
+        string expectedMessageWording)
+    {
+        using var controller = CreateController();
+
+        var status = controller.ResolveStatus(
+            payjoinV2Enabled: false,
+            directoryConfigured: true,
+            relayConfigured: true,
+            networkAvailable: networkAvailable,
+            hasConfirmedReceiverInputs: false,
+            v1FallbackEffective: v1FallbackEffective);
+
+        Assert.Equal("secondary", status.Severity);
+        Assert.Equal("Disabled", status.Title);
+        Assert.Contains("disabled", status.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(expectedMessageWording, status.Message, StringComparison.Ordinal);
+        if (!networkAvailable)
+        {
+            Assert.DoesNotContain("standard Bitcoin payment", status.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public void PendingStatusNamesTheEffectiveFallback(bool v1FallbackEffective)
     {
         using var controller = CreateController();
         var status = controller.ResolveStatus(
+            payjoinV2Enabled: true,
             directoryConfigured: true,
             relayConfigured: true,
             networkAvailable: true,
@@ -38,6 +68,7 @@ public class UIPayjoinOverviewStatusTests
     {
         using var controller = CreateController();
         var status = controller.ResolveStatus(
+            payjoinV2Enabled: true,
             directoryConfigured: true,
             relayConfigured: true,
             networkAvailable: true,
@@ -71,6 +102,7 @@ public class UIPayjoinOverviewStatusTests
     {
         using var controller = CreateController();
         var status = controller.ResolveStatus(
+            payjoinV2Enabled: true,
             directoryConfigured: directoryConfigured,
             relayConfigured: relayConfigured,
             networkAvailable: networkAvailable,

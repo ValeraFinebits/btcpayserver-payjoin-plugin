@@ -73,6 +73,22 @@ public class UIPayjoinOverviewControllerTests
     }
 
     [Fact]
+    public async Task IndexDoesNotQueryReceiverInputsWhenAsyncPayjoinIsDisabled()
+    {
+        using var context = new TestContext(payjoinV2Enabled: false, registerBitcoinNetwork: true);
+        using var controller = context.CreateController();
+
+        var result = await controller.Index();
+
+        var view = Assert.IsType<ViewResult>(result);
+        var model = Assert.IsType<PayjoinOverviewViewModel>(view.Model);
+        var store = Assert.IsType<CurrentStorePayjoinStatusViewModel>(model.CurrentStore);
+        Assert.Equal("secondary", store.Status.Severity);
+        Assert.Equal("Disabled", store.Status.Title);
+        Assert.Null(store.HasConfirmedReceiverInputs);
+    }
+
+    [Fact]
     public async Task RetryBridgeRetriesAnEligibleBridgeAndRedirectsToTheOverview()
     {
         using var context = new TestContext();
@@ -132,10 +148,17 @@ public class UIPayjoinOverviewControllerTests
     {
         private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
         private readonly bool _canModifyStoreSettings;
+        private readonly bool _payjoinV2Enabled;
+        private readonly bool _registerBitcoinNetwork;
 
-        public TestContext(bool canModifyStoreSettings = true)
+        public TestContext(
+            bool canModifyStoreSettings = true,
+            bool payjoinV2Enabled = true,
+            bool registerBitcoinNetwork = false)
         {
             _canModifyStoreSettings = canModifyStoreSettings;
+            _payjoinV2Enabled = payjoinV2Enabled;
+            _registerBitcoinNetwork = registerBitcoinNetwork;
             BridgeService = new PayjoinAccountingBridgeService(_dbContextFactory, new PostgresPayjoinUniqueConstraintViolationDetector(), new PayjoinSessionBuildLock());
         }
 
@@ -162,12 +185,17 @@ public class UIPayjoinOverviewControllerTests
         public UIPayjoinOverviewController CreateController()
         {
             var storeSettingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
-            storeSettingsRepository.GetAsync(StoreId).Returns(Task.FromResult(new PayjoinStoreSettings()));
+            storeSettingsRepository.GetAsync(StoreId).Returns(Task.FromResult(new PayjoinStoreSettings
+            {
+                PayjoinV2Enabled = _payjoinV2Enabled
+            }));
 
-            // No BTC network is registered, so the overview reports the network as unavailable
-            // and never consults the availability service; the attention section is what these
-            // tests exercise.
-            var networkProvider = new BTCPayNetworkProvider([], new NBXplorerNetworkProvider(ChainName.Regtest), new Logs());
+            var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
+            var networks = _registerBitcoinNetwork
+                ? new BTCPayNetworkBase[] { CreateBitcoinNetwork(nbxplorerNetworkProvider) }
+                : [];
+            var networkProvider = new BTCPayNetworkProvider(networks, nbxplorerNetworkProvider, new Logs());
+
             var availabilityService = new PayjoinAvailabilityService(null!, null!, null!);
 
             var authorizationService = Substitute.For<IAuthorizationService>();
@@ -197,6 +225,23 @@ public class UIPayjoinOverviewControllerTests
                 TempData = new TempDataDictionary(httpContext, Substitute.For<ITempDataProvider>())
             };
             return controller;
+        }
+
+        private static BTCPayNetwork CreateBitcoinNetwork(NBXplorerNetworkProvider nbxplorerNetworkProvider)
+        {
+            return new BTCPayNetwork
+            {
+                CryptoCode = PayjoinConstants.BitcoinCode,
+                DisplayName = "Bitcoin",
+                NBXplorerNetwork = nbxplorerNetworkProvider.GetFromCryptoCode(PayjoinConstants.BitcoinCode),
+                CryptoImagePath = "imlegacy/bitcoin.svg",
+                LightningImagePath = "imlegacy/bitcoin-lightning.svg",
+                DefaultSettings = new BTCPayDefaultSettings(),
+                CoinType = new KeyPath("1'"),
+                SupportRBF = true,
+                SupportPayJoin = true,
+                VaultSupported = true
+            }.SetDefaultElectrumMapping(ChainName.Regtest);
         }
 
         public void Dispose()
