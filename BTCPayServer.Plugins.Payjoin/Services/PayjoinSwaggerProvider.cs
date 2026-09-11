@@ -196,6 +196,13 @@ public sealed class PayjoinSwaggerProvider : ISwaggerProvider
                 "type": "string",
                 "nullable": true,
                 "description": "Optional BTC derivation scheme used for receiver change outputs."
+              },
+              "maxFeeRateSatPerVb": {
+                "type": "integer",
+                "nullable": true,
+                "minimum": 1,
+                "maximum": 100000,
+                "description": "Optional upper bound, in sat/vB, for the fee rate a payjoin may reach. Null follows the network fee estimate."
               }
             }
           },
