@@ -686,6 +686,43 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
+    public async Task GetBip21FallsBackToPlainBip21AfterAPartialPayment()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        var invoiceRepository = tester.PayTester.GetService<InvoiceRepository>();
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        var invoiceBeforePayment = await invoiceRepository.GetInvoice(invoiceId).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.NotNull(invoiceBeforePayment);
+        var prompt = invoiceBeforePayment!.GetPaymentPrompt(paymentMethodId);
+        Assert.NotNull(prompt);
+
+        var fullDue = prompt!.Calculate().Due;
+        var destination = BitcoinAddress.Create(prompt.Destination, context.Network.NBitcoinNetwork);
+        await tester.ExplorerNode.SendToAddressAsync(destination, Money.Coins(fullDue / 2m), cts.Token).ConfigureAwait(true);
+        await tester.ExplorerNode.GenerateAsync(1, cts.Token).ConfigureAwait(true);
+
+        await AssertInvoiceStateEventuallyAsync(tester, invoiceId, InvoiceStatus.New, InvoiceExceptionStatus.PaidPartial, cts.Token).ConfigureAwait(true);
+
+        var afterPartialPayment = await PayjoinIntegrationTestSupport.GetBip21Async(tester, invoiceId, cts.Token).ConfigureAwait(true);
+
+        PayjoinIntegrationTestSupport.AssertPlainBip21(afterPartialPayment);
+        Assert.Equal(PayjoinAvailabilityStatus.TemporarilyUnavailable, afterPartialPayment.Status);
+        Assert.Equal(
+            "the receiver session expects a different amount than the invoice now asks for",
+            afterPartialPayment.UnavailableReason);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
     public async Task GetBip21DoesNotEnablePayjoinWhenStoreSettingDisabled()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
