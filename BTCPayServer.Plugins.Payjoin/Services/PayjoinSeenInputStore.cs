@@ -1,6 +1,8 @@
 using BTCPayServer.Plugins.Payjoin.Data;
 using Microsoft.EntityFrameworkCore;
+using Payjoin;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
@@ -21,56 +23,127 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 public sealed class PayjoinSeenInputStore
 {
     private readonly PayjoinPluginDbContextFactory _pluginDbContextFactory;
-    private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
 
-    internal PayjoinSeenInputStore(
-        PayjoinPluginDbContextFactory pluginDbContextFactory,
-        IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector)
+    internal PayjoinSeenInputStore(PayjoinPluginDbContextFactory pluginDbContextFactory)
     {
         ArgumentNullException.ThrowIfNull(pluginDbContextFactory);
-        ArgumentNullException.ThrowIfNull(uniqueConstraintViolationDetector);
         _pluginDbContextFactory = pluginDbContextFactory;
-        _uniqueConstraintViolationDetector = uniqueConstraintViolationDetector;
     }
 
-    /// <summary>
-    /// Records the outpoint as seen and reports whether it had already been recorded before this call.
-    /// Returns <c>true</c> when the outpoint was already present (i.e. seen before).
-    /// </summary>
-    public bool MarkSeenAndWasPresent(string transactionId, long outputIndex)
+    internal T ExecuteSeenInputTransition<T>(
+        string invoiceId,
+        Func<IsOutputKnown, JsonReceiverSessionPersister, T> executeTransition)
+        where T : class, IDisposable
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(transactionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(invoiceId);
+        ArgumentNullException.ThrowIfNull(executeTransition);
 
         using var context = _pluginDbContextFactory.CreateContext();
-        var alreadyPresent = context.ReceiverSeenInputs
-            .AsNoTracking()
-            .Any(x => x.TransactionId == transactionId && x.OutputIndex == outputIndex);
-        if (alreadyPresent)
+        var callback = new StagedInputsSeenCallback(context);
+        var persister = new SeenInputTransitionPersister(context, invoiceId);
+        var nextState = executeTransition(callback, persister);
+        ArgumentNullException.ThrowIfNull(nextState);
+        if (persister.HasCommitted)
         {
-            return true;
+            return nextState;
         }
 
-        context.ReceiverSeenInputs.Add(new PayjoinReceiverSeenInputData
-        {
-            TransactionId = transactionId,
-            OutputIndex = outputIndex,
-            SeenAt = DateTimeOffset.UtcNow
-        });
+        nextState.Dispose();
+        throw new InvalidOperationException("The seen-input transition returned without persisting its session event.");
+    }
 
-        try
+    private sealed class StagedInputsSeenCallback : IsOutputKnown
+    {
+        private readonly PayjoinPluginDbContext _context;
+        private readonly HashSet<SeenOutPoint> _stagedInputs = [];
+
+        public StagedInputsSeenCallback(PayjoinPluginDbContext context)
         {
-            context.SaveChanges();
+            _context = context;
+        }
+
+        public bool Callback(global::Payjoin.OutPoint outpoint)
+        {
+            var candidate = new SeenOutPoint(outpoint.Txid, checked((long)outpoint.Vout));
+            if (_stagedInputs.Contains(candidate))
+            {
+                return true;
+            }
+
+            var alreadyPresent = _context.ReceiverSeenInputs
+                .AsNoTracking()
+                .Any(x => x.TransactionId == candidate.TransactionId && x.OutputIndex == candidate.OutputIndex);
+            if (alreadyPresent)
+            {
+                return true;
+            }
+
+            _context.ReceiverSeenInputs.Add(new PayjoinReceiverSeenInputData
+            {
+                TransactionId = candidate.TransactionId,
+                OutputIndex = candidate.OutputIndex,
+                SeenAt = DateTimeOffset.UtcNow
+            });
+            _stagedInputs.Add(candidate);
             return false;
         }
-        catch (DbUpdateException ex) when (IsSeenInputConflict(ex))
+    }
+
+    private sealed class SeenInputTransitionPersister : JsonReceiverSessionPersister
+    {
+        private readonly PayjoinPluginDbContext _context;
+        private readonly string _invoiceId;
+
+        public SeenInputTransitionPersister(PayjoinPluginDbContext context, string invoiceId)
         {
-            // A concurrent session recorded the same outpoint first; treat it as seen before.
-            return true;
+            _context = context;
+            _invoiceId = invoiceId;
+        }
+
+        public bool HasCommitted { get; private set; }
+
+        public void Save(string @event)
+        {
+            if (HasCommitted)
+            {
+                throw new InvalidOperationException("The seen-input transition has already been persisted.");
+            }
+
+            var session = _context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == _invoiceId)
+                ?? throw new InvalidOperationException($"Payjoin receiver session {_invoiceId} is no longer active.");
+            var createdAt = DateTimeOffset.UtcNow;
+            var lastSequence = _context.ReceiverSessionEvents
+                .Where(x => x.InvoiceId == _invoiceId)
+                .Select(x => (int?)x.Sequence)
+                .Max() ?? 0;
+
+            session.UpdatedAt = createdAt;
+            _context.ReceiverSessionEvents.Add(new PayjoinReceiverSessionEventData
+            {
+                InvoiceId = _invoiceId,
+                Sequence = checked(lastSequence + 1),
+                Event = @event,
+                CreatedAt = createdAt
+            });
+
+            _context.SaveChanges();
+            HasCommitted = true;
+        }
+
+        public string[] Load()
+        {
+            return _context.ReceiverSessionEvents
+                .AsNoTracking()
+                .Where(x => x.InvoiceId == _invoiceId)
+                .OrderBy(x => x.Sequence)
+                .Select(x => x.Event)
+                .ToArray();
+        }
+
+        public void Close()
+        {
         }
     }
 
-    private bool IsSeenInputConflict(DbUpdateException exception)
-    {
-        return _uniqueConstraintViolationDetector.IsUniqueConstraintViolation(exception, PayjoinPluginDbSchema.ReceiverSeenInputsOutPointIndex);
-    }
+    private readonly record struct SeenOutPoint(string TransactionId, long OutputIndex);
 }

@@ -15,12 +15,11 @@ using Xunit;
 using HasReplyableError = Payjoin.HasReplyableError;
 using Initialized = Payjoin.Initialized;
 using IPayjoinProposal = Payjoin.IPayjoinProposal;
-using ReceiveSession = Payjoin.ReceiveSession;
 using MaybeInputsOwned = Payjoin.MaybeInputsOwned;
 using MaybeInputsSeen = Payjoin.MaybeInputsSeen;
 using OutputsUnknown = Payjoin.OutputsUnknown;
-using PayjoinProposal = Payjoin.PayjoinProposal;
 using ProvisionalProposal = Payjoin.ProvisionalProposal;
+using ReceiveSession = Payjoin.ReceiveSession;
 using UncheckedOriginalPayload = Payjoin.UncheckedOriginalPayload;
 using WantsFeeRange = Payjoin.WantsFeeRange;
 using WantsInputs = Payjoin.WantsInputs;
@@ -125,10 +124,80 @@ public class PayjoinReceiverSessionProcessorTests
     }
 
     [Fact]
+    public async Task ProcessTickAsyncPreservesSessionAfterTransientReceiverPersistenceFailure()
+    {
+        // Arrange
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-transient-persistence-failure");
+        var processor = CreateProcessor(store, new TransientPersistenceFailureGuard());
+
+        // Act
+        await processor.ProcessTickAsync(CancellationToken.None);
+
+        // Assert
+        Assert.True(store.TryGetSession(session.InvoiceId, out var reloadedSession));
+        Assert.NotNull(reloadedSession);
+    }
+
+    [Fact]
+    public async Task ProcessTickAsyncRetainsFatalSessionUntilReplayShowsClosed()
+    {
+        // Arrange
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-fatal-persistence-failure");
+        var guard = new FatalThenClosedReplayGuard();
+        var processor = CreateProcessor(store, guard);
+
+        // Act
+        await processor.ProcessTickAsync(CancellationToken.None);
+
+        // Assert
+        Assert.IsType<global::Payjoin.ReceiverPersistedException.Fatal>(guard.Failure);
+        Assert.True(store.TryGetSession(session.InvoiceId, out var retainedSession));
+        Assert.NotNull(retainedSession);
+
+        // Act
+        await processor.ProcessTickAsync(CancellationToken.None);
+
+        // Assert
+        Assert.Equal(2, guard.Attempts);
+        Assert.False(store.TryGetSession(session.InvoiceId, out _));
+    }
+
+    [Fact]
+    public async Task ProcessTickAsyncPreservesSessionAndRetriesAfterStorageReceiverPersistenceFailure()
+    {
+        // Arrange
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-storage-persistence-failure");
+        var guard = new StorageThenSuccessGuard();
+        var processor = CreateProcessor(store, guard);
+
+        // Act
+        await processor.ProcessTickAsync(CancellationToken.None);
+
+        Assert.IsType<global::Payjoin.ReceiverPersistedException.Storage>(guard.FirstFailure);
+
+        // Assert
+        Assert.True(store.TryGetSession(session.InvoiceId, out var retainedSession));
+        Assert.NotNull(retainedSession);
+
+        // Act
+        await processor.ProcessTickAsync(CancellationToken.None);
+
+        // Assert
+        Assert.Equal(2, guard.Attempts);
+        Assert.True(store.TryGetSession(session.InvoiceId, out var retriedSession));
+        Assert.NotNull(retriedSession);
+    }
+
+    [Fact]
     public async Task ProcessTickAsyncRecordsTheExpectedFinalTransactionBeforeRepostingAReplayedProposal()
     {
-        // Arrange: the session replays straight to the PayjoinProposal state, as it does when a
-        // previous run stopped between finalizing the proposal and completing the bridge write.
+        // Arrange
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
         CreateSession(store, "invoice-replayed-proposal");
@@ -139,16 +208,36 @@ public class PayjoinReceiverSessionProcessorTests
         // Act
         await processor.ProcessTickAsync(CancellationToken.None);
 
-        // Assert: the bridge is brought up to date before the proposal is handed to the sender again.
+        // Assert
         Assert.Equal(
             new[] { nameof(IPayjoinReceiverProposalFinalizer.EnsureExpectedFinalTransactionAsync), nameof(IPayjoinReceiverProposalFinalizer.PostAsync) },
             finalizer.Calls);
     }
 
+    [Fact]
+    public async Task ProcessTickAsyncDispatchesReplayedPendingFallbackForClosure()
+    {
+        // Arrange
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-replayed-pending-fallback");
+        var guard = new ReplayedStateGuard(() => new ReceiveSession.ReceiverPendingFallback(null!));
+        var stateProcessor = new RecordingPendingFallbackStateProcessor();
+        var processor = CreateProcessor(store, guard, stateProcessor: stateProcessor);
+
+        // Act
+        await processor.ProcessTickAsync(CancellationToken.None);
+
+        // Assert
+        Assert.Equal(1, stateProcessor.PendingFallbackCalls);
+        Assert.True(store.TryGetSession(session.InvoiceId, out _));
+    }
+
     private static PayjoinReceiverSessionProcessor CreateProcessor(
         PayjoinReceiverSessionStore sessionStore,
         IPayjoinReceiverSessionGuard sessionGuard,
-        IPayjoinReceiverProposalFinalizer? proposalFinalizer = null)
+        IPayjoinReceiverProposalFinalizer? proposalFinalizer = null,
+        IPayjoinReceiverStateProcessor? stateProcessor = null)
     {
         var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
         var network = new BTCPayNetwork
@@ -169,7 +258,7 @@ public class PayjoinReceiverSessionProcessorTests
         return new PayjoinReceiverSessionProcessor(
             sessionStore,
             sessionGuard,
-            new NoOpStateProcessor(),
+            stateProcessor ?? new NoOpStateProcessor(),
             new NoOpOutputBuilder(),
             new NoOpInputSelector(),
             new NoOpAccountingBridgeService(),
@@ -205,10 +294,32 @@ public class PayjoinReceiverSessionProcessorTests
     {
         public Task ProcessInitializedAsync(PayjoinReceiverStateContext context, Initialized initialized, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ProcessReplyableErrorAsync(PayjoinReceiverStateContext context, HasReplyableError replyableError, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ProcessPendingFallbackAsync(PayjoinReceiverStateContext context, global::Payjoin.ReceiverPendingFallback pendingFallback, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ProcessUncheckedProposalAsync(PayjoinReceiverStateContext context, UncheckedOriginalPayload proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ProcessMaybeInputsOwnedAsync(PayjoinReceiverStateContext context, MaybeInputsOwned proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ProcessMaybeInputsSeenAsync(PayjoinReceiverStateContext context, MaybeInputsSeen proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ProcessOutputsUnknownAsync(PayjoinReceiverStateContext context, OutputsUnknown proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class RecordingPendingFallbackStateProcessor : IPayjoinReceiverStateProcessor
+    {
+        public int PendingFallbackCalls { get; private set; }
+
+        public Task ProcessInitializedAsync(PayjoinReceiverStateContext context, Initialized initialized, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ProcessReplyableErrorAsync(PayjoinReceiverStateContext context, HasReplyableError replyableError, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ProcessUncheckedProposalAsync(PayjoinReceiverStateContext context, UncheckedOriginalPayload proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ProcessMaybeInputsOwnedAsync(PayjoinReceiverStateContext context, MaybeInputsOwned proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ProcessMaybeInputsSeenAsync(PayjoinReceiverStateContext context, MaybeInputsSeen proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ProcessOutputsUnknownAsync(PayjoinReceiverStateContext context, OutputsUnknown proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task ProcessPendingFallbackAsync(
+            PayjoinReceiverStateContext context,
+            global::Payjoin.ReceiverPendingFallback pendingFallback,
+            CancellationToken cancellationToken)
+        {
+            PendingFallbackCalls++;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class NoOpInvoiceLookup : IPayjoinInvoiceLookup
@@ -311,6 +422,132 @@ public class PayjoinReceiverSessionProcessorTests
             }
 
             return Task.FromResult<PayjoinReceiverSessionGuardResult?>(null);
+        }
+    }
+
+    private sealed class TransientPersistenceFailureGuard : IPayjoinReceiverSessionGuard
+    {
+        public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
+        {
+            throw new global::Payjoin.ReceiverPersistedException.Transient(new global::Payjoin.ReceiverException.Unexpected());
+        }
+    }
+
+    private sealed class FatalThenClosedReplayGuard : IPayjoinReceiverSessionGuard
+    {
+        private const int EncapsulatedMessageBytes = 8192;
+        private const string OhttpKeysHex =
+            "01001604ba48c49c3d4a92a3ad00ecc63a024da10ced02180c73ec12d8a7ad2cc91bb483824fe2bee8d28bfe2eb2fc6453bc4d31cd851e8a6540e86c5382af588d370957000400010003";
+        private readonly InMemoryReceiverPersister _persister = new();
+
+        public Exception? Failure { get; private set; }
+
+        public int Attempts { get; private set; }
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage(
+            "Reliability",
+            "CA2000:Dispose objects before losing scope",
+            Justification = "PayjoinReceiverSessionGuardResult takes ownership of the replayed state and disposes it.")]
+        public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
+        {
+            Attempts++;
+            if (Attempts > 1)
+            {
+                var replay = global::Payjoin.PayjoinMethods.ReplayReceiverEventLog(_persister);
+                var replayedState = replay.State();
+                return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(
+                    session,
+                    _persister,
+                    receiverScript: [0x00, 0x14],
+                    replay,
+                    replayedState,
+                    removeCloseRequestedSession: _ => false));
+            }
+
+            using var ohttpKeys = global::Payjoin.OhttpKeys.Decode(Convert.FromHexString(OhttpKeysHex));
+            using var builder = new global::Payjoin.ReceiverBuilder(
+                "tb1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4",
+                "https://example.com",
+                ohttpKeys);
+            using var initialTransition = builder.Build();
+            using var initialized = initialTransition.Save(_persister);
+            using var pollRequest = initialized.CreatePollRequest("https://example.com");
+            using var fatalTransition = initialized.ProcessResponse(
+                new byte[EncapsulatedMessageBytes],
+                pollRequest.ClientResponse);
+
+            try
+            {
+                using var unexpected = fatalTransition.Save(_persister);
+                throw new InvalidOperationException("The malformed OHTTP response unexpectedly produced a receiver state.");
+            }
+            catch (Exception ex)
+            {
+                Failure = ex;
+                throw;
+            }
+        }
+    }
+
+    private sealed class StorageThenSuccessGuard : IPayjoinReceiverSessionGuard
+    {
+        private const string OhttpKeysHex =
+            "01001604ba48c49c3d4a92a3ad00ecc63a024da10ced02180c73ec12d8a7ad2cc91bb483824fe2bee8d28bfe2eb2fc6453bc4d31cd851e8a6540e86c5382af588d370957000400010003";
+
+        public int Attempts { get; private set; }
+
+        public Exception? FirstFailure { get; private set; }
+
+        public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
+        {
+            Attempts++;
+            if (Attempts > 1)
+            {
+                return Task.FromResult<PayjoinReceiverSessionGuardResult?>(null);
+            }
+
+            using var ohttpKeys = global::Payjoin.OhttpKeys.Decode(Convert.FromHexString(OhttpKeysHex));
+            using var builder = new global::Payjoin.ReceiverBuilder(
+                "tb1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4",
+                "https://example.com",
+                ohttpKeys);
+            using var transition = builder.Build();
+            using var initialized = transition.Save(new InMemoryReceiverPersister());
+            using var cancelTransition = initialized.Cancel();
+            try
+            {
+                using var unexpected = cancelTransition.Save(new ThrowingReceiverPersister());
+                throw new InvalidOperationException("The failing persister unexpectedly saved the receiver transition.");
+            }
+            catch (Exception ex)
+            {
+                FirstFailure = ex;
+                throw;
+            }
+        }
+    }
+
+    private sealed class InMemoryReceiverPersister : global::Payjoin.JsonReceiverSessionPersister
+    {
+        private readonly List<string> _events = [];
+
+        public void Save(string @event) => _events.Add(@event);
+
+        public string[] Load() => _events.ToArray();
+
+        public void Close()
+        {
+        }
+    }
+
+    private sealed class ThrowingReceiverPersister : global::Payjoin.JsonReceiverSessionPersister
+    {
+        public void Save(string @event) => throw new InvalidOperationException("Simulated receiver storage failure.");
+
+        public string[] Load() => [];
+
+        public void Close()
+        {
         }
     }
 

@@ -19,7 +19,7 @@ internal sealed class RelationalPluginTestContext : IDisposable
 
     public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
-    public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+    public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory);
 
     public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
 
@@ -35,6 +35,12 @@ internal sealed class RelationalPluginTestContext : IDisposable
     {
         get => _dbContextFactory.FailSaveChanges;
         set => _dbContextFactory.FailSaveChanges = value;
+    }
+
+    public Action? BeforeNextSaveChanges
+    {
+        get => _dbContextFactory.BeforeNextSaveChanges;
+        set => _dbContextFactory.BeforeNextSaveChanges = value;
     }
 
     public void Dispose()
@@ -84,6 +90,8 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
     }
 
     public bool FailSaveChanges { get; set; }
+
+    public Action? BeforeNextSaveChanges { get; set; }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The created SQLite connection is owned and disposed by SqliteOwnedPayjoinPluginDbContext.")]
     public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
@@ -146,12 +154,14 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
         {
             ThrowIfSaveFailureInjected();
+            RunBeforeNextSaveChangesOnce();
             return base.SaveChanges(acceptAllChangesOnSuccess);
         }
 
         public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
         {
             ThrowIfSaveFailureInjected();
+            RunBeforeNextSaveChangesOnce();
             return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         }
 
@@ -161,6 +171,18 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
             {
                 throw new DbUpdateException("Injected persistence failure.");
             }
+        }
+
+        private void RunBeforeNextSaveChangesOnce()
+        {
+            var beforeNextSaveChanges = _factory.BeforeNextSaveChanges;
+            if (beforeNextSaveChanges is null)
+            {
+                return;
+            }
+
+            _factory.BeforeNextSaveChanges = null;
+            beforeNextSaveChanges();
         }
 
         public override void Dispose()

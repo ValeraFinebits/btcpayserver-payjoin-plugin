@@ -28,6 +28,7 @@ public sealed class PayjoinAvailabilityService
 
     public async Task<bool> HasConfirmedReceiverInputsAsync(string storeId, string cryptoCode, BTCPayNetwork network, CancellationToken cancellationToken)
     {
+        // TODO: Include verified cold-wallet ownership readiness in effective Payjoin availability.
         var confirmedCoins = await GetConfirmedReceiverCoinsAsync(storeId, cryptoCode, network, cancellationToken).ConfigureAwait(false);
         return confirmedCoins.Any();
     }
