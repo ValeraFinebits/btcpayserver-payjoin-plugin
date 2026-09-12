@@ -14,6 +14,38 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 public class UIStorePayjoinControllerTests
 {
     [Fact]
+    public async Task SettingsPostTreatsNullUrlTextareasAsClearedInsteadOfRestoringDefaults()
+    {
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        using var controller = new UIStorePayjoinController(settingsRepository, null!, null!)
+        {
+            TempData = Substitute.For<ITempDataDictionary>()
+        };
+        InitializeController(controller);
+
+        var model = new PayjoinStoreSettingsViewModel
+        {
+            StoreId = "store-1",
+            DirectoryUrlsText = null,
+            OhttpRelayUrlsText = null,
+            LayoutModel = new LayoutModel("Payjoin", "Async Payjoin Settings")
+        };
+        Assert.NotEmpty(model.DirectoryUrls!);
+        Assert.NotEmpty(model.OhttpRelayUrls!);
+
+        var result = await controller.SettingsPost("store-1", model);
+
+        var view = Assert.IsType<ViewResult>(result);
+        Assert.Equal("Settings", view.ViewName);
+        Assert.Same(model, view.Model);
+        Assert.Contains(controller.ModelState[nameof(PayjoinStoreSettingsViewModel.DirectoryUrlsText)]!.Errors,
+            error => error.ErrorMessage == "At least one directory URL is required.");
+        Assert.Contains(controller.ModelState[nameof(PayjoinStoreSettingsViewModel.OhttpRelayUrlsText)]!.Errors,
+            error => error.ErrorMessage == "At least one OHTTP relay URL is required.");
+        await settingsRepository.DidNotReceive().SetAsync(Arg.Any<string>(), Arg.Any<PayjoinStoreSettings>());
+    }
+
+    [Fact]
     public async Task SettingsPostReturnsViewWhenTextUrlsAreInvalidEvenIfUriListsArePresent()
     {
         var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
