@@ -1,5 +1,6 @@
 using BTCPayServer.Data;
 using BTCPayServer.Payments;
+using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using NBitcoin;
@@ -14,13 +15,16 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuilder
 {
+    internal sealed record SettlementDestination(byte[] Script, KeyPath KeyPath);
+
     internal sealed class OutputReplacement
     {
-        internal OutputReplacement(PayjoinTxOut[] replacementOutputs, byte[] settlementScript, ulong settlementAmountSats)
+        internal OutputReplacement(PayjoinTxOut[] replacementOutputs, byte[] settlementScript, ulong settlementAmountSats, KeyPath settlementKeyPath)
         {
             ReplacementOutputs = replacementOutputs;
             SettlementScript = settlementScript;
             SettlementAmountSats = settlementAmountSats;
+            SettlementKeyPath = settlementKeyPath;
         }
 
         internal PayjoinTxOut[] ReplacementOutputs { get; }
@@ -28,6 +32,8 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
         internal byte[] SettlementScript { get; }
 
         internal ulong SettlementAmountSats { get; }
+
+        internal KeyPath SettlementKeyPath { get; }
     }
 
     private readonly BTCPayNetworkProvider _networkProvider;
@@ -64,10 +70,20 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
         // TODO: Add a rust-payjoin / payjoin-ffi API for reading the receiver amount from the proposal or
         // original PSBT data, so the settlement amount can be validated against what the sender actually
         // proposed instead of being derived on the receiver side.
-        var settlementScript = preserveReceiverScript
-            ? receiverScript
-            : await GetSettlementScriptAsync(storeId, receiverScript, cancellationToken).ConfigureAwait(false);
-        if (settlementScript is null)
+        SettlementDestination? settlementDestination;
+        if (preserveReceiverScript)
+        {
+            var receiverKeyPath = await TryGetReceiverKeyPathAsync(invoiceId, receiverScript).ConfigureAwait(false);
+            settlementDestination = receiverKeyPath is null
+                ? null
+                : new SettlementDestination(receiverScript, receiverKeyPath);
+        }
+        else
+        {
+            settlementDestination = await GetSettlementDestinationAsync(storeId, receiverScript, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (settlementDestination is null)
         {
             return null;
         }
@@ -83,7 +99,7 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
             return null;
         }
 
-        return CreateSettlementOutputs(exactPaymentAmountSats.Value, settlementScript);
+        return CreateSettlementOutputs(exactPaymentAmountSats.Value, settlementDestination.Script, settlementDestination.KeyPath);
     }
 
     internal async Task<ulong?> TryGetExactPaymentAmountSatsAsync(string invoiceId)
@@ -113,7 +129,8 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
 
     internal static OutputReplacement CreateSettlementOutputs(
         ulong exactPaymentAmountSats,
-        byte[] settlementScript)
+        byte[] settlementScript,
+        KeyPath settlementKeyPath)
     {
         return new OutputReplacement(
             new[]
@@ -121,10 +138,11 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
                 new PayjoinTxOut(exactPaymentAmountSats, settlementScript)
             },
             settlementScript,
-            exactPaymentAmountSats);
+            exactPaymentAmountSats,
+            settlementKeyPath);
     }
 
-    private async Task<byte[]?> GetSettlementScriptAsync(
+    private async Task<SettlementDestination?> GetSettlementDestinationAsync(
         string storeId,
         byte[] receiverScript,
         CancellationToken cancellationToken)
@@ -142,9 +160,11 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
         {
             var coldChangeAddress = await client.GetUnusedAsync(coldWalletDerivation, DerivationFeature.Change, 0, true, cancellationToken).ConfigureAwait(false);
             var coldChangeScript = coldChangeAddress?.ScriptPubKey?.ToBytes();
-            if (coldChangeScript is not null && coldChangeScript.Length > 0 && !coldChangeScript.SequenceEqual(receiverScript))
+            if (coldChangeScript is not null && coldChangeScript.Length > 0 &&
+                coldChangeAddress!.KeyPath is { Indexes.Length: > 0 } coldChangeKeyPath &&
+                !coldChangeScript.SequenceEqual(receiverScript))
             {
-                return coldChangeScript;
+                return new SettlementDestination(coldChangeScript, coldChangeKeyPath);
             }
         }
 
@@ -163,7 +183,8 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
 
         var changeAddress = await client.GetUnusedAsync(derivationScheme.AccountDerivation, DerivationFeature.Change, 0, true, cancellationToken).ConfigureAwait(false);
         var generatedReceiverChangeScriptPubKey = changeAddress?.ScriptPubKey;
-        if (generatedReceiverChangeScriptPubKey is null)
+        if (generatedReceiverChangeScriptPubKey is null ||
+            changeAddress!.KeyPath is not { Indexes.Length: > 0 } changeKeyPath)
         {
             return null;
         }
@@ -174,7 +195,32 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
             return null;
         }
 
-        return generatedReceiverChangeScript;
+        return new SettlementDestination(generatedReceiverChangeScript, changeKeyPath);
+    }
+
+    private async Task<KeyPath?> TryGetReceiverKeyPathAsync(string invoiceId, byte[] receiverScript)
+    {
+        var invoice = await _invoiceRepository.GetInvoice(invoiceId).ConfigureAwait(false);
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        var prompt = invoice?.GetPaymentPrompt(paymentMethodId);
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
+        if (prompt is null || network is null ||
+            _handlers.ParsePaymentPromptDetails(prompt) is not BitcoinPaymentPromptDetails details)
+        {
+            return null;
+        }
+
+        try
+        {
+            var promptScript = BitcoinAddress.Create(prompt.Destination, network.NBitcoinNetwork).ScriptPubKey.ToBytes();
+            return promptScript.SequenceEqual(receiverScript) && details.KeyPath is { Indexes.Length: > 0 }
+                ? details.KeyPath
+                : null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
     }
 
     private async Task<DerivationStrategyBase?> TryParseColdWalletDerivationAsync(string storeId, BTCPayNetwork network)

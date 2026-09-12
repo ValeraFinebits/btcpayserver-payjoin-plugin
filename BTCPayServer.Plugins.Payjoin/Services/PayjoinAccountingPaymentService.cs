@@ -123,6 +123,10 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         // in a reviewable state instead of proceeding on assumption.
         var observedValueSats = finalTx.Transaction.Outputs[(int)outputIndex.Value].Value.Satoshi;
         EnsureObservedSettlementValueMatchesExpected(bridge, observedValueSats);
+        var settlementDestination = GetSettlementDestination(
+            accountingContext,
+            finalTx.Transaction.Outputs[(int)outputIndex.Value].ScriptPubKey,
+            bridge.InvoiceId);
 
         var accountedValueSats = ResolveAccountedValueSats(bridge);
         if (!accountedValueSats.HasValue)
@@ -143,10 +147,14 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             return null;
         }
 
+        var keyPath = GetRecordedKeyPath(accountingContext, finalPayment) ?? GetPersistedKeyPath(bridge)
+            ?? throw new PayjoinAccountingReconciliationDataException(
+                $"Settlement key path is missing for invoice '{bridge.InvoiceId}'.");
+
         var finalPaymentIsNew = false;
         if (finalPayment is null)
         {
-            var paymentData = CreateObservedPaymentData(accountingContext, accountedValueSats.Value, finalTransactionId, outputIndex.Value, finalTx.Confirmations, finalTransactionRbf);
+            var paymentData = CreateObservedPaymentData(accountingContext, accountedValueSats.Value, finalTransactionId, outputIndex.Value, finalTx.Confirmations, finalTransactionRbf, keyPath, settlementDestination);
             finalPayment = await _paymentRecorder.AddPaymentAsync(paymentData, [bridge.ExpectedFinalTransactionId]).ConfigureAwait(false);
             finalPaymentIsNew = finalPayment is not null;
             if (finalPayment is null)
@@ -157,6 +165,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
                     accountingContext = refreshedContextResult.Context;
                     finalPayment = FindPaymentByOutPoint(accountingContext, finalOutPoint);
                     trackedPayment = FindTrackedPayment(accountingContext, bridge);
+                    keyPath = GetRecordedKeyPath(accountingContext, finalPayment) ?? keyPath;
                 }
             }
 
@@ -169,11 +178,13 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
 
         var previousStatus = finalPayment.Status;
         var previousValue = finalPayment.Value;
+        var previousDestination = finalPayment.Destination;
         var previousDetails = finalPayment.Details?.ToString(Newtonsoft.Json.Formatting.None);
-        ApplyFinalPaymentState(accountingContext, finalPayment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf);
+        ApplyFinalPaymentState(accountingContext, finalPayment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf, keyPath, settlementDestination);
         var finalPaymentChanged = finalPaymentIsNew ||
                                   finalPayment.Status != previousStatus ||
                                   finalPayment.Value != previousValue ||
+                                  !string.Equals(finalPayment.Destination, previousDestination, StringComparison.Ordinal) ||
                                   !string.Equals(finalPayment.Details?.ToString(Newtonsoft.Json.Formatting.None), previousDetails, StringComparison.Ordinal);
 
         var updatedPayments = new List<PaymentEntity> { finalPayment };
@@ -223,10 +234,10 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             .FirstOrDefault(p => p.Id == outPoint.ToString() && p.PaymentMethodId == accountingContext.PaymentMethodId);
     }
 
-    private static PaymentData CreateObservedPaymentData(AccountingContext accountingContext, long accountedValueSats, uint256 transactionId, uint outputIndex, long confirmations, bool rbf)
+    private static PaymentData CreateObservedPaymentData(AccountingContext accountingContext, long accountedValueSats, uint256 transactionId, uint outputIndex, long confirmations, bool rbf, KeyPath keyPath, string settlementDestination)
     {
-        var details = CreatePaymentDetails(transactionId, outputIndex, rbf, confirmations);
-        return new PaymentData
+        var details = CreatePaymentDetails(transactionId, outputIndex, rbf, keyPath, confirmations);
+        var paymentData = new PaymentData
         {
             Id = new OutPoint(transactionId, outputIndex).ToString(),
             Created = DateTimeOffset.UtcNow,
@@ -236,6 +247,11 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             Amount = Money.Satoshis(accountedValueSats).ToDecimal(MoneyUnit.BTC),
             Currency = accountingContext.Network.CryptoCode
         }.Set(accountingContext.Invoice, accountingContext.Handler, details);
+
+        var payment = paymentData.GetBlob();
+        payment.Destination = settlementDestination;
+        paymentData.SetBlob(accountingContext.PaymentMethodId, payment);
+        return paymentData;
     }
 
     internal static uint? ResolveFinalOutputIndex(Transaction finalTransaction, PayjoinAccountingBridgeState bridge)
@@ -265,6 +281,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
 
     private static long? ResolveAccountedValueSats(PayjoinAccountingBridgeState bridge)
     {
+        // TODO: Never credit the sender-PSBT value; require EffectiveInvoiceValueSats from the invoice session.
         return bridge.EffectiveInvoiceValueSats ?? bridge.FallbackValueSats;
     }
 
@@ -281,13 +298,50 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
                                  p.Id == trackedPaymentId);
     }
 
-    private static void ApplyFinalPaymentState(AccountingContext accountingContext, PaymentEntity payment, long confirmations, uint256 transactionId, uint outputIndex, long accountedValueSats, bool rbf)
+    private static KeyPath? GetRecordedKeyPath(AccountingContext accountingContext, PaymentEntity? payment)
+    {
+        if (payment?.Details is null)
+        {
+            return null;
+        }
+
+        var details = accountingContext.Handler.ParsePaymentDetails(payment.Details);
+        return details.KeyPath is null || details.KeyPath.Indexes.Length == 0 ? null : details.KeyPath;
+    }
+
+    private static KeyPath? GetPersistedKeyPath(PayjoinAccountingBridgeState bridge)
+    {
+        if (string.IsNullOrWhiteSpace(bridge.SettlementKeyPath))
+        {
+            return null;
+        }
+
+        if (!KeyPath.TryParse(bridge.SettlementKeyPath, out var keyPath) ||
+            keyPath is null ||
+            keyPath.Indexes.Length == 0)
+        {
+            throw new PayjoinAccountingReconciliationDataException(
+                $"Invalid settlement key path persisted for invoice '{bridge.InvoiceId}'.");
+        }
+
+        return keyPath;
+    }
+
+    private static void ApplyFinalPaymentState(AccountingContext accountingContext, PaymentEntity payment, long confirmations, uint256 transactionId, uint outputIndex, long accountedValueSats, bool rbf, KeyPath keyPath, string settlementDestination)
     {
         payment.Value = Money.Satoshis(accountedValueSats).ToDecimal(MoneyUnit.BTC);
-        payment.Status = confirmations >= NBXplorerListener.ConfirmationRequired(accountingContext.Invoice, CreatePaymentDetails(transactionId, outputIndex, rbf))
+        payment.Destination = settlementDestination;
+        payment.Status = confirmations >= NBXplorerListener.ConfirmationRequired(accountingContext.Invoice, CreatePaymentDetails(transactionId, outputIndex, rbf, keyPath))
             ? PaymentStatus.Settled
             : PaymentStatus.Processing;
-        payment.SetDetails(accountingContext.Handler, CreatePaymentDetails(transactionId, outputIndex, rbf, confirmations));
+        payment.SetDetails(accountingContext.Handler, CreatePaymentDetails(transactionId, outputIndex, rbf, keyPath, confirmations));
+    }
+
+    private static string GetSettlementDestination(AccountingContext accountingContext, Script settlementScript, string invoiceId)
+    {
+        return settlementScript.GetDestinationAddress(accountingContext.Network.NBitcoinNetwork)?.ToString()
+            ?? throw new PayjoinAccountingReconciliationDataException(
+                $"Settlement script for invoice '{invoiceId}' does not encode a Bitcoin address.");
     }
 
     private static uint? FindSettlementOutputIndex(Transaction finalTransaction, PayjoinAccountingBridgeState bridge)
@@ -354,13 +408,15 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             : null;
     }
 
-    private static BitcoinLikePaymentData CreatePaymentDetails(uint256 txId, uint outputIndex, bool rbf, long confirmations = -1)
+    private static BitcoinLikePaymentData CreatePaymentDetails(uint256 txId, uint outputIndex, bool rbf, KeyPath keyPath, long confirmations = -1)
     {
         return new BitcoinLikePaymentData
         {
             Outpoint = new OutPoint(txId, outputIndex),
             RBF = rbf,
-            ConfirmationCount = confirmations
+            ConfirmationCount = confirmations,
+            KeyPath = keyPath,
+            KeyIndex = checked((int)keyPath.Indexes[^1])
         };
     }
 
