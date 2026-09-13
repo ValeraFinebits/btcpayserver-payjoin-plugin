@@ -126,7 +126,7 @@ public class UIPayJoinController : Controller
                 LogRunTestPaymentFailed(_logger, request.InvoiceId, ex);
             }
 
-            return RunTestPaymentFailure($"The test payment for invoice {request.InvoiceId} failed unexpectedly: {ex.Message}");
+            return RunTestPaymentFailure("test payment failed unexpectedly, see server logs");
         }
     }
 
