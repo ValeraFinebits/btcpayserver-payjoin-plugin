@@ -1,3 +1,4 @@
+using BTCPayServer.Plugins.Payjoin.Controllers;
 using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Abstractions.Extensions;
 using BTCPayServer.Abstractions.Models;
@@ -18,6 +19,7 @@ namespace BTCPayServer.Plugins.Payjoin;
 
 [Route("~/plugins/payjoin")]
 [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanViewProfile)]
+[PayjoinExceptionFilter(PayjoinErrorShape.Redirect)]
 public class UIPayjoinOverviewController : Controller
 {
     private readonly IPayjoinStoreSettingsRepository _storeSettingsRepository;

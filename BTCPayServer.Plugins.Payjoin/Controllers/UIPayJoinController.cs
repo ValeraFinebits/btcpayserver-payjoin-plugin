@@ -20,6 +20,7 @@ namespace BTCPayServer.Plugins.Payjoin.Controllers;
 
 [Route("~/plugins/payjoin")]
 [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanViewProfile)]
+[PayjoinExceptionFilter(PayjoinErrorShape.Json)]
 public class UIPayJoinController : Controller
 {
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinSenderBroadcasted =
