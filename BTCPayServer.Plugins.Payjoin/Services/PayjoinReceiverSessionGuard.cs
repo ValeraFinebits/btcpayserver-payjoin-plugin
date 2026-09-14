@@ -102,7 +102,9 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
             if (fallbackBytes is { Length: > 0 })
             {
-                result.StateContext.OriginalOutputScripts = PayjoinReceiverStateProcessor.ExtractOutputScripts(fallbackBytes);
+                var originalTransaction = PayjoinReceiverStateProcessor.ExtractTransactionFacts(fallbackBytes);
+                result.StateContext.OriginalInputOutpoints = originalTransaction.InputOutpoints;
+                result.StateContext.OriginalOutputScripts = originalTransaction.OutputScripts;
             }
 
             replay = null;

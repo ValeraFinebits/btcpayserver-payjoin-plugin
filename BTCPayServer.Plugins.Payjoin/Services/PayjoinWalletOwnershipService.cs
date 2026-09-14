@@ -2,12 +2,13 @@ using BTCPayServer.Data;
 using BTCPayServer.Payments;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
-using BTCPayServer.Services.Wallets;
 using NBitcoin;
 using NBXplorer;
 using NBXplorer.DerivationStrategy;
+using NBXplorer.Models;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -16,12 +17,15 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 internal interface IPayjoinWalletOwnershipService
 {
     /// <summary>
-    /// Resolves everything the synchronous rust-payjoin ownership callbacks will need ahead of time,
-    /// so the callbacks themselves are pure in-memory lookups with no I/O on the protocol path.
-    /// <paramref name="candidateOutputScripts"/> are the original transaction's output scripts, which
-    /// are the only receiver-ownable scripts that can appear without funding an existing coin.
+    /// Resolves ownership of the Original transaction's exact input outpoints from the wallet's
+    /// tracked transaction history. The resulting rust-payjoin callback is a pure in-memory lookup.
     /// </summary>
-    Task<PayjoinScriptOwnershipResolver> CreateResolverAsync(
+    Task<PayjoinInputOwnershipResolver> CreateInputResolverAsync(
+        string storeId,
+        IReadOnlyCollection<OutPoint> candidateInputOutpoints,
+        CancellationToken cancellationToken);
+
+    Task<PayjoinScriptOwnershipResolver> CreateOutputResolverAsync(
         string storeId,
         byte[] receiverScript,
         IReadOnlyCollection<byte[]> candidateOutputScripts,
@@ -34,7 +38,6 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
     private readonly StoreRepository _storeRepository;
     private readonly PaymentMethodHandlerDictionary _handlers;
     private readonly ExplorerClientProvider _explorerClientProvider;
-    private readonly BTCPayWalletProvider _walletProvider;
     private readonly IPayjoinStoreSettingsRepository _storeSettingsRepository;
 
     public PayjoinWalletOwnershipService(
@@ -42,60 +45,76 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
         StoreRepository storeRepository,
         PaymentMethodHandlerDictionary handlers,
         ExplorerClientProvider explorerClientProvider,
-        BTCPayWalletProvider walletProvider,
         IPayjoinStoreSettingsRepository storeSettingsRepository)
     {
         _networkProvider = networkProvider;
         _storeRepository = storeRepository;
         _handlers = handlers;
         _explorerClientProvider = explorerClientProvider;
-        _walletProvider = walletProvider;
         _storeSettingsRepository = storeSettingsRepository;
     }
 
-    public async Task<PayjoinScriptOwnershipResolver> CreateResolverAsync(
+    public async Task<PayjoinInputOwnershipResolver> CreateInputResolverAsync(
+        string storeId,
+        IReadOnlyCollection<OutPoint> candidateInputOutpoints,
+        CancellationToken cancellationToken)
+    {
+        var walletContext = await GetWalletContextAsync(storeId).ConfigureAwait(false);
+        var ownedInputs = new HashSet<OutPoint>();
+
+        // TODO(security): Charge distinct funding txids to a proposal-wide NBXplorer lookup budget with a deadline, limiter, and cache.
+        foreach (var transactionInputs in candidateInputOutpoints.Distinct().GroupBy(outpoint => outpoint.Hash))
+        {
+            if (walletContext.ColdWalletDerivation is null)
+            {
+                var hotTransaction = await walletContext.Client.GetTransactionAsync(
+                    walletContext.AccountDerivation,
+                    transactionInputs.Key,
+                    cancellationToken).ConfigureAwait(false);
+                AddMatchedInputs(transactionInputs, hotTransaction?.Outputs, ownedInputs);
+                continue;
+            }
+
+            var transactions = await Task.WhenAll(
+                walletContext.Client.GetTransactionAsync(
+                    walletContext.AccountDerivation,
+                    transactionInputs.Key,
+                    cancellationToken),
+                walletContext.Client.GetTransactionAsync(
+                    walletContext.ColdWalletDerivation,
+                    transactionInputs.Key,
+                    cancellationToken)).ConfigureAwait(false);
+            AddMatchedInputs(transactionInputs, transactions[0]?.Outputs, ownedInputs);
+            AddMatchedInputs(transactionInputs, transactions[1]?.Outputs, ownedInputs);
+        }
+
+        return new PayjoinInputOwnershipResolver(ownedInputs);
+    }
+
+    public async Task<PayjoinScriptOwnershipResolver> CreateOutputResolverAsync(
         string storeId,
         byte[] receiverScript,
         IReadOnlyCollection<byte[]> candidateOutputScripts,
         CancellationToken cancellationToken)
     {
-        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode)
-            ?? throw new InvalidOperationException($"Network '{PayjoinConstants.BitcoinCode}' is not available.");
-        var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Store {storeId} not found");
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
-        var derivationScheme = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, _handlers, true)
-            ?? throw new InvalidOperationException($"Derivation scheme not configured for {PayjoinConstants.BitcoinCode}");
-        var wallet = _walletProvider.GetWallet(network)
-            ?? throw new InvalidOperationException($"Wallet for {PayjoinConstants.BitcoinCode} is not available.");
-        var client = _explorerClientProvider.GetExplorerClient(network);
-        var coldWalletDerivation = await TryParseColdWalletDerivationAsync(storeId, network).ConfigureAwait(false);
-
-        // Inputs: a receiver-owned input a sender can actually spend must reference one of the wallets'
-        // existing coins (confirmed or in the mempool), so the coin scripts answer the inputs-not-owned
-        // check without any per-script lookups. An input fabricated over a nonexistent outpoint with a
-        // receiver script is not broadcastable and never signed (signing is scoped to the receiver's
-        // contributed inputs), so it carries no ownership risk this check must catch.
+        var walletContext = await GetWalletContextAsync(storeId).ConfigureAwait(false);
         var ownedScripts = new HashSet<Script>();
-        await AddUnspentCoinScriptsAsync(wallet, derivationScheme.AccountDerivation, ownedScripts, cancellationToken).ConfigureAwait(false);
-        if (coldWalletDerivation is not null)
-        {
-            await AddUnspentCoinScriptsAsync(wallet, coldWalletDerivation, ownedScripts, cancellationToken).ConfigureAwait(false);
-        }
 
-        // Outputs: the original transaction's output scripts are known before the checks run, so any
-        // that pay unfunded receiver addresses are resolved here, in one batch, against the hot and
-        // cold derivations. The callbacks then never leave memory.
         var receiverScriptPubKey = Script.FromBytesUnsafe(receiverScript);
-        foreach (var candidate in candidateOutputScripts)
+        // TODO(security): Charge distinct output scripts to the same proposal-wide NBXplorer lookup budget with a deadline, limiter, and cache.
+        foreach (var script in candidateOutputScripts.Select(Script.FromBytesUnsafe).Distinct())
         {
-            var script = Script.FromBytesUnsafe(candidate);
-            if (script == receiverScriptPubKey || ownedScripts.Contains(script))
+            if (script == receiverScriptPubKey)
             {
                 continue;
             }
 
-            if (await IsWalletScriptAsync(client, derivationScheme.AccountDerivation, coldWalletDerivation, script).ConfigureAwait(false))
+            if (await IsWalletScriptAsync(
+                    walletContext.Client,
+                    walletContext.AccountDerivation,
+                    walletContext.ColdWalletDerivation,
+                    script,
+                    cancellationToken).ConfigureAwait(false))
             {
                 ownedScripts.Add(script);
             }
@@ -104,16 +123,40 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
         return new PayjoinScriptOwnershipResolver(receiverScript, ownedScripts);
     }
 
-    private static async Task AddUnspentCoinScriptsAsync(
-        BTCPayWallet wallet,
-        DerivationStrategyBase derivation,
-        HashSet<Script> ownedScripts,
-        CancellationToken cancellationToken)
+    private async Task<WalletContext> GetWalletContextAsync(string storeId)
     {
-        var coins = await wallet.GetUnspentCoins(derivation, false, cancellationToken).ConfigureAwait(false);
-        foreach (var coin in coins)
+        var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode)
+            ?? throw new InvalidOperationException($"Network '{PayjoinConstants.BitcoinCode}' is not available.");
+        var store = await _storeRepository.FindStore(storeId).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Store {storeId} not found");
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        var derivationScheme = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, _handlers, true)
+            ?? throw new InvalidOperationException($"Derivation scheme not configured for {PayjoinConstants.BitcoinCode}");
+        var client = _explorerClientProvider.GetExplorerClient(network);
+        var coldWalletDerivation = await TryParseColdWalletDerivationAsync(storeId, network).ConfigureAwait(false);
+        return new WalletContext(client, derivationScheme.AccountDerivation, coldWalletDerivation);
+    }
+
+    private static void AddMatchedInputs(
+        IEnumerable<OutPoint> candidateInputs,
+        IEnumerable<MatchedOutput>? matchedOutputs,
+        HashSet<OutPoint> ownedInputs)
+    {
+        // TODO(security): Do not collapse an NBXplorer no-match into Foreign while wallet
+        // ownership readiness is unverified. Represent it as Unknown and fail closed until
+        // the relevant hot/cold derivation histories are known to be authoritative.
+        if (matchedOutputs is null)
         {
-            ownedScripts.Add(coin.ScriptPubKey);
+            return;
+        }
+
+        var ownedOutputIndexes = matchedOutputs.Select(output => checked((uint)output.Index)).ToHashSet();
+        foreach (var input in candidateInputs)
+        {
+            if (ownedOutputIndexes.Contains(input.N))
+            {
+                ownedInputs.Add(input);
+            }
         }
     }
 
@@ -121,9 +164,10 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
         ExplorerClient client,
         DerivationStrategyBase accountDerivation,
         DerivationStrategyBase? coldWalletDerivation,
-        Script script)
+        Script script,
+        CancellationToken cancellationToken)
     {
-        var keyInformation = await client.GetKeyInformationAsync(accountDerivation, script).ConfigureAwait(false);
+        var keyInformation = await client.GetKeyInformationAsync(accountDerivation, script, cancellationToken).ConfigureAwait(false);
         if (keyInformation is not null)
         {
             return true;
@@ -134,7 +178,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
             return false;
         }
 
-        var coldKeyInformation = await client.GetKeyInformationAsync(coldWalletDerivation, script).ConfigureAwait(false);
+        var coldKeyInformation = await client.GetKeyInformationAsync(coldWalletDerivation, script, cancellationToken).ConfigureAwait(false);
         return coldKeyInformation is not null;
     }
 
@@ -155,12 +199,36 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
             return null;
         }
     }
+
+    private sealed record WalletContext(
+        ExplorerClient Client,
+        DerivationStrategyBase AccountDerivation,
+        DerivationStrategyBase? ColdWalletDerivation);
+}
+
+internal sealed class PayjoinInputOwnershipResolver
+{
+    private readonly HashSet<OutPoint> _ownedInputs;
+
+    internal PayjoinInputOwnershipResolver(HashSet<OutPoint> ownedInputs)
+    {
+        _ownedInputs = ownedInputs;
+    }
+
+    public bool IsOwned(string transactionId, uint outputIndex)
+    {
+        if (!uint256.TryParse(transactionId, out var transactionHash))
+        {
+            throw new FormatException($"Invalid transaction id '{transactionId}'.");
+        }
+
+        return _ownedInputs.Contains(new OutPoint(transactionHash, outputIndex));
+    }
 }
 
 /// <summary>
-/// Answers script ownership for one proposal from data resolved ahead of the rust-payjoin callbacks:
-/// the invoice's receiver script, the hot and cold wallets' current coin scripts, and any of the
-/// original transaction's output scripts that resolved to a wallet address. Pure in-memory.
+/// Answers output-script ownership for one proposal from scripts resolved ahead of the
+/// rust-payjoin callback. Pure in-memory.
 /// </summary>
 internal sealed class PayjoinScriptOwnershipResolver
 {
