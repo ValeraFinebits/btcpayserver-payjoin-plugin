@@ -45,7 +45,7 @@ internal static class PayjoinInvoiceTestHelper
         PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21Response);
 
         var paymentUrl = new Uri(bip21Response.Bip21, UriKind.Absolute);
-        var storeSettings = await tester.PayTester.GetService<IPayjoinStoreSettingsRepository>().GetAsync(merchant.StoreId).WaitAsync(cancellationToken).ConfigureAwait(true);
+        var storeSettings = await PayjoinIntegrationTestSupport.ReadStoreSettingsAsync(tester, merchant.StoreId, cancellationToken).ConfigureAwait(true);
         var directoryUrls = storeSettings.GetEffectiveDirectoryUrls();
         var ohttpRelayUrls = storeSettings.GetEffectiveOhttpRelayUrls();
         Assert.NotEmpty(directoryUrls);
