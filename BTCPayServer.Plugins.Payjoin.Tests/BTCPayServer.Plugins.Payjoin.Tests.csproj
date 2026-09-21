@@ -20,7 +20,7 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
-	<PackageReference Include="NBXplorer.Client" Version="5.0.8" />
+	<PackageReference Include="NBXplorer.Client" Version="5.0.10" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="NSubstitute" Version="6.2.0" />
 	<PackageReference Include="coverlet.collector" Version="10.0.1" />
