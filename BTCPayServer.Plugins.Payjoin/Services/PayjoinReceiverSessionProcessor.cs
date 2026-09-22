@@ -1,13 +1,12 @@
 using BTCPayServer.Payments;
-using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using Payjoin;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
-using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -113,33 +112,33 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             }).ConfigureAwait(false);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "This is the per-session isolation boundary of a background poller: one session's failure must never cancel the parallel tick or crash the host.")]
     private async ValueTask ProcessSessionWithIsolationAsync(PayjoinReceiverSessionState session, CancellationToken stoppingToken)
     {
         try
         {
-            await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
+            try
+            {
+                await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+                RemoveSession(session.InvoiceId, "receiver session failed with invalid operation");
+            }
+            catch (UniffiException ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+                RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
+            }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (HttpRequestException ex)
+        catch (Exception ex)
         {
             LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-        }
-        catch (InvalidOperationException ex)
-        {
-            LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-            RemoveSession(session.InvoiceId, "receiver session failed with invalid operation");
-        }
-        catch (TaskCanceledException ex)
-        {
-            LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-        }
-        catch (UniffiException ex)
-        {
-            LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-            RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
         }
     }
 

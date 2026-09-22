@@ -12,6 +12,8 @@ internal sealed class PayjoinReceiverSessionConfiguration : IEntityTypeConfigura
             .HasName(PayjoinPluginDbSchema.ReceiverSessionsPrimaryKey);
         entity.Property(x => x.ReceiverAddress).HasMaxLength(PayjoinPluginDbSchema.ReceiverAddressMaxLength);
         entity.Property(x => x.ContributedInputTransactionId).HasMaxLength(PayjoinPluginDbSchema.TransactionIdMaxLength);
+        entity.Property(x => x.PayjoinUri).HasColumnType("text");
+        entity.Property(x => x.DestructiveWriteStamp).IsConcurrencyToken();
         entity.HasMany(x => x.Events)
             .WithOne(x => x.Session)
             .HasForeignKey(x => x.InvoiceId)

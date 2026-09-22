@@ -141,7 +141,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
     private async Task<DerivationStrategyBase?> TryParseColdWalletDerivationAsync(string storeId, BTCPayNetwork network)
     {
         var storeSettings = await _storeSettingsRepository.GetAsync(storeId).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(storeSettings.ColdWalletDerivationScheme))
+        if (storeSettings is null || string.IsNullOrWhiteSpace(storeSettings.ColdWalletDerivationScheme))
         {
             return null;
         }
