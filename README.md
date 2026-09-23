@@ -9,6 +9,8 @@ A [BTCPay Server](https://github.com/btcpayserver) plugin that adds [Async Payjo
 
 The alpha is available from [BTCPay Plugin Builder](https://plugin-builder.btcpayserver.org/public/plugins/async-payjoin).
 
+For installation, see the [installation guide](docs/installation.md).
+
 Feedback on setup and payments is welcome in [GitHub Issues](https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues). Please include your BTCPay Server and plugin versions when reporting a problem.
 
 For security vulnerabilities, please follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
