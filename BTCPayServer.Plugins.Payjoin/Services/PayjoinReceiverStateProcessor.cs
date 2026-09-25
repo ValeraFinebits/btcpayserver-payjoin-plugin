@@ -89,6 +89,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             return;
         }
 
+        // TODO: Validate this untrusted PSBT with Bitcoin Core testmempoolaccept before contributing receiver inputs.
         using var transition = proposal.AssumeInteractiveReceiver();
         using var maybeInputsOwned = transition.Save(context.Persister);
         await ProcessMaybeInputsOwnedAsync(context, maybeInputsOwned, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
