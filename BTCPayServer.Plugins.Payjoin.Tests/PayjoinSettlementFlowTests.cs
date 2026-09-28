@@ -230,7 +230,7 @@ public class PayjoinSettlementFlowTests
 
     private static void CreateSession(PayjoinReceiverSessionStore store)
     {
-        store.CreateSession(
+        store.GetOrCreateSession(
             InvoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             StoreId,

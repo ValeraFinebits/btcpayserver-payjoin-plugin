@@ -25,6 +25,9 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinAccountingArmedBridgeExpired =
         LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(5, nameof(LogPayjoinAccountingArmedBridgeExpired)),
             "Payjoin accounting bridge for {InvoiceId} expired while final transaction {TransactionId} was still awaited; it is listed for review on the Async Payjoin page and can be retried from there.");
+    private static readonly Action<ILogger, Exception?> LogPayjoinReservationCleanupFailed =
+        LoggerMessage.Define(LogLevel.Warning, new EventId(6, nameof(LogPayjoinReservationCleanupFailed)),
+            "Payjoin expired-reservation cleanup failed; the rest of the tick continues and the next tick retries.");
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IPayjoinReceiverSessionProcessor _sessionProcessor;
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
@@ -48,9 +51,22 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     internal async Task ProcessTickOnceAsync(CancellationToken stoppingToken)
     {
         var now = DateTimeOffset.UtcNow;
-        _sessionStore.CleanupExpiredInputReservations(now);
+        CleanupExpiredInputReservations(now);
         await _sessionProcessor.ProcessTickAsync(stoppingToken).ConfigureAwait(false);
         await ReconcilePendingBridgesAsync(now, stoppingToken).ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reservation cleanup must never prevent the rest of the polling tick from running.")]
+    private void CleanupExpiredInputReservations(DateTimeOffset now)
+    {
+        try
+        {
+            _sessionStore.CleanupExpiredInputReservations(now);
+        }
+        catch (Exception ex)
+        {
+            LogPayjoinReservationCleanupFailed(_logger, ex);
+        }
     }
 
     private async Task ReconcilePendingBridgesAsync(DateTimeOffset now, CancellationToken cancellationToken)

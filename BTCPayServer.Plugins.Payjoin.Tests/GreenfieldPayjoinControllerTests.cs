@@ -77,7 +77,8 @@ public class GreenfieldPayjoinControllerTests
             .Returns(Task.FromResult<GetBip21Response?>(new GetBip21Response
             {
                 Bip21 = bip21,
-                Status = PayjoinAvailabilityStatus.Active
+                Status = PayjoinAvailabilityStatus.Active,
+                Retryable = false
             }));
         var controller = new GreenfieldPayjoinController(null!, paymentUrlService, invoiceLookup, null!, null!);
 
@@ -109,7 +110,8 @@ public class GreenfieldPayjoinControllerTests
             .Returns(Task.FromResult<GetBip21Response?>(new GetBip21Response
             {
                 Bip21 = "bitcoin:bcrt1qexample?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj",
-                Status = PayjoinAvailabilityStatus.Active
+                Status = PayjoinAvailabilityStatus.Active,
+                Retryable = false
             }));
         var controller = new GreenfieldPayjoinController(null!, paymentUrlService, invoiceLookup, null!, null!);
 

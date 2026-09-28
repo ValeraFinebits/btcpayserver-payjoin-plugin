@@ -16,8 +16,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task ExpirePendingAsyncExpiresUnarmedBridgesAtTheDeadline()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         await CreateBridgeAsync(service, "invoice-unarmed", expiresAt: now.AddMinutes(-1));
 
@@ -31,8 +31,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task ExpirePendingAsyncKeepsArmedBridgesAliveWithinTheGracePeriod()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         await CreateBridgeAsync(service, "invoice-armed", expiresAt: now.AddMinutes(-1), expectedFinalTransactionId: ExpectedTransactionId);
 
@@ -46,8 +46,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task ExpirePendingAsyncExpiresArmedBridgesAfterTheGracePeriod()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         var pastGrace = now - PayjoinAccountingBridgeService.ArmedBridgeGracePeriod - TimeSpan.FromMinutes(1);
         await CreateBridgeAsync(service, "invoice-armed", expiresAt: pastGrace, expectedFinalTransactionId: ExpectedTransactionId);
@@ -62,8 +62,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task GetRequiringAttentionAsyncReturnsFailedAndArmedExpiredBridgesOnly()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         await CreateBridgeAsync(service, "invoice-pending", expiresAt: now.AddHours(1));
         await CreateBridgeAsync(service, "invoice-failed", expiresAt: now.AddHours(1));
@@ -84,8 +84,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task GetRequiringAttentionAsyncBoundsTheListAndReportsTheTotal()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         for (var i = 0; i < PayjoinAccountingBridgeService.AttentionListLimit + 1; i++)
         {
@@ -103,8 +103,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task TryRetryAsyncResetsAFailedBridgeForAnotherReconciliationWindow()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         await CreateBridgeAsync(service, "invoice-failed", expiresAt: now.AddHours(1), expectedFinalTransactionId: ExpectedTransactionId);
         await service.MarkFailedAsync("invoice-failed", "reconciliation data problem", CancellationToken.None);
@@ -122,8 +122,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task TryRetryAsyncKeepsTheOriginalDeadlineForFailedUnarmedBridges()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         var originalDeadline = now.AddHours(1);
         await CreateBridgeAsync(service, "invoice-failed", expiresAt: originalDeadline);
@@ -142,8 +142,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task TryRetryAsyncRefusesWrongStoreAndNonTerminalStatuses()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         await CreateBridgeAsync(service, "invoice-failed", expiresAt: now.AddHours(1));
         await service.MarkFailedAsync("invoice-failed", "reconciliation data problem", CancellationToken.None);
@@ -157,8 +157,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task TryRetryAsyncRefusesExpiredUnarmedBridges()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         await CreateBridgeAsync(service, "invoice-unarmed", expiresAt: now.AddMinutes(-5));
         await service.ExpirePendingAsync(now, CancellationToken.None);
@@ -171,8 +171,8 @@ public class PayjoinAccountingBridgeServiceTests
     [Fact]
     public async Task TryRetryAsyncRetriesExpiredArmedBridges()
     {
-        using var context = new TestContext();
-        var service = context.CreateService();
+        using var context = new SessionStoreFixture();
+        var service = context.CreateBridgeService();
         var now = DateTimeOffset.UtcNow;
         var pastGrace = now - PayjoinAccountingBridgeService.ArmedBridgeGracePeriod - TimeSpan.FromMinutes(1);
         await CreateBridgeAsync(service, "invoice-armed", expiresAt: pastGrace, expectedFinalTransactionId: ExpectedTransactionId);
@@ -203,45 +203,4 @@ public class PayjoinAccountingBridgeServiceTests
             CancellationToken.None);
     }
 
-    private sealed class TestContext : IDisposable
-    {
-        private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
-        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
-
-        public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
-
-        public PayjoinAccountingBridgeService CreateService() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
-
-        public void Dispose()
-        {
-            using var db = _dbContextFactory.CreateContext();
-            db.Database.EnsureDeleted();
-        }
-    }
-
-    private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
-    {
-        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
-        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
-
-        public TestPayjoinPluginDbContextFactory()
-            : base(Options.Create(new DatabaseOptions
-            {
-                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
-            }))
-        {
-            var databaseName = $"payjoin-bridge-service-tests-{Guid.NewGuid():N}";
-            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
-                .Options;
-
-            using var db = CreateContext();
-            db.Database.EnsureCreated();
-        }
-
-        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
-        {
-            return new PayjoinPluginDbContext(_dbContextOptions);
-        }
-    }
 }

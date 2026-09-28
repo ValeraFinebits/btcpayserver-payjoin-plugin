@@ -1,11 +1,28 @@
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinFeeRateProviderTests
 {
+    [Fact]
+    public async Task GetMaxEffectiveFeeRateUsesTheProvidedStoreSettingsSnapshot()
+    {
+        var provider = new PayjoinFeeRateProvider(
+            feeProviderFactory: null!,
+            networkProvider: null!,
+            NullLogger<PayjoinFeeRateProvider>.Instance);
+
+        var result = await provider.GetMaxEffectiveFeeRateSatPerVbAsync(
+            "store-1",
+            storeOverrideSatPerVb: 42,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(42UL, result);
+    }
+
     [Fact]
     public void ResolveMaxFeeRatePrefersTheStoreOverride()
     {

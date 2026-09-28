@@ -17,7 +17,10 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 /// </summary>
 internal interface IPayjoinFeeRateProvider
 {
-    Task<ulong> GetMaxEffectiveFeeRateSatPerVbAsync(string storeId, CancellationToken cancellationToken);
+    Task<ulong> GetMaxEffectiveFeeRateSatPerVbAsync(
+        string storeId,
+        long? storeOverrideSatPerVb,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class PayjoinFeeRateProvider : IPayjoinFeeRateProvider
@@ -40,29 +43,28 @@ internal sealed class PayjoinFeeRateProvider : IPayjoinFeeRateProvider
         LoggerMessage.Define<string>(LogLevel.Debug, new EventId(1, nameof(LogEstimationUnavailable)),
             "Payjoin fee estimation unavailable for store {StoreId}; using the fallback maximum fee rate.");
 
-    private readonly IPayjoinStoreSettingsRepository _storeSettingsRepository;
     private readonly IFeeProviderFactory _feeProviderFactory;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly ILogger<PayjoinFeeRateProvider> _logger;
 
     public PayjoinFeeRateProvider(
-        IPayjoinStoreSettingsRepository storeSettingsRepository,
         IFeeProviderFactory feeProviderFactory,
         BTCPayNetworkProvider networkProvider,
         ILogger<PayjoinFeeRateProvider> logger)
     {
-        _storeSettingsRepository = storeSettingsRepository;
         _feeProviderFactory = feeProviderFactory;
         _networkProvider = networkProvider;
         _logger = logger;
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Fee estimation failing for any reason must degrade to the fallback cap, not break session creation.")]
-    public async Task<ulong> GetMaxEffectiveFeeRateSatPerVbAsync(string storeId, CancellationToken cancellationToken)
+    public async Task<ulong> GetMaxEffectiveFeeRateSatPerVbAsync(
+        string storeId,
+        long? storeOverrideSatPerVb,
+        CancellationToken cancellationToken)
     {
-        var settings = await _storeSettingsRepository.GetAsync(storeId).ConfigureAwait(false);
         decimal? estimatedSatPerVb = null;
-        if (settings.MaxFeeRateSatPerVb is null or <= 0)
+        if (storeOverrideSatPerVb is null or <= 0)
         {
             try
             {
@@ -80,7 +82,7 @@ internal sealed class PayjoinFeeRateProvider : IPayjoinFeeRateProvider
             }
         }
 
-        return ResolveMaxFeeRate(settings.MaxFeeRateSatPerVb, estimatedSatPerVb);
+        return ResolveMaxFeeRate(storeOverrideSatPerVb, estimatedSatPerVb);
     }
 
     internal static ulong ResolveMaxFeeRate(long? storeOverrideSatPerVb, decimal? estimatedSatPerVb)
