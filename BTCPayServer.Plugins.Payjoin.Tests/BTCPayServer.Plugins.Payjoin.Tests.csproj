@@ -23,7 +23,7 @@
 	<PackageReference Include="NBXplorer.Client" Version="5.0.10" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="NSubstitute" Version="6.2.0" />
-	<PackageReference Include="coverlet.collector" Version="10.0.1" />
+	<PackageReference Include="coverlet.collector" Version="10.1.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
