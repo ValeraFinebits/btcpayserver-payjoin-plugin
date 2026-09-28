@@ -9,7 +9,7 @@ internal interface IPayjoinReceiverRelayRequestSender
 {
     Task<(byte[] ResponseBody, TRequestContext RequestContext)> SendAsync<TRequestContext>(
         string storeId,
-        string invoiceId,
+        string sessionId,
         Func<string, TRequestContext> buildRequest,
         Func<TRequestContext, (SystemUri Url, string ContentType, byte[] Body)> describeRequest,
         CancellationToken cancellationToken)

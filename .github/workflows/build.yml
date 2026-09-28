@@ -27,4 +27,4 @@ jobs:
           rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
 
       - name: Run unit tests
-        run: dotnet test "BTCPayServer.Plugins.Payjoin.Tests/BTCPayServer.Plugins.Payjoin.Tests.csproj" -c Release --no-build --no-restore
+        run: dotnet test --project "BTCPayServer.Plugins.Payjoin.Tests/BTCPayServer.Plugins.Payjoin.Tests.csproj" -c Release --no-build --no-restore
