@@ -1,8 +1,14 @@
+using BTCPayServer.Client;
 using BTCPayServer.Filters;
 using BTCPayServer.Plugins.Payjoin.Controllers;
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Services.Invoices;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
 
@@ -10,9 +16,9 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 
 public class UIPayJoinControllerTests
 {
-    private static UIPayJoinController CreateController()
+    private static UIPayJoinController CreateController(ILogger<UIPayJoinController>? logger = null)
     {
-        return new UIPayJoinController(null!, null!, null!, null!, null!, null!, null!, null!);
+        return new UIPayJoinController(null!, null!, null!, null!, null!, null!, null!, null!, logger);
     }
 
     private static void AssertRunTestPaymentFailure(ActionResult<RunTestPaymentResponse> actionResult, string expectedMessage)
@@ -81,6 +87,143 @@ public class UIPayJoinControllerTests
     }
 
     [Fact]
+    public void SeedAttentionRecordUsesCheatModeRouteWithoutBypassingRequestProtections()
+    {
+        var method = typeof(UIPayJoinController).GetMethod(nameof(UIPayJoinController.SeedAttentionRecord));
+
+        Assert.NotNull(method);
+        var cheatModeAttribute = Assert.Single(method.GetCustomAttributes(typeof(CheatModeRouteAttribute), inherit: true));
+        Assert.IsType<CheatModeRouteAttribute>(cheatModeAttribute);
+        Assert.Empty(method.GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: true));
+        Assert.Empty(method.GetCustomAttributes(typeof(IgnoreAntiforgeryTokenAttribute), inherit: true));
+    }
+
+    [Fact]
+    public async Task SeedAttentionRecordForbidsCallerWithoutAccessToTheInvoiceStore()
+    {
+        const string invoiceId = "invoice-1";
+        const string storeId = "store-1";
+        var invoiceLookup = Substitute.For<IPayjoinInvoiceLookup>();
+        invoiceLookup.GetInvoiceAsync(invoiceId).Returns(Task.FromResult<InvoiceEntity?>(new InvoiceEntity
+        {
+            Id = invoiceId,
+            StoreId = storeId
+        }));
+        var authorizationService = Substitute.For<IAuthorizationService>();
+        authorizationService
+            .AuthorizeAsync(Arg.Any<System.Security.Claims.ClaimsPrincipal>(), storeId, Policies.CanModifyStoreSettings)
+            .Returns(Task.FromResult(AuthorizationResult.Failed()));
+        using var controller = CreateController();
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
+
+        var result = await controller.SeedAttentionRecord(
+            new SeedAttentionRecordRequest { InvoiceId = invoiceId },
+            invoiceLookup,
+            authorizationService,
+            TestContext.Current.CancellationToken);
+
+        Assert.IsType<ForbidResult>(result.Result);
+        await authorizationService.Received(1)
+            .AuthorizeAsync(Arg.Any<System.Security.Claims.ClaimsPrincipal>(), storeId, Policies.CanModifyStoreSettings);
+    }
+
+    [Theory]
+    [InlineData(null, false, "Failed", "Failed")]
+    [InlineData("expired", true, "Expired", "armed Expired")]
+    public async Task SeedAttentionRecordCreatesTheRequestedFixture(
+        string? requestedKind,
+        bool expired,
+        string expectedStatus,
+        string expectedDescription)
+    {
+        const string invoiceId = "invoice-1";
+        const string storeId = "store-1";
+        var expectedKind = expired
+            ? PayjoinAttentionRecordSeedKind.Expired
+            : PayjoinAttentionRecordSeedKind.Failed;
+        var seededStatus = expired
+            ? PayjoinAccountingBridgeStatus.Expired
+            : PayjoinAccountingBridgeStatus.Failed;
+        var invoiceLookup = Substitute.For<IPayjoinInvoiceLookup>();
+        invoiceLookup.GetInvoiceAsync(invoiceId).Returns(Task.FromResult<InvoiceEntity?>(new InvoiceEntity
+        {
+            Id = invoiceId,
+            StoreId = storeId
+        }));
+        var authorizationService = Substitute.For<IAuthorizationService>();
+        authorizationService
+            .AuthorizeAsync(Arg.Any<System.Security.Claims.ClaimsPrincipal>(), storeId, Policies.CanModifyStoreSettings)
+            .Returns(Task.FromResult(AuthorizationResult.Success()));
+        var recordSeeder = new TestAttentionRecordSeeder(seededStatus);
+        var serviceProvider = Substitute.For<IServiceProvider>();
+        serviceProvider.GetService(typeof(IPayjoinAttentionRecordSeeder)).Returns(recordSeeder);
+        using var controller = CreateController();
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { RequestServices = serviceProvider }
+        };
+
+        var result = await controller.SeedAttentionRecord(
+            new SeedAttentionRecordRequest { InvoiceId = invoiceId, Kind = requestedKind },
+            invoiceLookup,
+            authorizationService,
+            TestContext.Current.CancellationToken);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var response = Assert.IsType<SeedAttentionRecordResponse>(ok.Value);
+        Assert.True(response.Succeeded);
+        Assert.Equal(expectedStatus, response.Status);
+        Assert.Contains(expectedDescription, response.Message, StringComparison.Ordinal);
+        Assert.NotNull(recordSeeder.ReceivedRequest);
+        Assert.Equal(invoiceId, recordSeeder.ReceivedRequest!.InvoiceId);
+        Assert.Equal(storeId, recordSeeder.ReceivedRequest.StoreId);
+        Assert.Equal(expectedKind, recordSeeder.ReceivedRequest.Kind);
+    }
+
+    [Fact]
+    public async Task SeedAttentionRecordLogsUnexpectedFailureWithNonConflictingEventId()
+    {
+        const string invoiceId = "invoice-1";
+        const string storeId = "store-1";
+        var invoiceLookup = Substitute.For<IPayjoinInvoiceLookup>();
+        invoiceLookup.GetInvoiceAsync(invoiceId).Returns(Task.FromResult<InvoiceEntity?>(new InvoiceEntity
+        {
+            Id = invoiceId,
+            StoreId = storeId
+        }));
+        var authorizationService = Substitute.For<IAuthorizationService>();
+        authorizationService
+            .AuthorizeAsync(Arg.Any<System.Security.Claims.ClaimsPrincipal>(), storeId, Policies.CanModifyStoreSettings)
+            .Returns(Task.FromResult(AuthorizationResult.Success()));
+        var expectedException = new InvalidOperationException("Simulated seed failure.");
+        var serviceProvider = Substitute.For<IServiceProvider>();
+        serviceProvider
+            .GetService(typeof(IPayjoinAttentionRecordSeeder))
+            .Returns(_ => throw expectedException);
+        var logger = new TestLogger<UIPayJoinController>();
+        using var controller = CreateController(logger);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { RequestServices = serviceProvider }
+        };
+
+        var result = await controller.SeedAttentionRecord(
+            new SeedAttentionRecordRequest { InvoiceId = invoiceId },
+            invoiceLookup,
+            authorizationService,
+            TestContext.Current.CancellationToken);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var response = Assert.IsType<SeedAttentionRecordResponse>(ok.Value);
+        Assert.False(response.Succeeded);
+        Assert.Contains(expectedException.Message, response.Message, StringComparison.Ordinal);
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Error, entry.LogLevel);
+        Assert.Equal(new EventId(3, "LogSeedAttentionRecordFailed"), entry.EventId);
+        Assert.Same(expectedException, entry.Exception);
+    }
+
+    [Fact]
     public async Task RunTestPaymentThrowsWhenRequestIsNull()
     {
         using var controller = CreateController();
@@ -132,6 +275,50 @@ public class UIPayJoinControllerTests
         }, TestContext.Current.CancellationToken);
 
         AssertRunTestPaymentFailure(result, "invoice paymentUrl invalid");
+    }
+
+    private sealed class TestLogger<T> : ILogger<T>
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull
+        {
+            return NullScope.Instance;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(new LogEntry(logLevel, eventId, exception));
+        }
+
+        public sealed record LogEntry(LogLevel LogLevel, EventId EventId, Exception? Exception);
+
+        private sealed class NullScope : IDisposable
+        {
+            public static NullScope Instance { get; } = new();
+
+            public void Dispose()
+            {
+            }
+        }
+    }
+
+    private sealed class TestAttentionRecordSeeder(PayjoinAccountingBridgeStatus? result) : IPayjoinAttentionRecordSeeder
+    {
+        public SeedPayjoinAttentionRecordRequest? ReceivedRequest { get; private set; }
+
+        public Task<PayjoinAccountingBridgeStatus?> TrySeedAttentionRecordAsync(
+            SeedPayjoinAttentionRecordRequest request,
+            CancellationToken cancellationToken)
+        {
+            ReceivedRequest = request;
+            return Task.FromResult(result);
+        }
     }
 
 }
