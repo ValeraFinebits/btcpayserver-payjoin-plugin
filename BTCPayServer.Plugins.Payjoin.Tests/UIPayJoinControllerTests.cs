@@ -15,6 +15,14 @@ public class UIPayJoinControllerTests
         return new UIPayJoinController(null!, null!, null!, null!, null!, null!, null!, null!);
     }
 
+    private static UIPayJoinController CreateController(Exception paymentUrlException)
+    {
+        var paymentUrlService = Substitute.For<IPayjoinInvoicePaymentUrlService>();
+        paymentUrlService.GetInvoicePaymentUrlAsync("invoice-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<GetBip21Response?>(paymentUrlException));
+        return new UIPayJoinController(null!, null!, null!, null!, null!, null!, paymentUrlService, null!);
+    }
+
     private static void AssertRunTestPaymentFailure(ActionResult<RunTestPaymentResponse> actionResult, string expectedMessage)
     {
         var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
@@ -81,11 +89,17 @@ public class UIPayJoinControllerTests
     }
 
     [Fact]
-    public async Task RunTestPaymentThrowsWhenRequestIsNull()
+    public async Task RunTestPaymentReturnsBadRequestWhenRequestIsNull()
     {
         using var controller = CreateController();
 
-        await Assert.ThrowsAsync<ArgumentNullException>(() => controller.RunTestPayment(null!, TestContext.Current.CancellationToken));
+        var result = await controller.RunTestPayment(null!, TestContext.Current.CancellationToken);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var response = Assert.IsType<RunTestPaymentResponse>(badRequest.Value);
+        Assert.False(response.Succeeded);
+        Assert.Contains("invoiceId", response.Message, StringComparison.Ordinal);
+        Assert.Null(response.TransactionId);
     }
 
     [Fact]
@@ -134,4 +148,32 @@ public class UIPayJoinControllerTests
         AssertRunTestPaymentFailure(result, "invoice paymentUrl invalid");
     }
 
+    [Fact]
+    public async Task RunTestPaymentReturnsFailureWhenUnexpectedExceptionThrown()
+    {
+        using var controller = CreateController(new InvalidOperationException("boom"));
+
+        var result = await controller.RunTestPayment(new RunTestPaymentRequest { InvoiceId = "invoice-1" }, TestContext.Current.CancellationToken);
+
+        AssertRunTestPaymentFailure(result, "test payment failed unexpectedly, see server logs");
+    }
+
+    [Fact]
+    public async Task RunTestPaymentRethrowsWhenRequestIsCancelled()
+    {
+        using var controller = CreateController(new OperationCanceledException());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => controller.RunTestPayment(new RunTestPaymentRequest { InvoiceId = "invoice-1" }, new CancellationToken(canceled: true)));
+    }
+
+    [Fact]
+    public async Task RunTestPaymentReturnsFailureWhenCancelledWithoutRequestCancellation()
+    {
+        using var controller = CreateController(new OperationCanceledException());
+
+        var result = await controller.RunTestPayment(new RunTestPaymentRequest { InvoiceId = "invoice-1" }, TestContext.Current.CancellationToken);
+
+        AssertRunTestPaymentFailure(result, "test payment failed unexpectedly, see server logs");
+    }
 }
