@@ -16,6 +16,8 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinAccountingPaymentServiceTests
 {
+    private static readonly KeyPath ExpectedKeyPath = new("0/18");
+
     [Fact]
     public void ResolveFinalOutputIndexFallsBackToSettlementScriptWhenExpectedFinalOutputIndexMissing()
     {
@@ -205,12 +207,48 @@ public class PayjoinAccountingPaymentServiceTests
         Assert.Equal(fixture.FinalOutPoint.ToString(), accountedPayment.Id);
         Assert.Equal(PaymentStatus.Settled, accountedPayment.Status);
         Assert.Equal(Money.Satoshis(fixture.AccountedValueSats).ToDecimal(MoneyUnit.BTC), accountedPayment.Value);
+        var paymentDetails = fixture.Handler.ParsePaymentDetails(accountedPayment.Details);
+        Assert.Equal(ExpectedKeyPath, paymentDetails.KeyPath);
+        Assert.Equal(18, paymentDetails.KeyIndex);
 
         var fallbackPayment = invoice.GetPayments(false).Single(p => p.Id == fixture.FallbackOutPoint.ToString());
         Assert.Equal(PaymentStatus.Unaccounted, fallbackPayment.Status);
 
         Assert.Equal(1, fixture.InvoiceNeedUpdateEvents);
         Assert.Equal(1, fixture.StalePaidOverCorrections);
+    }
+
+    [Fact]
+    public async Task ReconcileRecordsTheSettlementOutputAsThePaymentDestination()
+    {
+        using var fixture = EndToEndFixture.Create(useDistinctInvoiceDestination: true);
+        var settlementScript = Script.FromBytesUnsafe(Convert.FromHexString(fixture.Bridge.SettlementScript!));
+        var settlementDestination = settlementScript.GetDestinationAddress(Network.RegTest)!.ToString();
+        var invoiceDestination = fixture.World.Materialize().GetPaymentPrompt(fixture.Handler.PaymentMethodId)!.Destination;
+        Assert.NotEqual(invoiceDestination, settlementDestination);
+        fixture.SetFinalTransactionConfirmations(1);
+
+        var payment = await fixture.Service.ReconcileWithFinalTransactionAsync(
+            fixture.Bridge,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(payment);
+        Assert.Equal(settlementDestination, payment.Destination);
+    }
+
+    [Fact]
+    public async Task ReconcileRejectsBridgeWithoutPersistedKeyPath()
+    {
+        using var fixture = EndToEndFixture.Create(includePersistedKeyPath: false);
+        fixture.SetFinalTransactionConfirmations(1);
+
+        var exception = await Assert.ThrowsAsync<PayjoinAccountingReconciliationDataException>(() =>
+            fixture.Service.ReconcileWithFinalTransactionAsync(
+                fixture.Bridge,
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("Settlement key path is missing", exception.Message, StringComparison.Ordinal);
+        Assert.Single(fixture.World.Rows);
     }
 
     [Fact]
@@ -238,6 +276,9 @@ public class PayjoinAccountingPaymentServiceTests
         var accountedPayment = Assert.Single(invoice.GetPayments(true));
         Assert.Equal(fixture.FinalOutPoint.ToString(), accountedPayment.Id);
         Assert.Equal(PaymentStatus.Settled, accountedPayment.Status);
+        var paymentDetails = fixture.Handler.ParsePaymentDetails(accountedPayment.Details);
+        Assert.Equal(ExpectedKeyPath, paymentDetails.KeyPath);
+        Assert.Equal(18, paymentDetails.KeyIndex);
 
         var fallbackPayment = invoice.GetPayments(false).Single(p => p.Id == fixture.FallbackOutPoint.ToString());
         Assert.Equal(PaymentStatus.Unaccounted, fallbackPayment.Status);
@@ -334,6 +375,7 @@ public class PayjoinAccountingPaymentServiceTests
         private EndToEndFixture(
             PayjoinAccountingPaymentService service,
             InMemoryPaymentWorld world,
+            BitcoinLikePaymentHandler handler,
             PayjoinAccountingBridgeState bridge,
             OutPoint fallbackOutPoint,
             OutPoint finalOutPoint,
@@ -347,6 +389,7 @@ public class PayjoinAccountingPaymentServiceTests
         {
             Service = service;
             World = world;
+            Handler = handler;
             Bridge = bridge;
             FallbackOutPoint = fallbackOutPoint;
             FinalOutPoint = finalOutPoint;
@@ -374,6 +417,8 @@ public class PayjoinAccountingPaymentServiceTests
 
         public InMemoryPaymentWorld World { get; }
 
+        public BitcoinLikePaymentHandler Handler { get; }
+
         public PayjoinAccountingBridgeState Bridge { get; }
 
         public OutPoint FallbackOutPoint { get; }
@@ -396,7 +441,7 @@ public class PayjoinAccountingPaymentServiceTests
             };
         }
 
-        public static EndToEndFixture Create()
+        public static EndToEndFixture Create(bool includePersistedKeyPath = true, bool useDistinctInvoiceDestination = false)
         {
             const long accountedValueSats = 50_000;
             var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
@@ -420,7 +465,11 @@ public class PayjoinAccountingPaymentServiceTests
 
             using var settlementKey = new Key();
             using var changeKey = new Key();
+            using var invoiceKey = new Key();
             var settlementScript = settlementKey.PubKey.WitHash.ScriptPubKey;
+            var invoiceScript = useDistinctInvoiceDestination
+                ? invoiceKey.PubKey.WitHash.ScriptPubKey
+                : settlementScript;
 
             var invoice = new InvoiceEntity
             {
@@ -432,7 +481,7 @@ public class PayjoinAccountingPaymentServiceTests
             {
                 Currency = PayjoinConstants.BitcoinCode,
                 Divisibility = 8,
-                Destination = settlementScript.GetDestinationAddress(Network.RegTest)!.ToString()
+                Destination = invoiceScript.GetDestinationAddress(Network.RegTest)!.ToString()
             });
 
             var fallbackOutPoint = new OutPoint(
@@ -477,7 +526,10 @@ public class PayjoinAccountingPaymentServiceTests
                 CreatedAt: DateTimeOffset.UtcNow,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ReconciledAt: null,
-                ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
+                ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5))
+            {
+                SettlementKeyPath = includePersistedKeyPath ? ExpectedKeyPath.ToString() : null
+            };
 
             var transactionReader = new ScriptedWalletTransactionReader();
             var transactionLabeler = new RecordingTransactionLabeler();
@@ -500,6 +552,7 @@ public class PayjoinAccountingPaymentServiceTests
             return new EndToEndFixture(
                 service,
                 world,
+                handler,
                 bridge,
                 fallbackOutPoint,
                 finalOutPoint,

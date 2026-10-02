@@ -18,6 +18,8 @@ internal sealed class PayjoinAccountingBridgeConfiguration : IEntityTypeConfigur
             .HasMaxLength(PayjoinPluginDbSchema.TransactionIdMaxLength);
         entity.Property(x => x.SettlementScript)
             .HasMaxLength(PayjoinPluginDbSchema.BridgeSettlementScriptMaxLength);
+        entity.Property(x => x.SettlementKeyPath)
+            .HasMaxLength(PayjoinPluginDbSchema.BridgeSettlementKeyPathMaxLength);
         entity.Property(x => x.ExpectedFinalTransactionId)
             .HasMaxLength(PayjoinPluginDbSchema.TransactionIdMaxLength);
         entity.Property(x => x.ExpectedFinalOutputIndex);
