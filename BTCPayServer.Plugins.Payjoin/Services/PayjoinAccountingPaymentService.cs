@@ -147,9 +147,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             return null;
         }
 
-        var keyPath = GetRecordedKeyPath(accountingContext, finalPayment) ?? GetPersistedKeyPath(bridge)
-            ?? throw new PayjoinAccountingReconciliationDataException(
-                $"Settlement key path is missing for invoice '{bridge.InvoiceId}'.");
+        var keyPath = GetRecordedKeyPath(accountingContext, finalPayment) ?? GetPersistedKeyPath(bridge);
 
         var finalPaymentIsNew = false;
         if (finalPayment is null)
@@ -234,7 +232,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             .FirstOrDefault(p => p.Id == outPoint.ToString() && p.PaymentMethodId == accountingContext.PaymentMethodId);
     }
 
-    private static PaymentData CreateObservedPaymentData(AccountingContext accountingContext, long accountedValueSats, uint256 transactionId, uint outputIndex, long confirmations, bool rbf, KeyPath keyPath, string settlementDestination)
+    private static PaymentData CreateObservedPaymentData(AccountingContext accountingContext, long accountedValueSats, uint256 transactionId, uint outputIndex, long confirmations, bool rbf, KeyPath? keyPath, string settlementDestination)
     {
         var details = CreatePaymentDetails(transactionId, outputIndex, rbf, keyPath, confirmations);
         var paymentData = new PaymentData
@@ -327,14 +325,20 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         return keyPath;
     }
 
-    private static void ApplyFinalPaymentState(AccountingContext accountingContext, PaymentEntity payment, long confirmations, uint256 transactionId, uint outputIndex, long accountedValueSats, bool rbf, KeyPath keyPath, string settlementDestination)
+    private static void ApplyFinalPaymentState(AccountingContext accountingContext, PaymentEntity payment, long confirmations, uint256 transactionId, uint outputIndex, long accountedValueSats, bool rbf, KeyPath? keyPath, string settlementDestination)
     {
+        var details = CreatePaymentDetails(transactionId, outputIndex, rbf, keyPath, confirmations);
+        if (keyPath is null && payment.Details is not null)
+        {
+            details.KeyIndex = accountingContext.Handler.ParsePaymentDetails(payment.Details).KeyIndex;
+        }
+
         payment.Value = Money.Satoshis(accountedValueSats).ToDecimal(MoneyUnit.BTC);
         payment.Destination = settlementDestination;
-        payment.Status = confirmations >= NBXplorerListener.ConfirmationRequired(accountingContext.Invoice, CreatePaymentDetails(transactionId, outputIndex, rbf, keyPath))
+        payment.Status = confirmations >= NBXplorerListener.ConfirmationRequired(accountingContext.Invoice, details)
             ? PaymentStatus.Settled
             : PaymentStatus.Processing;
-        payment.SetDetails(accountingContext.Handler, CreatePaymentDetails(transactionId, outputIndex, rbf, keyPath, confirmations));
+        payment.SetDetails(accountingContext.Handler, details);
     }
 
     private static string GetSettlementDestination(AccountingContext accountingContext, Script settlementScript, string invoiceId)
@@ -408,7 +412,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             : null;
     }
 
-    private static BitcoinLikePaymentData CreatePaymentDetails(uint256 txId, uint outputIndex, bool rbf, KeyPath keyPath, long confirmations = -1)
+    private static BitcoinLikePaymentData CreatePaymentDetails(uint256 txId, uint outputIndex, bool rbf, KeyPath? keyPath, long confirmations = -1)
     {
         return new BitcoinLikePaymentData
         {
@@ -416,7 +420,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             RBF = rbf,
             ConfirmationCount = confirmations,
             KeyPath = keyPath,
-            KeyIndex = checked((int)keyPath.Indexes[^1])
+            KeyIndex = keyPath is null ? null : checked((int)keyPath.Indexes[^1])
         };
     }
 

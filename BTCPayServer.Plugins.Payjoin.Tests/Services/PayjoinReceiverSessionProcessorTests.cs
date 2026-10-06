@@ -11,6 +11,7 @@ using NBitcoin;
 using NBXplorer;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using System.Collections.Concurrent;
+using System.Net.Http;
 using Xunit;
 using HasReplyableError = Payjoin.HasReplyableError;
 using Initialized = Payjoin.Initialized;
@@ -102,22 +103,31 @@ public class PayjoinReceiverSessionProcessorTests
         Assert.Contains(session.InvoiceId, guard.VisitedInvoiceIds);
     }
 
-    [Fact]
-    public async Task ProcessTickAsyncIsolatesInvalidOperationFailuresPerSession()
+    [Theory]
+    [InlineData("invalid", false)]
+    [InlineData("http", true)]
+    [InlineData("timeout", true)]
+    public async Task ProcessTickAsyncIsolatesFailuresAndRetainsSessionsForTransientErrors(string failure, bool retained)
     {
         // Arrange
         using var testContext = new TestContext();
         var store = testContext.CreateStore();
         var failingSession = CreateSession(store, "invoice-failing");
         var survivingSession = CreateSession(store, "invoice-surviving");
-        var guard = new SelectiveGuard(failingSession.InvoiceId);
+        Exception exception = failure switch
+        {
+            "http" => new HttpRequestException("Wallet temporarily unavailable."),
+            "timeout" => new TaskCanceledException("Wallet lookup timed out."),
+            _ => new InvalidOperationException("Invalid receiver state.")
+        };
+        var guard = new SelectiveGuard(failingSession.InvoiceId, exception);
         var processor = CreateProcessor(store, guard);
 
         // Act
         await processor.ProcessTickAsync(CancellationToken.None);
 
         // Assert
-        Assert.False(store.TryGetSession(failingSession.InvoiceId, out _));
+        Assert.Equal(retained, store.TryGetSession(failingSession.InvoiceId, out _));
         Assert.True(store.TryGetSession(survivingSession.InvoiceId, out var reloadedSurvivingSession));
         Assert.NotNull(reloadedSurvivingSession);
         Assert.Contains(failingSession.InvoiceId, guard.VisitedInvoiceIds);
@@ -145,10 +155,73 @@ public class PayjoinReceiverSessionProcessorTests
             finalizer.Calls);
     }
 
+    [Theory]
+    [InlineData("Ready", true)]
+    [InlineData("RetryableFailure", true)]
+    [InlineData("InvalidDestination", false)]
+    public async Task PreparingSettlementOutputsRetainsOrRemovesTheSessionAccordingToTheOutcome(string outcome, bool retained)
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-output-outcome");
+        using var key = new Key();
+        var receiverScript = key.PubKey.WitHash.ScriptPubKey.ToBytes();
+        var status = Enum.Parse<PayjoinReceiverOutputBuilder.OutputBuildStatus>(outcome);
+        var outputs = status == PayjoinReceiverOutputBuilder.OutputBuildStatus.Ready
+            ? PayjoinReceiverOutputBuilder.CreateSettlementOutputs(50_000, receiverScript, null)
+            : null;
+        var builder = new ScriptedOutputBuilder(() => new PayjoinReceiverOutputBuilder.OutputBuildResult(status, outputs));
+        var processor = CreateProcessor(store, new RecordingSessionGuard(), outputBuilder: builder);
+
+        var result = await processor.CreateSettlementOutputsOrRemoveSessionAsync(
+            true, session.StoreId, session.InvoiceId, receiverScript, CancellationToken.None);
+
+        Assert.Same(outputs, result);
+        Assert.Equal(retained, store.TryGetSession(session.InvoiceId, out var reloaded));
+        if (retained)
+        {
+            Assert.Equal(session.MonitoringExpiresAt, reloaded!.MonitoringExpiresAt);
+        }
+    }
+
+    [Fact]
+    public async Task TemporaryOutputLookupFailureLeavesTheSessionAvailableForRetry()
+    {
+        using var testContext = new TestContext();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-output-retry");
+        using var key = new Key();
+        var script = key.PubKey.WitHash.ScriptPubKey.ToBytes();
+        var attempts = 0;
+        var builder = new ScriptedOutputBuilder(() =>
+        {
+            if (attempts++ == 0)
+            {
+                throw new HttpRequestException("Wallet lookup temporarily unavailable.");
+            }
+            return new PayjoinReceiverOutputBuilder.OutputBuildResult(
+                PayjoinReceiverOutputBuilder.OutputBuildStatus.Ready,
+                PayjoinReceiverOutputBuilder.CreateSettlementOutputs(50_000, script, null));
+        });
+        var processor = CreateProcessor(store, new RecordingSessionGuard(), outputBuilder: builder);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => processor.CreateSettlementOutputsOrRemoveSessionAsync(
+            true, session.StoreId, session.InvoiceId, script, CancellationToken.None));
+        Assert.True(store.TryGetSession(session.InvoiceId, out _));
+        var outputs = await processor.CreateSettlementOutputsOrRemoveSessionAsync(
+            true, session.StoreId, session.InvoiceId, script, CancellationToken.None);
+
+        Assert.NotNull(outputs);
+        Assert.Null(outputs.SettlementKeyPath);
+        Assert.True(store.TryGetSession(session.InvoiceId, out var reloaded));
+        Assert.Equal(session.MonitoringExpiresAt, reloaded!.MonitoringExpiresAt);
+    }
+
     private static PayjoinReceiverSessionProcessor CreateProcessor(
         PayjoinReceiverSessionStore sessionStore,
         IPayjoinReceiverSessionGuard sessionGuard,
-        IPayjoinReceiverProposalFinalizer? proposalFinalizer = null)
+        IPayjoinReceiverProposalFinalizer? proposalFinalizer = null,
+        IPayjoinReceiverOutputBuilder? outputBuilder = null)
     {
         var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
         var network = new BTCPayNetwork
@@ -170,7 +243,7 @@ public class PayjoinReceiverSessionProcessorTests
             sessionStore,
             sessionGuard,
             new NoOpStateProcessor(),
-            new NoOpOutputBuilder(),
+            outputBuilder ?? new NoOpOutputBuilder(),
             new NoOpInputSelector(),
             new NoOpAccountingBridgeService(),
             new NoOpAccountingPaymentService(),
@@ -218,7 +291,12 @@ public class PayjoinReceiverSessionProcessorTests
 
     private sealed class NoOpOutputBuilder : IPayjoinReceiverOutputBuilder
     {
-        public Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken) => Task.FromResult<PayjoinReceiverOutputBuilder.OutputReplacement?>(null);
+        public Task<PayjoinReceiverOutputBuilder.OutputBuildResult> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken) => Task.FromResult(new PayjoinReceiverOutputBuilder.OutputBuildResult(PayjoinReceiverOutputBuilder.OutputBuildStatus.RetryableFailure));
+    }
+
+    private sealed class ScriptedOutputBuilder(Func<PayjoinReceiverOutputBuilder.OutputBuildResult> build) : IPayjoinReceiverOutputBuilder
+    {
+        public Task<PayjoinReceiverOutputBuilder.OutputBuildResult> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken) => Task.FromResult(build());
     }
 
     private sealed class NoOpInputSelector : IPayjoinReceiverInputSelector
@@ -298,7 +376,7 @@ public class PayjoinReceiverSessionProcessorTests
         public Task<PaymentEntity?> ReconcileWithFinalTransactionAsync(PayjoinAccountingBridgeState bridge, CancellationToken cancellationToken) => Task.FromResult<PaymentEntity?>(null);
     }
 
-    private sealed class SelectiveGuard(string failingInvoiceId) : IPayjoinReceiverSessionGuard
+    private sealed class SelectiveGuard(string failingInvoiceId, Exception failure) : IPayjoinReceiverSessionGuard
     {
         public ConcurrentBag<string> VisitedInvoiceIds { get; } = [];
 
@@ -307,7 +385,7 @@ public class PayjoinReceiverSessionProcessorTests
             VisitedInvoiceIds.Add(session.InvoiceId);
             if (string.Equals(session.InvoiceId, failingInvoiceId, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException("Simulated invalid receiver state.");
+                throw failure;
             }
 
             return Task.FromResult<PayjoinReceiverSessionGuardResult?>(null);

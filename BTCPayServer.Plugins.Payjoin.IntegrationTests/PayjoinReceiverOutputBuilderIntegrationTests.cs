@@ -5,6 +5,7 @@ using BTCPayServer.Services.Invoices;
 using BTCPayServer.Tests;
 using NBitcoin;
 using NBXplorer.DerivationStrategy;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
@@ -32,7 +33,7 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
         using var receiverKey = new Key();
         var receiverScript = receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes();
 
-        var result = await outputBuilder.TryCreateSettlementOutputsAsync(
+        var buildResult = await outputBuilder.TryCreateSettlementOutputsAsync(
             context.Merchant.StoreId,
             "hot-wallet-path-test",
             receiverScript,
@@ -40,8 +41,10 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
             pinnedSettlementAmountSats: SettlementAmountSats,
             cancellationToken: cts.Token).ConfigureAwait(true);
 
-        Assert.NotNull(result);
-        Assert.Equal<uint>(1, result!.SettlementKeyPath.Indexes[0]);
+        Assert.Equal(PayjoinReceiverOutputBuilder.OutputBuildStatus.Ready, buildResult.Status);
+        var result = Assert.IsType<PayjoinReceiverOutputBuilder.OutputReplacement>(buildResult.Outputs);
+        Assert.NotNull(result.SettlementKeyPath);
+        Assert.Equal<uint>(1, result.SettlementKeyPath.Indexes[0]);
         await AssertNbxplorerReturnedMatchingPathAsync(
             tester,
             context.Merchant.DerivationScheme,
@@ -70,7 +73,7 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
         using var receiverKey = new Key();
         var receiverScript = receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes();
 
-        var result = await outputBuilder.TryCreateSettlementOutputsAsync(
+        var buildResult = await outputBuilder.TryCreateSettlementOutputsAsync(
             context.Merchant.StoreId,
             "cold-wallet-path-test",
             receiverScript,
@@ -78,8 +81,10 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
             pinnedSettlementAmountSats: SettlementAmountSats,
             cancellationToken: cts.Token).ConfigureAwait(true);
 
-        Assert.NotNull(result);
-        Assert.Equal<uint>(1, result!.SettlementKeyPath.Indexes[0]);
+        Assert.Equal(PayjoinReceiverOutputBuilder.OutputBuildStatus.Ready, buildResult.Status);
+        var result = Assert.IsType<PayjoinReceiverOutputBuilder.OutputReplacement>(buildResult.Outputs);
+        Assert.NotNull(result.SettlementKeyPath);
+        Assert.Equal<uint>(1, result.SettlementKeyPath.Indexes[0]);
         await AssertNbxplorerReturnedMatchingPathAsync(
             tester,
             coldDerivation,
@@ -93,12 +98,16 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
         Assert.Null(hotWalletKeyInformation);
     }
 
-    [Fact]
+    [Theory]
+    [InlineData(true, "matching")]
+    [InlineData(false, "matching")]
+    [InlineData(false, "different")]
+    [InlineData(false, "malformed")]
     [Trait("Integration", "Integration")]
-    public async Task DisabledOutputSubstitutionPreservesInvoicePathWithoutReservingChange()
+    public async Task DisabledOutputSubstitutionValidatesTheInvoiceScriptWithoutReservingChange(bool includeKeyPath, string destination)
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester(newDb: true);
+        using var tester = CreateServerTester(scope: $"preserve-invoice-script-{includeKeyPath}-{destination}", newDb: true);
         var context = await PayjoinAccountTestHelper
             .CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token)
             .ConfigureAwait(true);
@@ -119,6 +128,20 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
         var handlers = tester.PayTester.GetService<PaymentMethodHandlerDictionary>();
         var promptDetails = Assert.IsType<BitcoinPaymentPromptDetails>(handlers.ParsePaymentPromptDetails(prompt!));
         Assert.NotNull(promptDetails.KeyPath);
+        if (!includeKeyPath)
+        {
+            promptDetails.KeyPath = null;
+            var handler = handlers[invoiceContext.PaymentMethodId];
+            prompt!.Details = JToken.FromObject(promptDetails, handler.Serializer);
+            using var otherKey = new Key();
+            prompt.Destination = destination switch
+            {
+                "different" => otherKey.PubKey.WitHash.GetAddress(Network.RegTest).ToString(),
+                "malformed" => "invalid-bitcoin-address",
+                _ => prompt.Destination
+            };
+            await invoiceRepository.UpdatePrompt(invoiceContext.InvoiceId, prompt).ConfigureAwait(true);
+        }
 
         var changeBefore = await tester.ExplorerClient.GetUnusedAsync(
             context.Merchant.DerivationScheme,
@@ -129,7 +152,7 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
         Assert.NotNull(changeBefore);
 
         var outputBuilder = tester.PayTester.GetService<IPayjoinReceiverOutputBuilder>();
-        var result = await outputBuilder.TryCreateSettlementOutputsAsync(
+        var buildResult = await outputBuilder.TryCreateSettlementOutputsAsync(
             context.Merchant.StoreId,
             invoiceContext.InvoiceId,
             invoiceContext.InvoiceScript.ToBytes(),
@@ -137,13 +160,26 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
             pinnedSettlementAmountSats: null,
             cancellationToken: cts.Token).ConfigureAwait(true);
 
-        Assert.NotNull(result);
-        Assert.Equal(invoiceContext.InvoiceScript.ToBytes(), result!.SettlementScript);
-        Assert.Equal(promptDetails.KeyPath, result.SettlementKeyPath);
-        Assert.Equal<uint>(0, result.SettlementKeyPath.Indexes[0]);
-        Assert.Equal(
-            checked((ulong)Money.Coins(invoiceContext.ExpectedDue).Satoshi),
-            result.SettlementAmountSats);
+        if (destination == "matching")
+        {
+            Assert.Equal(PayjoinReceiverOutputBuilder.OutputBuildStatus.Ready, buildResult.Status);
+            var result = Assert.IsType<PayjoinReceiverOutputBuilder.OutputReplacement>(buildResult.Outputs);
+            Assert.Equal(invoiceContext.InvoiceScript.ToBytes(), result.SettlementScript);
+            Assert.Equal(promptDetails.KeyPath, result.SettlementKeyPath);
+            if (includeKeyPath)
+            {
+                Assert.NotNull(result.SettlementKeyPath);
+                Assert.Equal<uint>(0, result.SettlementKeyPath.Indexes[0]);
+            }
+            Assert.Equal(
+                checked((ulong)Money.Coins(invoiceContext.ExpectedDue).Satoshi),
+                result.SettlementAmountSats);
+        }
+        else
+        {
+            Assert.Equal(PayjoinReceiverOutputBuilder.OutputBuildStatus.InvalidDestination, buildResult.Status);
+            Assert.Null(buildResult.Outputs);
+        }
 
         var changeAfter = await tester.ExplorerClient.GetUnusedAsync(
             context.Merchant.DerivationScheme,
@@ -162,6 +198,7 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
         PayjoinReceiverOutputBuilder.OutputReplacement result,
         CancellationToken cancellationToken)
     {
+        Assert.NotNull(result.SettlementKeyPath);
         Assert.NotEmpty(result.SettlementKeyPath.Indexes);
         var settlementScript = Script.FromBytesUnsafe(result.SettlementScript);
         var standardDerivation = Assert.IsAssignableFrom<StandardDerivationStrategyBase>(derivation);
