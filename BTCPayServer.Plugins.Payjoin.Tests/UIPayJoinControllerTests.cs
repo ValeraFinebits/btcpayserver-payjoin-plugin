@@ -189,7 +189,7 @@ public class UIPayJoinControllerTests
     }
 
     [Fact]
-    public async Task SeedAttentionRecordLogsUnexpectedFailureWithNonConflictingEventId()
+    public async Task SeedAttentionRecordHidesUnexpectedFailureAndLogsTheFullException()
     {
         const string invoiceId = "invoice-1";
         const string storeId = "store-1";
@@ -203,7 +203,8 @@ public class UIPayJoinControllerTests
         authorizationService
             .AuthorizeAsync(Arg.Any<System.Security.Claims.ClaimsPrincipal>(), storeId, Policies.CanModifyStoreSettings)
             .Returns(Task.FromResult(AuthorizationResult.Success()));
-        var expectedException = new InvalidOperationException("Simulated seed failure.");
+        const string privateValue = "seed-db-private-value-158";
+        var expectedException = new InvalidOperationException($"Connection failed: {privateValue}");
         var serviceProvider = Substitute.For<IServiceProvider>();
         serviceProvider
             .GetService(typeof(IPayjoinAttentionRecordSeeder))
@@ -224,10 +225,107 @@ public class UIPayJoinControllerTests
         var ok = Assert.IsType<OkObjectResult>(result.Result);
         var response = Assert.IsType<SeedAttentionRecordResponse>(ok.Value);
         Assert.False(response.Succeeded);
-        Assert.Contains(expectedException.Message, response.Message, StringComparison.Ordinal);
+        Assert.Equal("seeding a settlement record failed unexpectedly, see server logs", response.Message);
+        Assert.DoesNotContain(privateValue, response.Message, StringComparison.Ordinal);
+        Assert.Null(response.Status);
         var entry = Assert.Single(logger.Entries);
         Assert.Equal(LogLevel.Error, entry.LogLevel);
         Assert.Equal(new EventId(3, "LogSeedAttentionRecordFailed"), entry.EventId);
+        Assert.Same(expectedException, entry.Exception);
+    }
+
+    [Fact]
+    public async Task SeedAttentionRecordReturnsBadRequestWhenRequestIsNull()
+    {
+        using var controller = CreateController();
+        var invoiceLookup = Substitute.For<IPayjoinInvoiceLookup>();
+
+        var result = await controller.SeedAttentionRecord(
+            null!, invoiceLookup, Substitute.For<IAuthorizationService>(), TestContext.Current.CancellationToken);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var response = Assert.IsType<SeedAttentionRecordResponse>(badRequest.Value);
+        Assert.False(response.Succeeded);
+        Assert.Equal("A JSON body containing an invoiceId is required.", response.Message);
+        Assert.Empty(invoiceLookup.ReceivedCalls());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public async Task SeedAttentionRecordRejectsMissingInvoiceIdBeforeLookup(string? invoiceId)
+    {
+        using var controller = CreateController();
+        var invoiceLookup = Substitute.For<IPayjoinInvoiceLookup>();
+
+        var result = await controller.SeedAttentionRecord(
+            new SeedAttentionRecordRequest { InvoiceId = invoiceId },
+            invoiceLookup, Substitute.For<IAuthorizationService>(), TestContext.Current.CancellationToken);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var response = Assert.IsType<SeedAttentionRecordResponse>(ok.Value);
+        Assert.False(response.Succeeded);
+        Assert.Equal("invoiceId is required", response.Message);
+        Assert.Empty(invoiceLookup.ReceivedCalls());
+    }
+
+    [Fact]
+    public async Task SeedAttentionRecordRejectsUnknownKindBeforeLookup()
+    {
+        using var controller = CreateController();
+        var invoiceLookup = Substitute.For<IPayjoinInvoiceLookup>();
+
+        var result = await controller.SeedAttentionRecord(
+            new SeedAttentionRecordRequest { InvoiceId = "invoice-1", Kind = "unknown" },
+            invoiceLookup, Substitute.For<IAuthorizationService>(), TestContext.Current.CancellationToken);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var response = Assert.IsType<SeedAttentionRecordResponse>(ok.Value);
+        Assert.False(response.Succeeded);
+        Assert.Equal("Unknown kind 'unknown'. Use 'failed' or 'expired'.", response.Message);
+        Assert.Empty(invoiceLookup.ReceivedCalls());
+    }
+
+    [Fact]
+    public async Task SeedAttentionRecordRethrowsWhenRequestIsCancelled()
+    {
+        var expectedException = new OperationCanceledException();
+        var invoiceLookup = Substitute.For<IPayjoinInvoiceLookup>();
+        invoiceLookup.GetInvoiceAsync("invoice-1")
+            .Returns(Task.FromException<InvoiceEntity?>(expectedException));
+        var logger = new TestLogger<UIPayJoinController>();
+        using var controller = CreateController(logger);
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => controller.SeedAttentionRecord(
+                new SeedAttentionRecordRequest { InvoiceId = "invoice-1" },
+                invoiceLookup, Substitute.For<IAuthorizationService>(), new CancellationToken(canceled: true)));
+
+        Assert.Same(expectedException, exception);
+        Assert.Empty(logger.Entries);
+    }
+
+    [Fact]
+    public async Task SeedAttentionRecordReturnsFailureWhenCancelledWithoutRequestCancellation()
+    {
+        var expectedException = new OperationCanceledException();
+        var invoiceLookup = Substitute.For<IPayjoinInvoiceLookup>();
+        invoiceLookup.GetInvoiceAsync("invoice-1")
+            .Returns(Task.FromException<InvoiceEntity?>(expectedException));
+        var logger = new TestLogger<UIPayJoinController>();
+        using var controller = CreateController(logger);
+
+        var result = await controller.SeedAttentionRecord(
+            new SeedAttentionRecordRequest { InvoiceId = "invoice-1" },
+            invoiceLookup, Substitute.For<IAuthorizationService>(), TestContext.Current.CancellationToken);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var response = Assert.IsType<SeedAttentionRecordResponse>(ok.Value);
+        Assert.False(response.Succeeded);
+        Assert.Equal("seeding a settlement record failed unexpectedly, see server logs", response.Message);
+        Assert.Null(response.Status);
+        var entry = Assert.Single(logger.Entries);
         Assert.Same(expectedException, entry.Exception);
     }
 

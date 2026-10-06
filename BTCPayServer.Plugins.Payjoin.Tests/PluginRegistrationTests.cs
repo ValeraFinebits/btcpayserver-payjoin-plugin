@@ -53,7 +53,8 @@ public class PluginRegistrationTests
             descriptor.ImplementationFactory is not null);
         Assert.Contains(services, descriptor =>
             descriptor.ServiceType == typeof(IPayjoinAttentionRecordSeeder) &&
-            descriptor.ImplementationFactory is not null);
+            descriptor.ImplementationType == typeof(PayjoinAttentionRecordSeeder) &&
+            descriptor.Lifetime == ServiceLifetime.Singleton);
     }
 
     [Fact]

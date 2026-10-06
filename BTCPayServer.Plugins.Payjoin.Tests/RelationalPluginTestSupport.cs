@@ -25,6 +25,8 @@ internal sealed class RelationalPluginTestContext : IDisposable
 
     public PayjoinAccountingBridgeService CreateBridgeService() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
 
+    public PayjoinAttentionRecordSeeder CreateAttentionRecordSeeder() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
+
     public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
 
     /// <summary>

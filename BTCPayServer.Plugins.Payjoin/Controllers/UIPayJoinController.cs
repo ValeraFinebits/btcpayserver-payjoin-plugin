@@ -305,7 +305,7 @@ public class UIPayJoinController : Controller
                 LogSeedAttentionRecordFailed(_logger, request.InvoiceId, ex);
             }
 
-            return Ok(SeedAttentionRecordResponse.Failure($"Seeding a settlement record for invoice {request.InvoiceId} failed unexpectedly: {ex.Message}"));
+            return Ok(SeedAttentionRecordResponse.Failure("seeding a settlement record failed unexpectedly, see server logs"));
         }
     }
 
