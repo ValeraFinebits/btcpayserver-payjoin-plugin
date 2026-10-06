@@ -1,11 +1,6 @@
-using BTCPayServer.Abstractions.Models;
-using BTCPayServer.Client.Models;
+﻿using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
-using Microsoft.Extensions.Options;
 using NBitcoin;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -15,7 +10,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void CreateSessionRoundTripsThroughFreshStoreInstance()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
 
         var createdSession = CreateSession(store, "invoice-create");
@@ -32,7 +27,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void PersistedEventsReplayInOrderAcrossFreshStoreInstances()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var firstStore = testContext.CreateStore();
         var firstSession = CreateSession(firstStore, "invoice-events");
 
@@ -64,7 +59,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void ReservedContributedInputRoundTripsThroughFreshStoreInstance()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-input");
         var expectedOutPoint = new OutPoint(uint256.Parse("1111111111111111111111111111111111111111111111111111111111111111"), uint.MaxValue);
@@ -80,7 +75,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void ReservingSameContributedInputDoesNotAdvanceUpdatedAt()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-same-input");
         var expectedOutPoint = new OutPoint(uint256.Parse("3333333333333333333333333333333333333333333333333333333333333333"), 3);
@@ -103,7 +98,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void ReservedContributedInputAndEventsReplayTogetherThroughFreshStoreInstance()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var firstStore = testContext.CreateStore();
         var firstSession = CreateSession(firstStore, "invoice-input-events");
         var expectedOutPoint = new OutPoint(uint256.Parse("2222222222222222222222222222222222222222222222222222222222222222"), 2);
@@ -125,7 +120,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void TryReserveContributedInputPersistsReservationAndContributedInput()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-reserve");
         var outPoint = new OutPoint(uint256.Parse("4444444444444444444444444444444444444444444444444444444444444444"), 4);
@@ -150,7 +145,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void TryReserveContributedInputRejectsReservationConflictForDifferentInvoice()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var firstSession = CreateSession(store, "invoice-reserve-first");
         var secondSession = CreateSession(store, "invoice-reserve-second");
@@ -164,7 +159,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void TryReserveContributedInputIsIdempotentForSameInvoiceAndOutPoint()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-reserve-idempotent");
         var outPoint = new OutPoint(uint256.Parse("6666666666666666666666666666666666666666666666666666666666666666"), 6);
@@ -180,7 +175,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void TryReserveContributedInputRejectsChangingExistingContributedInput()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-reserve-change");
         var firstOutPoint = new OutPoint(uint256.Parse("7777777777777777777777777777777777777777777777777777777777777777"), 7);
@@ -194,7 +189,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void RemoveSessionDeletesSessionAndEvents()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-remove");
         var persister = store.CreatePersister(session);
@@ -213,7 +208,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void RemoveSessionDeletesInputReservations()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-remove-reservation");
         var outPoint = new OutPoint(uint256.Parse("9999999999999999999999999999999999999999999999999999999999999999"), 9);
@@ -228,7 +223,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void CleanupExpiredInputReservationsRemovesOnlyExpiredReservations()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var expiredSession = CreateSession(store, "invoice-expired-reservation");
         var activeSession = CreateSession(store, "invoice-active-reservation");
@@ -255,7 +250,7 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void CleanupExpiredInputReservationsClearsMatchingSessionMetadata()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-expired-metadata");
         var reservedOutPoint = new OutPoint(uint256.Parse("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"), 3);
@@ -274,9 +269,39 @@ public class PayjoinReceiverSessionStoreTests
     }
 
     [Fact]
+    public void RepeatedCloseForTheSameStatusIsANoOpAndKeepsTheOriginalTimestamp()
+    {
+        using var testContext = new SessionStoreFixture();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-close-idempotent");
+
+        Assert.True(store.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
+        Assert.True(store.TryGetSession(session.InvoiceId, out var afterFirst));
+        var firstRequestedAt = afterFirst!.CloseRequestedAt;
+        Assert.NotNull(firstRequestedAt);
+
+        Assert.False(store.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
+        Assert.True(store.TryGetSession(session.InvoiceId, out var afterSecond));
+        Assert.Equal(firstRequestedAt, afterSecond!.CloseRequestedAt);
+    }
+
+    [Fact]
+    public void CloseForADifferentStatusReStampsTheTimestamp()
+    {
+        using var testContext = new SessionStoreFixture();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-close-status-change");
+
+        Assert.True(store.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
+        Assert.True(store.RequestClose(session.InvoiceId, InvoiceStatus.Invalid));
+        Assert.True(store.TryGetSession(session.InvoiceId, out var reloaded));
+        Assert.Equal(InvoiceStatus.Invalid, reloaded!.CloseInvoiceStatus);
+    }
+
+    [Fact]
     public void CloseRequestedInitializedPollConsumptionPersistsThroughFreshStoreInstance()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-close");
 
@@ -300,10 +325,10 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void CreateSessionWithBootstrapEventsPersistsThemAtomically()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
 
-        var session = store.CreateSession(
+        var session = store.GetOrCreateSession(
             "invoice-bootstrap",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -320,10 +345,10 @@ public class PayjoinReceiverSessionStoreTests
     [Fact]
     public void CreateSessionRejectsEmptyBootstrapEvents()
     {
-        using var testContext = new TestContext();
+        using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
 
-        var exception = Assert.Throws<ArgumentException>(() => store.CreateSession(
+        var exception = Assert.Throws<ArgumentException>(() => store.GetOrCreateSession(
             "invoice-empty-bootstrap",
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -333,61 +358,123 @@ public class PayjoinReceiverSessionStoreTests
         Assert.Equal("bootstrapEvents", exception.ParamName);
     }
 
+    [Fact]
+    public void GetOrCreateSessionReturnsTheExistingSessionForAKnownInvoice()
+    {
+        using var testContext = new SessionStoreFixture();
+        var store = testContext.CreateStore();
+
+        var first = CreateSession(store, "invoice-get-or-create");
+        store.StorePayjoinUri(first.InvoiceId, ReceiverAddress, "bitcoin:bcrt1qexample?pj=https%3A%2F%2Fexample.com%2Fpj");
+
+        var second = store.GetOrCreateSession(
+            first.InvoiceId,
+            "bcrt1qsomewhereelse",
+            "store-2",
+            DateTimeOffset.UtcNow.AddHours(4),
+            ["ignored-bootstrap-event"]);
+
+        Assert.Equal(first.ReceiverAddress, second.ReceiverAddress);
+        Assert.Equal(first.StoreId, second.StoreId);
+        Assert.Equal(first.MonitoringExpiresAt, second.MonitoringExpiresAt);
+        Assert.Equal(new[] { "bootstrap-event" }, second.GetEvents());
+        Assert.Equal("bitcoin:bcrt1qexample?pj=https%3A%2F%2Fexample.com%2Fpj", second.PayjoinUri);
+    }
+
+    [Fact]
+    public void StorePayjoinUriRecordsTheFirstWriteAndIgnoresLaterOnes()
+    {
+        using var testContext = new SessionStoreFixture();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-payjoin-uri");
+
+        Assert.Null(session.PayjoinUri);
+
+        store.StorePayjoinUri(session.InvoiceId, ReceiverAddress, "bitcoin:bcrt1qexample?amount=0.1&pj=https%3A%2F%2Fexample.com%2Fpj");
+        store.StorePayjoinUri(session.InvoiceId, ReceiverAddress, "bitcoin:bcrt1qexample?amount=0.1&pj=https%3A%2F%2Foverwritten.example%2Fpj");
+
+        var reloadedStore = testContext.CreateStore();
+        Assert.True(reloadedStore.TryGetSession(session.InvoiceId, out var reloadedSession));
+        Assert.Equal(
+            "bitcoin:bcrt1qexample?amount=0.1&pj=https%3A%2F%2Fexample.com%2Fpj",
+            reloadedSession!.PayjoinUri);
+    }
+
+    [Fact]
+    public void PayjoinUriColumnIsUnbounded()
+    {
+        using var testContext = new SessionStoreFixture();
+        using var context = testContext.CreateDbContext();
+
+        var mappedMaxLength = context.Model
+            .FindEntityType(typeof(Data.PayjoinReceiverSessionData))!
+            .FindProperty(nameof(Data.PayjoinReceiverSessionData.PayjoinUri))!
+            .GetMaxLength();
+
+        Assert.Null(mappedMaxLength);
+    }
+
+    [Fact]
+    public void StorePayjoinUriIgnoresAnUnknownSession()
+    {
+        using var testContext = new SessionStoreFixture();
+        var store = testContext.CreateStore();
+
+        store.StorePayjoinUri("invoice-never-created", ReceiverAddress, "bitcoin:bcrt1qexample?pj=https%3A%2F%2Fexample.com%2Fpj");
+
+        Assert.False(store.TryGetSession("invoice-never-created", out _));
+    }
+
+    [Fact]
+    public void StorePayjoinUriRefusesToCacheAUriForASessionWithAnEmptyEventLog()
+    {
+        using var testContext = new SessionStoreFixture();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-empty-log");
+
+        using (var setupContext = testContext.CreateDbContext())
+        {
+            var sessionData = setupContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
+            PayjoinReceiverSessionStore.RemoveAllSessionEvents(setupContext, sessionData);
+            setupContext.SaveChanges();
+        }
+
+        store.StorePayjoinUri(session.InvoiceId, ReceiverAddress, "bitcoin:bcrt1qexample?pj=https%3A%2F%2Fexample.com%2Fpj");
+
+        using var context = testContext.CreateDbContext();
+        Assert.Null(context.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId).PayjoinUri);
+    }
+
+    [Fact]
+    public void RemoveAllSessionEventsClearsTheCachedPayjoinUriWithTheEvents()
+    {
+        using var testContext = new SessionStoreFixture();
+        var store = testContext.CreateStore();
+        var session = CreateSession(store, "invoice-events-cleared");
+        store.StorePayjoinUri(session.InvoiceId, ReceiverAddress, "bitcoin:bcrt1qexample?pj=https%3A%2F%2Fexample.com%2Fpj");
+
+        using (var mutationContext = testContext.CreateDbContext())
+        {
+            var sessionData = mutationContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
+            PayjoinReceiverSessionStore.RemoveAllSessionEvents(mutationContext, sessionData);
+            mutationContext.SaveChanges();
+        }
+
+        using var context = testContext.CreateDbContext();
+        Assert.Empty(context.ReceiverSessionEvents.Where(x => x.InvoiceId == session.InvoiceId));
+        Assert.Null(context.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId).PayjoinUri);
+    }
+
+    private const string ReceiverAddress = "bcrt1qexampleaddress0000000000000000000000000";
+
     private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
-        return store.CreateSession(
+        return store.GetOrCreateSession(
             invoiceId,
-            "bcrt1qexampleaddress0000000000000000000000000",
+            ReceiverAddress,
             "store-1",
             DateTimeOffset.UtcNow.AddMinutes(15),
             ["bootstrap-event"]);
     }
 
-    private sealed class TestContext : IDisposable
-    {
-        private readonly TestPayjoinPluginDbContextFactory _dbContextFactory;
-        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
-
-        public TestContext()
-        {
-            _dbContextFactory = new TestPayjoinPluginDbContextFactory();
-            _uniqueConstraintViolationDetector = new PostgresPayjoinUniqueConstraintViolationDetector();
-        }
-
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
-
-        public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
-
-        public void Dispose()
-        {
-            using var context = _dbContextFactory.CreateContext();
-            context.Database.EnsureDeleted();
-        }
-    }
-
-    private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
-    {
-        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
-        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
-
-        public TestPayjoinPluginDbContextFactory()
-            : base(Options.Create(new DatabaseOptions
-            {
-                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
-            }))
-        {
-            var databaseName = $"payjoin-plugin-tests-{Guid.NewGuid():N}";
-            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
-                .Options;
-
-            using var context = CreateContext();
-            context.Database.EnsureCreated();
-        }
-
-        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
-        {
-            return new PayjoinPluginDbContext(_dbContextOptions);
-        }
-    }
 }

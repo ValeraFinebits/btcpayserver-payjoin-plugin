@@ -2,6 +2,7 @@ using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using System.Diagnostics.CodeAnalysis;
@@ -18,6 +19,9 @@ internal sealed class RelationalPluginTestContext : IDisposable
     private readonly SqliteUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
     public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+
+    public PayjoinReceiverSessionStore CreateStore(ILogger<PayjoinReceiverSessionStore> logger) =>
+        new(_dbContextFactory, _uniqueConstraintViolationDetector, logger);
 
     public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
@@ -36,6 +40,14 @@ internal sealed class RelationalPluginTestContext : IDisposable
         get => _dbContextFactory.FailSaveChanges;
         set => _dbContextFactory.FailSaveChanges = value;
     }
+
+    public Action? BeforeNextSaveChanges
+    {
+        get => _dbContextFactory.BeforeNextSaveChanges;
+        set => _dbContextFactory.BeforeNextSaveChanges = value;
+    }
+
+    public void BreakDatabase() => _dbContextFactory.Dispose();
 
     public void Dispose()
     {
@@ -84,6 +96,8 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
     }
 
     public bool FailSaveChanges { get; set; }
+
+    public Action? BeforeNextSaveChanges { get; set; }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The created SQLite connection is owned and disposed by SqliteOwnedPayjoinPluginDbContext.")]
     public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
@@ -145,18 +159,22 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
 
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
         {
-            ThrowIfSaveFailureInjected();
+            PrepareSaveChanges();
             return base.SaveChanges(acceptAllChangesOnSuccess);
         }
 
         public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
         {
-            ThrowIfSaveFailureInjected();
+            PrepareSaveChanges();
             return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         }
 
-        private void ThrowIfSaveFailureInjected()
+        private void PrepareSaveChanges()
         {
+            var beforeSaveChanges = _factory.BeforeNextSaveChanges;
+            _factory.BeforeNextSaveChanges = null;
+            beforeSaveChanges?.Invoke();
+
             if (_factory.FailSaveChanges)
             {
                 throw new DbUpdateException("Injected persistence failure.");

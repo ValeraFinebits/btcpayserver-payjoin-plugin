@@ -65,7 +65,12 @@ public class UIPayJoinController : Controller
 
     [AllowAnonymous]
     [HttpGet("invoices/{invoiceId}/payment-url")]
-    public async Task<ActionResult<GetCheckoutBip21Response>> GetInvoicePaymentUrl(string invoiceId, CancellationToken cancellationToken)
+    // TODO: rate-limit this route before release. It is anonymous and every call runs BuildAsync, which
+    // queries the wallet's UTXOs and, with no session yet, bootstraps OHTTP against third-party relays. The
+    // only limit today is client-side (maxPayjoinRequestAttempts in PayJoinBitcoinCheckoutEnd.cshtml), so it
+    // bounds a well-behaved checkout and nothing else. Per-invoice rate limit, or cache a failed bootstrap
+    // per store for a few tens of seconds.
+    public async Task<ActionResult<PayjoinCheckoutAvailabilityResponse>> GetInvoicePaymentUrl(string invoiceId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(invoiceId))
         {
@@ -78,18 +83,7 @@ public class UIPayJoinController : Controller
             return NotFound();
         }
 
-        return Ok(ToCheckoutResponse(paymentUrl));
-    }
-
-    private static GetCheckoutBip21Response ToCheckoutResponse(GetBip21Response paymentUrl)
-    {
-        return new GetCheckoutBip21Response
-        {
-            Bip21 = paymentUrl.Bip21,
-            Status = paymentUrl.Status == PayjoinAvailabilityStatus.Active
-                ? PayjoinCheckoutAvailabilityStatus.Active
-                : PayjoinCheckoutAvailabilityStatus.Unavailable
-        };
+        return Ok(PayjoinCheckoutAvailabilityResponse.From(paymentUrl));
     }
 
     // TODO: Remove this test endpoint.
@@ -177,7 +171,7 @@ public class UIPayJoinController : Controller
         decimal paymentAmount;
         try
         {
-            using var parsedUri = PayjoinUri.Parse(canonicalPaymentUrl.ToString());
+            using var parsedUri = PayjoinUri.Parse(canonicalPaymentUrl.AbsoluteUri);
             paymentAddress = parsedUri.Address();
             var amountSats = parsedUri.AmountSats();
             if (amountSats is null)
