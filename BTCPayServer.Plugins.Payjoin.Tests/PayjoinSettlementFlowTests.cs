@@ -10,22 +10,21 @@ using NBXplorer;
 using Xunit;
 using CancelTransition = Payjoin.CancelTransition;
 using ClientResponse = Payjoin.ClientResponse;
-using IPayjoinProposal = Payjoin.IPayjoinProposal;
-using PayjoinOutPoint = Payjoin.OutPoint;
-using PayjoinProposalTransition = Payjoin.PayjoinProposalTransition;
-using PayjoinTxOut = Payjoin.TxOut;
-using ProcessPsbt = Payjoin.ProcessPsbt;
-using RequestResponse = Payjoin.RequestResponse;
-using Initialized = Payjoin.Initialized;
-using WantsOutputs = Payjoin.WantsOutputs;
-using WantsInputs = Payjoin.WantsInputs;
-using WantsFeeRange = Payjoin.WantsFeeRange;
-using ProvisionalProposal = Payjoin.ProvisionalProposal;
 using HasReplyableError = Payjoin.HasReplyableError;
-using UncheckedOriginalPayload = Payjoin.UncheckedOriginalPayload;
+using Initialized = Payjoin.Initialized;
+using IPayjoinProposal = Payjoin.IPayjoinProposal;
 using MaybeInputsOwned = Payjoin.MaybeInputsOwned;
 using MaybeInputsSeen = Payjoin.MaybeInputsSeen;
 using OutputsUnknown = Payjoin.OutputsUnknown;
+using PayjoinProposalTransition = Payjoin.PayjoinProposalTransition;
+using PayjoinTxOut = Payjoin.TxOut;
+using ProcessPsbt = Payjoin.ProcessPsbt;
+using ProvisionalProposal = Payjoin.ProvisionalProposal;
+using RequestResponse = Payjoin.RequestResponse;
+using UncheckedOriginalPayload = Payjoin.UncheckedOriginalPayload;
+using WantsFeeRange = Payjoin.WantsFeeRange;
+using WantsInputs = Payjoin.WantsInputs;
+using WantsOutputs = Payjoin.WantsOutputs;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
 
@@ -38,8 +37,10 @@ public class PayjoinSettlementFlowTests
     private const string InvoiceId = "invoice-flow";
     private const string StoreId = "store-1";
 
-    [Fact]
-    public void CommittingReceiverOutputsPersistsTheEventScriptAndPinnedAmountTogether()
+    [Theory]
+    [InlineData("1/42")]
+    [InlineData(null)]
+    public void CommittingReceiverOutputsPersistsTheEventScriptAndPinnedAmountTogether(string? keyPath)
     {
         using var testContext = new RelationalPluginTestContext();
         var store = testContext.CreateStore();
@@ -49,17 +50,23 @@ public class PayjoinSettlementFlowTests
         var processor = CreateProcessor(store, bridgeService);
         using var settlementKey = new Key();
         var settlementScript = settlementKey.PubKey.WitHash.ScriptPubKey.ToBytes();
+        var settlementKeyPath = keyPath is null ? null : new KeyPath(keyPath);
 
         processor.PersistCommittedOutputs(
             InvoiceId,
             ["commit-outputs-event"],
-            new PayjoinReceiverOutputBuilder.OutputReplacement([new PayjoinTxOut(1234, settlementScript)], settlementScript, 1234));
+            new PayjoinReceiverOutputBuilder.OutputReplacement(
+                [new PayjoinTxOut(1234, settlementScript)],
+                settlementScript,
+                1234,
+                settlementKeyPath));
 
         using var context = testContext.CreateDbContext();
         var events = ReadEvents(context);
         Assert.Equal(new[] { "bootstrap-event", "commit-outputs-event" }, events);
         var bridge = Assert.Single(context.AccountingBridges.Where(x => x.InvoiceId == InvoiceId));
         Assert.Equal(Convert.ToHexString(settlementScript), bridge.SettlementScript);
+        Assert.Equal(keyPath, bridge.SettlementKeyPath);
         Assert.Equal(1234, bridge.EffectiveInvoiceValueSats);
     }
 
@@ -74,18 +81,24 @@ public class PayjoinSettlementFlowTests
         var processor = CreateProcessor(store, bridgeService);
         using var settlementKey = new Key();
         var settlementScript = settlementKey.PubKey.WitHash.ScriptPubKey.ToBytes();
+        var settlementKeyPath = new KeyPath("1/42");
 
         testContext.FailSaveChanges = true;
         Assert.Throws<DbUpdateException>(() => processor.PersistCommittedOutputs(
             InvoiceId,
             ["commit-outputs-event"],
-            new PayjoinReceiverOutputBuilder.OutputReplacement([new PayjoinTxOut(1234, settlementScript)], settlementScript, 1234)));
+            new PayjoinReceiverOutputBuilder.OutputReplacement(
+                [new PayjoinTxOut(1234, settlementScript)],
+                settlementScript,
+                1234,
+                settlementKeyPath)));
         testContext.FailSaveChanges = false;
 
         using var context = testContext.CreateDbContext();
         Assert.Equal(new[] { "bootstrap-event" }, ReadEvents(context));
         var bridge = Assert.Single(context.AccountingBridges.Where(x => x.InvoiceId == InvoiceId));
         Assert.Null(bridge.SettlementScript);
+        Assert.Null(bridge.SettlementKeyPath);
         Assert.Null(bridge.EffectiveInvoiceValueSats);
     }
 
@@ -437,7 +450,7 @@ public class PayjoinSettlementFlowTests
 
     private sealed class UnusedOutputBuilder : IPayjoinReceiverOutputBuilder
     {
-        public Task<PayjoinReceiverOutputBuilder.OutputReplacement?> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<PayjoinReceiverOutputBuilder.OutputBuildResult> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class UnusedInputSelector : IPayjoinReceiverInputSelector

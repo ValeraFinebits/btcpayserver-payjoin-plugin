@@ -3,6 +3,7 @@ using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
 using BTCPayServer.HostedServices;
 using BTCPayServer.Payments;
+using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Payments.PayJoin.Sender;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
@@ -201,6 +202,15 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         Assert.True(
             broadcastedTransaction.Inputs.Count >= 1,
             $"Expected compat payjoin transaction to contain sender inputs. Inputs: {string.Join(", ", broadcastedTransaction.Inputs.Select(input => input.PrevOut))}");
+
+        var promptDetails = Assert.IsType<BitcoinPaymentPromptDetails>(handlers.ParsePaymentPromptDetails(prompt));
+        Assert.NotNull(promptDetails.KeyPath);
+        var bridge = await tester.PayTester.GetService<IPayjoinAccountingBridgeService>()
+            .TryGetByInvoiceIdAsync(invoiceId, cts.Token)
+            .ConfigureAwait(true);
+        Assert.NotNull(bridge);
+        Assert.Equal(Convert.ToHexString(bip21.Address.ScriptPubKey.ToBytes()), bridge!.SettlementScript);
+        Assert.Equal(promptDetails.KeyPath.ToString(), bridge.SettlementKeyPath);
     }
 
     [Fact]

@@ -16,6 +16,8 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinAccountingPaymentServiceTests
 {
+    private static readonly KeyPath ExpectedKeyPath = new("0/18");
+
     [Fact]
     public void ResolveFinalOutputIndexFallsBackToSettlementScriptWhenExpectedFinalOutputIndexMissing()
     {
@@ -205,12 +207,126 @@ public class PayjoinAccountingPaymentServiceTests
         Assert.Equal(fixture.FinalOutPoint.ToString(), accountedPayment.Id);
         Assert.Equal(PaymentStatus.Settled, accountedPayment.Status);
         Assert.Equal(Money.Satoshis(fixture.AccountedValueSats).ToDecimal(MoneyUnit.BTC), accountedPayment.Value);
+        var paymentDetails = fixture.Handler.ParsePaymentDetails(accountedPayment.Details);
+        Assert.Equal(ExpectedKeyPath, paymentDetails.KeyPath);
+        Assert.Equal(18, paymentDetails.KeyIndex);
 
         var fallbackPayment = invoice.GetPayments(false).Single(p => p.Id == fixture.FallbackOutPoint.ToString());
         Assert.Equal(PaymentStatus.Unaccounted, fallbackPayment.Status);
 
         Assert.Equal(1, fixture.InvoiceNeedUpdateEvents);
         Assert.Equal(1, fixture.StalePaidOverCorrections);
+    }
+
+    [Fact]
+    public async Task ReconcileRecordsTheSettlementOutputAsThePaymentDestination()
+    {
+        using var fixture = EndToEndFixture.Create(useDistinctInvoiceDestination: true);
+        var settlementScript = Script.FromBytesUnsafe(Convert.FromHexString(fixture.Bridge.SettlementScript!));
+        var settlementDestination = settlementScript.GetDestinationAddress(Network.RegTest)!.ToString();
+        var invoiceDestination = fixture.World.Materialize().GetPaymentPrompt(fixture.Handler.PaymentMethodId)!.Destination;
+        Assert.NotEqual(invoiceDestination, settlementDestination);
+        fixture.SetFinalTransactionConfirmations(1);
+
+        var payment = await fixture.Service.ReconcileWithFinalTransactionAsync(
+            fixture.Bridge,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(payment);
+        Assert.Equal(settlementDestination, payment.Destination);
+    }
+
+    [Fact]
+    public async Task ReconcileCreditsBridgeWithoutPersistedKeyPathOnceAndLeavesMetadataUnknown()
+    {
+        using var fixture = EndToEndFixture.Create(includePersistedKeyPath: false, useDistinctInvoiceDestination: true);
+        fixture.SetFinalTransactionConfirmations(0);
+        Assert.Null(await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken));
+        Assert.Single(fixture.World.Rows);
+
+        fixture.SetFinalTransactionConfirmations(1);
+        var first = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+        var second = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(first.Id, second.Id);
+        Assert.Equal(2, fixture.World.Rows.Count);
+        var payment = Assert.Single(fixture.World.Materialize().GetPayments(true));
+        Assert.Equal(fixture.FinalOutPoint.ToString(), payment.Id);
+        Assert.Equal(PaymentStatus.Settled, payment.Status);
+        Assert.Equal(Money.Satoshis(fixture.AccountedValueSats).ToDecimal(MoneyUnit.BTC), payment.Value);
+        var script = Script.FromBytesUnsafe(Convert.FromHexString(fixture.Bridge.SettlementScript!));
+        Assert.Equal(script.GetDestinationAddress(Network.RegTest)!.ToString(), payment.Destination);
+        var details = fixture.Handler.ParsePaymentDetails(payment.Details);
+        Assert.Null(details.KeyPath);
+        Assert.Null(details.KeyIndex);
+        Assert.Equal(PaymentStatus.Unaccounted, fixture.World.Materialize().GetPayments(false).Single(p => p.Id == fixture.FallbackOutPoint.ToString()).Status);
+        Assert.Equal(1, fixture.InvoiceNeedUpdateEvents);
+        Assert.Equal(1, fixture.StalePaidOverCorrections);
+    }
+
+    [Theory]
+    [InlineData("1/31", 99, true, 31)]
+    [InlineData("1/31", 31, false, 31)]
+    [InlineData(null, 23, false, 23)]
+    [InlineData(null, 23, true, 18)]
+    public async Task ReconcilePreservesRecordedMetadataAndDerivesIndexFromTheSelectedPath(
+        string? recordedKeyPath, int recordedKeyIndex, bool includePersistedKeyPath, int expectedKeyIndex)
+    {
+        using var fixture = EndToEndFixture.Create(includePersistedKeyPath: includePersistedKeyPath);
+        fixture.RecordFinalPayment(recordedKeyPath is null ? null : new KeyPath(recordedKeyPath), recordedKeyIndex);
+        fixture.SetFinalTransactionConfirmations(1);
+
+        var payment = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(payment);
+        Assert.Equal(2, fixture.World.Rows.Count);
+        Assert.Single(fixture.World.Materialize().GetPayments(true));
+        var details = fixture.Handler.ParsePaymentDetails(payment.Details);
+        Assert.Equal(recordedKeyPath ?? (includePersistedKeyPath ? ExpectedKeyPath.ToString() : null), details.KeyPath?.ToString());
+        Assert.Equal(expectedKeyIndex, details.KeyIndex);
+    }
+
+    [Fact]
+    public async Task ReconcileEnrichesAPendingPaymentWithoutCreditingItAgain()
+    {
+        using var fixture = EndToEndFixture.Create(includePersistedKeyPath: false, speedPolicy: SpeedPolicy.LowSpeed);
+        fixture.SetFinalTransactionConfirmations(1);
+        var first = await fixture.Service.ReconcileWithFinalTransactionAsync(fixture.Bridge, TestContext.Current.CancellationToken);
+        Assert.NotNull(first);
+        Assert.Equal(PaymentStatus.Processing, first.Status);
+        Assert.Equal(Data.PayjoinAccountingBridgeStatus.PendingFinalTransaction, fixture.Bridge.Status);
+        Assert.Null(fixture.Handler.ParsePaymentDetails(first.Details).KeyPath);
+
+        var bridge = fixture.Bridge with { SettlementKeyPath = ExpectedKeyPath.ToString() };
+        var enriched = await fixture.Service.ReconcileWithFinalTransactionAsync(bridge, TestContext.Current.CancellationToken);
+        var repeated = await fixture.Service.ReconcileWithFinalTransactionAsync(bridge, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(enriched);
+        Assert.NotNull(repeated);
+        Assert.Equal(first.Id, enriched.Id);
+        Assert.Equal(first.Value, enriched.Value);
+        Assert.Equal(PaymentStatus.Processing, enriched.Status);
+        Assert.Equal(2, fixture.World.Rows.Count);
+        Assert.Single(fixture.World.Materialize().GetPayments(true));
+        var details = fixture.Handler.ParsePaymentDetails(enriched.Details);
+        Assert.Equal(ExpectedKeyPath, details.KeyPath);
+        Assert.Equal(18, details.KeyIndex);
+        Assert.Equal(2, fixture.InvoiceNeedUpdateEvents);
+    }
+
+    [Fact]
+    public async Task ReconcileWithoutKeyPathStillRejectsAMismatchedSettlementValue()
+    {
+        using var fixture = EndToEndFixture.Create(includePersistedKeyPath: false);
+        fixture.SetFinalTransactionConfirmations(1);
+        var bridge = fixture.Bridge with { ExpectedFinalValueSats = fixture.AccountedValueSats + 1 };
+
+        await Assert.ThrowsAsync<PayjoinAccountingReconciliationDataException>(() =>
+            fixture.Service.ReconcileWithFinalTransactionAsync(bridge, TestContext.Current.CancellationToken));
+        Assert.Single(fixture.World.Rows);
+        Assert.Equal(0, fixture.InvoiceNeedUpdateEvents);
     }
 
     [Fact]
@@ -238,6 +354,9 @@ public class PayjoinAccountingPaymentServiceTests
         var accountedPayment = Assert.Single(invoice.GetPayments(true));
         Assert.Equal(fixture.FinalOutPoint.ToString(), accountedPayment.Id);
         Assert.Equal(PaymentStatus.Settled, accountedPayment.Status);
+        var paymentDetails = fixture.Handler.ParsePaymentDetails(accountedPayment.Details);
+        Assert.Equal(ExpectedKeyPath, paymentDetails.KeyPath);
+        Assert.Equal(18, paymentDetails.KeyIndex);
 
         var fallbackPayment = invoice.GetPayments(false).Single(p => p.Id == fixture.FallbackOutPoint.ToString());
         Assert.Equal(PaymentStatus.Unaccounted, fallbackPayment.Status);
@@ -334,6 +453,7 @@ public class PayjoinAccountingPaymentServiceTests
         private EndToEndFixture(
             PayjoinAccountingPaymentService service,
             InMemoryPaymentWorld world,
+            BitcoinLikePaymentHandler handler,
             PayjoinAccountingBridgeState bridge,
             OutPoint fallbackOutPoint,
             OutPoint finalOutPoint,
@@ -347,6 +467,7 @@ public class PayjoinAccountingPaymentServiceTests
         {
             Service = service;
             World = world;
+            Handler = handler;
             Bridge = bridge;
             FallbackOutPoint = fallbackOutPoint;
             FinalOutPoint = finalOutPoint;
@@ -374,6 +495,8 @@ public class PayjoinAccountingPaymentServiceTests
 
         public InMemoryPaymentWorld World { get; }
 
+        public BitcoinLikePaymentHandler Handler { get; }
+
         public PayjoinAccountingBridgeState Bridge { get; }
 
         public OutPoint FallbackOutPoint { get; }
@@ -396,7 +519,21 @@ public class PayjoinAccountingPaymentServiceTests
             };
         }
 
-        public static EndToEndFixture Create()
+        public void RecordFinalPayment(KeyPath? keyPath, int? keyIndex)
+        {
+            var invoice = World.Materialize();
+            var payment = new PaymentData
+            {
+                Id = FinalOutPoint.ToString(),
+                Created = DateTimeOffset.UtcNow,
+                Status = PaymentStatus.Processing,
+                Amount = Money.Satoshis(AccountedValueSats).ToDecimal(MoneyUnit.BTC),
+                Currency = PayjoinConstants.BitcoinCode
+            }.Set(invoice, Handler, new BitcoinLikePaymentData { Outpoint = FinalOutPoint, KeyPath = keyPath, KeyIndex = keyIndex });
+            World.Rows.Add(payment);
+        }
+
+        public static EndToEndFixture Create(bool includePersistedKeyPath = true, bool useDistinctInvoiceDestination = false, SpeedPolicy speedPolicy = SpeedPolicy.MediumSpeed)
         {
             const long accountedValueSats = 50_000;
             var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
@@ -420,19 +557,23 @@ public class PayjoinAccountingPaymentServiceTests
 
             using var settlementKey = new Key();
             using var changeKey = new Key();
+            using var invoiceKey = new Key();
             var settlementScript = settlementKey.PubKey.WitHash.ScriptPubKey;
+            var invoiceScript = useDistinctInvoiceDestination
+                ? invoiceKey.PubKey.WitHash.ScriptPubKey
+                : settlementScript;
 
             var invoice = new InvoiceEntity
             {
                 Id = "invoice-1",
                 StoreId = "store-1",
-                SpeedPolicy = SpeedPolicy.MediumSpeed
+                SpeedPolicy = speedPolicy
             };
             invoice.SetPaymentPrompt(paymentMethodId, new PaymentPrompt
             {
                 Currency = PayjoinConstants.BitcoinCode,
                 Divisibility = 8,
-                Destination = settlementScript.GetDestinationAddress(Network.RegTest)!.ToString()
+                Destination = invoiceScript.GetDestinationAddress(Network.RegTest)!.ToString()
             });
 
             var fallbackOutPoint = new OutPoint(
@@ -477,7 +618,10 @@ public class PayjoinAccountingPaymentServiceTests
                 CreatedAt: DateTimeOffset.UtcNow,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ReconciledAt: null,
-                ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
+                ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5))
+            {
+                SettlementKeyPath = includePersistedKeyPath ? ExpectedKeyPath.ToString() : null
+            };
 
             var transactionReader = new ScriptedWalletTransactionReader();
             var transactionLabeler = new RecordingTransactionLabeler();
@@ -500,6 +644,7 @@ public class PayjoinAccountingPaymentServiceTests
             return new EndToEndFixture(
                 service,
                 world,
+                handler,
                 bridge,
                 fallbackOutPoint,
                 finalOutPoint,
