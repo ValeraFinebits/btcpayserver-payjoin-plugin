@@ -18,6 +18,7 @@ namespace BTCPayServer.Plugins.Payjoin.Controllers;
 [Route("~/api/v1/stores/{storeId}/payjoin")]
 [Authorize(AuthenticationSchemes = AuthenticationSchemes.Greenfield)]
 [EnableCors(CorsPolicies.All)]
+[PayjoinExceptionFilter(PayjoinErrorShape.Json)]
 public sealed class GreenfieldPayjoinController : ControllerBase
 {
     private readonly IPayjoinStoreSettingsRepository _settingsRepository;

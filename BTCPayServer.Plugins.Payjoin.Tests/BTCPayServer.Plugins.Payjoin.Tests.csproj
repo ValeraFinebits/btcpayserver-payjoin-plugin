@@ -33,6 +33,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\BTCPayServer.Plugins.Payjoin\BTCPayServer.Plugins.AsyncPayjoin.csproj" />
+    <ProjectReference Include="..\btcpayserver\BTCPayServer\BTCPayServer.csproj" />
   </ItemGroup>
 
 </Project>

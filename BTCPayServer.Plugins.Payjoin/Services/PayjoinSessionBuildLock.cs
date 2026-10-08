@@ -13,6 +13,12 @@ public sealed class PayjoinSessionBuildLock
     private readonly object _sessionBuildLocksSync = new();
 
     public async Task<IDisposable> AcquireAsync(string invoiceId, CancellationToken cancellationToken)
+        => (await AcquireCoreAsync(invoiceId, Timeout.Infinite, cancellationToken).ConfigureAwait(false))!;
+
+    internal Task<IDisposable?> TryAcquireAsync(string invoiceId, CancellationToken cancellationToken)
+        => AcquireCoreAsync(invoiceId, 0, cancellationToken);
+
+    private async Task<IDisposable?> AcquireCoreAsync(string invoiceId, int timeout, CancellationToken cancellationToken)
     {
         SessionBuildLock sessionBuildLock;
         lock (_sessionBuildLocksSync)
@@ -28,7 +34,11 @@ public sealed class PayjoinSessionBuildLock
 
         try
         {
-            await sessionBuildLock.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (!await sessionBuildLock.Semaphore.WaitAsync(timeout, cancellationToken).ConfigureAwait(false))
+            {
+                ReleaseSessionBuildLockReference(invoiceId, sessionBuildLock);
+                return null;
+            }
             return new SessionBuildLockLease(this, invoiceId, sessionBuildLock);
         }
         catch
