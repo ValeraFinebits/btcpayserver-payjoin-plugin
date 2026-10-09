@@ -286,7 +286,11 @@ public class PayjoinSettlementFlowTests
             new UnusedProposalSigner(),
             bridgeService,
             store,
-            CreateNetworkProvider());
+            CreateNetworkProvider(),
+            new PayjoinMailroomManager(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<PayjoinMailroomManager>.Instance,
+                TimeSpan.FromMinutes(10),
+                (_, _, _, _) => Task.FromResult(PayjoinOhttpKeysFetchResult.RetryableFailure(new HttpRequestException("unused")))));
     }
 
     private static PayjoinReceiverSessionProcessor CreateProcessor(

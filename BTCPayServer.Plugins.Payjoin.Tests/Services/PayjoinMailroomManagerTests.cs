@@ -326,6 +326,71 @@ public class PayjoinMailroomManagerTests
         Assert.Equal(directoryUrls.OrderBy(static directoryUrl => directoryUrl.AbsoluteUri), orderedDirectoryUrls.OrderBy(static directoryUrl => directoryUrl.AbsoluteUri));
     }
 
+    [Fact]
+    public void ChooseRelayForRequestSkipsRelayFailedForSession()
+    {
+        var firstRelay = new SystemUri("https://relay-1.example/");
+        var secondRelay = new SystemUri("https://relay-2.example/");
+        var selector = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        selector.MarkRelayFailedForSession("invoice-1", firstRelay);
+
+        var selected = selector.ChooseRelayForRequest(
+            new PayjoinStoreSettings
+            {
+                DirectoryUrls = [new SystemUri("https://directory.example/")],
+                OhttpRelayUrls = [firstRelay, secondRelay]
+            },
+            "invoice-1");
+
+        Assert.Equal(secondRelay, selected);
+    }
+
+    [Fact]
+    public void SessionFailedRelayDoesNotAffectOtherSessions()
+    {
+        var relayUrl = new SystemUri("https://relay-1.example/");
+        var selector = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        selector.MarkRelayFailedForSession("invoice-1", relayUrl);
+
+        var selected = selector.ChooseRelayForRequest(
+            new PayjoinStoreSettings
+            {
+                DirectoryUrls = [new SystemUri("https://directory.example/")],
+                OhttpRelayUrls = [relayUrl]
+            },
+            "invoice-2");
+
+        Assert.Equal(relayUrl, selected);
+    }
+
+    [Fact]
+    public void ClearSessionFailedRelaysRestoresRelaySelection()
+    {
+        var relayUrl = new SystemUri("https://relay-1.example/");
+        var selector = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        selector.MarkRelayFailedForSession("invoice-1", relayUrl);
+        Assert.Null(selector.ChooseRelayForRequest([relayUrl], "invoice-1"));
+
+        selector.ClearSessionFailedRelays("invoice-1");
+
+        Assert.Equal(relayUrl, selector.ChooseRelayForRequest([relayUrl], "invoice-1"));
+    }
+
+    [Fact]
+    public void MarkRelayFailedForSessionAcceptsFullRelayRequestUrl()
+    {
+        // Relay request URLs append the directory origin as a path; the authority identifies
+        // the configured relay that must be blocked for the session.
+        var relayUrl = new SystemUri("https://relay-1.example/");
+        var otherRelay = new SystemUri("https://relay-2.example/");
+        var selector = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        selector.MarkRelayFailedForSession("invoice-1", new SystemUri("https://relay-1.example/https://directory.example/"));
+
+        var selected = selector.ChooseRelayForRequest([relayUrl, otherRelay], "invoice-1");
+
+        Assert.Equal(otherRelay, selected);
+    }
+
     private static PayjoinMailroomManager CreateManager(
         Func<SystemUri, string, string, CancellationToken, Task<PayjoinOhttpKeysFetchResult>> fetchKeysAsync,
         TimeSpan? failedRelayCacheDuration = null)

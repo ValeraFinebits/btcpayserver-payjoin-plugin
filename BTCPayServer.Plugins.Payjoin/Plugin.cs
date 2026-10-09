@@ -27,7 +27,8 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinUniqueConstraintViolationDetector, PostgresPayjoinUniqueConstraintViolationDetector>();
         applicationBuilder.AddSingleton(provider => new PayjoinReceiverSessionStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
-            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>(),
+            provider.GetRequiredService<PayjoinMailroomManager>()));
         applicationBuilder.AddSingleton(provider => new PayjoinSeenInputStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
             provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));

@@ -12,15 +12,18 @@ public sealed class PayjoinReceiverSessionStore
 {
     private readonly PayjoinPluginDbContextFactory _pluginDbContextFactory;
     private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
+    private readonly PayjoinMailroomManager? _mailroomManager;
 
     internal PayjoinReceiverSessionStore(
         PayjoinPluginDbContextFactory pluginDbContextFactory,
-        IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector)
+        IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector,
+        PayjoinMailroomManager? mailroomManager = null)
     {
         ArgumentNullException.ThrowIfNull(pluginDbContextFactory);
         ArgumentNullException.ThrowIfNull(uniqueConstraintViolationDetector);
         _pluginDbContextFactory = pluginDbContextFactory;
         _uniqueConstraintViolationDetector = uniqueConstraintViolationDetector;
+        _mailroomManager = mailroomManager;
     }
 
     internal PayjoinReceiverSessionState CreateSession(
@@ -90,6 +93,7 @@ public sealed class PayjoinReceiverSessionStore
 
     public bool RemoveSession(string invoiceId)
     {
+        _mailroomManager?.ClearSessionFailedRelays(invoiceId);
         using var context = _pluginDbContextFactory.CreateContext();
         var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
         if (sessionData is null)

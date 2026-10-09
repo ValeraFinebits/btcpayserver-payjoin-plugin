@@ -50,7 +50,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
         while (remainingRelays.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relayUrl = _mailroomManager.ChooseRelayForRequest(remainingRelays);
+            var relayUrl = _mailroomManager.ChooseRelayForRequest(remainingRelays, invoiceId);
             if (relayUrl is null)
             {
                 break;
@@ -67,6 +67,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
             {
                 requestContext.Dispose();
                 _mailroomManager.MarkRelayTemporarilyUnavailable(relayUrl);
+                _mailroomManager.MarkRelayFailedForSession(invoiceId, relayUrl);
                 RemoveRelay(remainingRelays, relayUrl);
                 lastTransportError = ex;
             }
@@ -74,6 +75,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
             {
                 requestContext.Dispose();
                 _mailroomManager.MarkRelayTemporarilyUnavailable(relayUrl);
+                _mailroomManager.MarkRelayFailedForSession(invoiceId, relayUrl);
                 RemoveRelay(remainingRelays, relayUrl);
                 lastTransportError = ex;
             }

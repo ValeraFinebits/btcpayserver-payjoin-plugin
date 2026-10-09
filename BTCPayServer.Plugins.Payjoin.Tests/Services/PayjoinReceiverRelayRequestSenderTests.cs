@@ -178,6 +178,56 @@ public class PayjoinReceiverRelayRequestSenderTests
             $"Expected the parked relay to be skipped on the next poll, but it was polled {pollAttempts} time(s).");
     }
 
+    [Fact]
+    public async Task SendAsyncMarksRelayFailedForSessionWhenTransportFails()
+    {
+        var firstRelay = new SystemUri("https://relay-1.example/");
+        var secondRelay = new SystemUri("https://relay-2.example/");
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        settingsRepository.GetAsync("store-1").Returns(Task.FromResult(new PayjoinStoreSettings
+        {
+            OhttpRelayUrls = [firstRelay, secondRelay]
+        }));
+
+        // Relay selection shuffles, so fail whichever relay is attempted first and let the
+        // retry succeed on the other one; the blocked relay is then derived from the attempt.
+        SystemUri? failedRelay = null;
+        var relayClient = Substitute.For<IPayjoinReceiverRelayClient>();
+        relayClient
+            .SendAsync(Arg.Any<SystemUri>(), "application/http", Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var relayUrl = callInfo.ArgAt<SystemUri>(0);
+                if (failedRelay is null)
+                {
+                    failedRelay = relayUrl;
+                    return Task.FromException<byte[]>(new HttpRequestException("connection refused"));
+                }
+
+                return Task.FromResult(new byte[] { 0xCA, 0xFE });
+            });
+
+        var manager = new PayjoinMailroomManager(
+            NullLogger<PayjoinMailroomManager>.Instance,
+            TimeSpan.FromMinutes(10),
+            (_, _, _, _) => Task.FromResult(PayjoinOhttpKeysFetchResult.RetryableFailure(new HttpRequestException("unused"))));
+        var sender = new PayjoinReceiverRelayRequestSender(settingsRepository, manager, relayClient);
+
+        await sender.SendAsync(
+            "store-1",
+            "invoice-1",
+            relayUri => new TestRequestContext(relayUri),
+            context => (new SystemUri(context.RelayUri), "application/http", [0x01]),
+            CancellationToken.None);
+
+        Assert.NotNull(failedRelay);
+        var healthyRelay = failedRelay!.AbsoluteUri == firstRelay.AbsoluteUri ? secondRelay : firstRelay;
+        Assert.Equal(healthyRelay, manager.ChooseRelayForRequest([firstRelay, secondRelay], "invoice-1"));
+        // The transport failure also applies the global quarantine, so the other session cannot
+        // pick the failed relay either; it must route to the healthy one.
+        Assert.Equal(healthyRelay, manager.ChooseRelayForRequest([firstRelay, secondRelay], "invoice-2"));
+    }
+
     private sealed class TestRequestContext(string relayUri) : IDisposable
     {
         public string RelayUri { get; } = relayUri;

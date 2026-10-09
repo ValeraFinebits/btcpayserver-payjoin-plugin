@@ -14,17 +14,20 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
     private readonly IPayjoinReceiverRelayRequestSender _relayRequestSender;
     private readonly IPayjoinWalletOwnershipService _walletOwnershipService;
     private readonly PayjoinSeenInputStore _seenInputStore;
+    private readonly PayjoinMailroomManager _mailroomManager;
 
     public PayjoinReceiverStateProcessor(
         PayjoinReceiverSessionStore sessionStore,
         IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinWalletOwnershipService walletOwnershipService,
-        PayjoinSeenInputStore seenInputStore)
+        PayjoinSeenInputStore seenInputStore,
+        PayjoinMailroomManager mailroomManager)
     {
         _sessionStore = sessionStore;
         _relayRequestSender = relayRequestSender;
         _walletOwnershipService = walletOwnershipService;
         _seenInputStore = seenInputStore;
+        _mailroomManager = mailroomManager;
     }
 
     public async Task ProcessInitializedAsync(
@@ -46,13 +49,24 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             cancellationToken).ConfigureAwait(false);
         using var relayRequestContext = requestResponse;
 
-        using var transition = initialized.ProcessResponse(responseBody, requestResponse.ClientResponse);
-        using var outcome = transition.Save(context.Persister);
-
-        if (outcome is InitializedTransitionOutcome.Progress progress)
+        try
         {
-            var currentContext = RefreshCloseRequestedContext(context);
-            await ProcessUncheckedProposalAsync(currentContext, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
+            using var transition = initialized.ProcessResponse(responseBody, requestResponse.ClientResponse);
+            using var outcome = transition.Save(context.Persister);
+
+            if (outcome is InitializedTransitionOutcome.Progress progress)
+            {
+                var currentContext = RefreshCloseRequestedContext(context);
+                await ProcessUncheckedProposalAsync(currentContext, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A directory rejection (e.g. same-instance relay, surfaced as an OHTTP response
+            // processing error) must block this relay for the session so later polls rotate to
+            // the other configured relays instead of retrying the rejected route forever.
+            _mailroomManager.MarkRelayFailedForSession(context.InvoiceId, new SystemUri(requestResponse.Request.Url, UriKind.Absolute));
+            throw;
         }
     }
 
@@ -68,8 +82,17 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             requestResponse => (new SystemUri(requestResponse.Request.Url, UriKind.Absolute), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
         using var relayRequestContext = requestResponse;
-        using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
-        transition.Save(context.Persister);
+
+        try
+        {
+            using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
+            transition.Save(context.Persister);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _mailroomManager.MarkRelayFailedForSession(context.InvoiceId, new SystemUri(requestResponse.Request.Url, UriKind.Absolute));
+            throw;
+        }
     }
 
     public async Task ProcessUncheckedProposalAsync(
