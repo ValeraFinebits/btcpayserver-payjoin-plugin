@@ -10,6 +10,7 @@ using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
+using BTCPayServer.Services.Wallets;
 using BTCPayServer.Tests;
 using NBitcoin;
 using NBitcoin.Payment;
@@ -41,6 +42,47 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task CreateInvoiceAndPayItWithTaprootReceiverInput()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(
+            tester,
+            initialFundingUtxoCount: 1,
+            scriptPubKeyType: ScriptPubKeyType.TaprootBIP86,
+            cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+
+        var wallet = tester.PayTester.GetService<BTCPayWalletProvider>().GetWallet(context.Network);
+        Assert.NotNull(wallet);
+        var receiverCoin = Assert.Single(await wallet.GetUnspentCoins(context.Merchant.DerivationScheme, excludeUnconfirmed: true, cancellation: cts.Token).ConfigureAwait(true));
+        Assert.True(receiverCoin.Confirmations > 0);
+        Assert.True(receiverCoin.ScriptPubKey.IsScriptType(ScriptType.Taproot));
+        Assert.Equal(Money.Coins(1.0m), receiverCoin.Coin.Amount);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        var invoice = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoice.InvoiceId, cts.Token).ConfigureAwait(true);
+
+        var payjoinPayer = new PayjoinTestPayer(tester, payer, context.Network);
+        var payment = await payjoinPayer.PayAsync(invoice.PaymentUrl, invoice.OhttpRelayUrls, cts.Token).ConfigureAwait(true);
+        var paymentResult = await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(
+            tester, context.Merchant, invoice, payment.TransactionId, cts.Token).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
+
+        var receiverInput = Assert.Single(paymentResult.PayjoinTransaction.Inputs, input => input.PrevOut == receiverCoin.OutPoint);
+        Assert.Empty(receiverInput.ScriptSig.ToBytes());
+        var signature = Assert.Single(receiverInput.WitScript.Pushes);
+        Assert.Equal(64, signature.Length);
+        var witnessSize = receiverInput.WitScript.ToBytes().Length;
+        Assert.Equal(66, witnessSize);
+        Assert.Equal(230, receiverInput.ToBytes().Length * 4 + witnessSize);
+
+        await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoice.InvoiceId, cts.Token).ConfigureAwait(true);
     }
 
     [Fact]
