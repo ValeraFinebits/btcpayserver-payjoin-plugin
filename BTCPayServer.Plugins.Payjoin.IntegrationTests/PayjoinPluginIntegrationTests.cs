@@ -59,7 +59,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
         var wallet = tester.PayTester.GetService<BTCPayWalletProvider>().GetWallet(context.Network);
         Assert.NotNull(wallet);
-        var receiverCoin = Assert.Single(await wallet.GetUnspentCoins(context.Merchant.DerivationScheme, true, cts.Token).ConfigureAwait(true));
+        var receiverCoin = Assert.Single(await wallet.GetUnspentCoins(context.Merchant.DerivationScheme, excludeUnconfirmed: true, cancellation: cts.Token).ConfigureAwait(true));
         Assert.True(receiverCoin.Confirmations > 0);
         Assert.True(receiverCoin.ScriptPubKey.IsScriptType(ScriptType.Taproot));
         Assert.Equal(Money.Coins(1.0m), receiverCoin.Coin.Amount);
