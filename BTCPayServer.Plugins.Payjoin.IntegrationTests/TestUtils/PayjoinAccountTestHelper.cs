@@ -13,26 +13,26 @@ internal static class PayjoinAccountTestHelper
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan WalletFundingConfirmationTimeout = TimeSpan.FromSeconds(30);
 
-    public static async Task<TestContext> CreateInitializedTestContextAsync(ServerTester tester, bool confirmFunding = true, int initialFundingUtxoCount = DefaultInitialFundingUtxoCount, CancellationToken cancellationToken = default)
+    public static async Task<TestContext> CreateInitializedTestContextAsync(ServerTester tester, bool confirmFunding = true, int initialFundingUtxoCount = DefaultInitialFundingUtxoCount, ScriptPubKeyType scriptPubKeyType = ScriptPubKeyType.Segwit, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tester);
 
         await tester.StartAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
 
         var network = GetBitcoinNetwork(tester);
-        var merchant = await CreateInitializedAccountAsync(tester, network, confirmFunding, initialFundingUtxoCount, cancellationToken).ConfigureAwait(true);
+        var merchant = await CreateInitializedAccountAsync(tester, network, confirmFunding, initialFundingUtxoCount, scriptPubKeyType, cancellationToken).ConfigureAwait(true);
 
         return new TestContext(network, merchant);
     }
 
-    public static async Task<TestAccount> CreateInitializedAccountAsync(ServerTester tester, BTCPayNetwork network, bool confirmFunding = true, int initialFundingUtxoCount = DefaultInitialFundingUtxoCount, CancellationToken cancellationToken = default)
+    public static async Task<TestAccount> CreateInitializedAccountAsync(ServerTester tester, BTCPayNetwork network, bool confirmFunding = true, int initialFundingUtxoCount = DefaultInitialFundingUtxoCount, ScriptPubKeyType scriptPubKeyType = ScriptPubKeyType.Segwit, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tester);
         ArgumentNullException.ThrowIfNull(network);
 
         var user = tester.NewAccount();
         await user.GrantAccessAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
-        await user.RegisterDerivationSchemeAsync(PayjoinConstants.BitcoinCode, ScriptPubKeyType.Segwit, true).WaitAsync(cancellationToken).ConfigureAwait(true);
+        await user.RegisterDerivationSchemeAsync(PayjoinConstants.BitcoinCode, scriptPubKeyType, true).WaitAsync(cancellationToken).ConfigureAwait(true);
         await FundWalletAsync(user, network, initialFundingUtxoCount, cancellationToken).ConfigureAwait(true);
         if (confirmFunding)
         {
