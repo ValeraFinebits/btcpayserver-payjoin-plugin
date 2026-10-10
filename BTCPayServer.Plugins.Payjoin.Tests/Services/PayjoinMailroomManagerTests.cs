@@ -326,14 +326,166 @@ public class PayjoinMailroomManagerTests
         Assert.Equal(directoryUrls.OrderBy(static directoryUrl => directoryUrl.AbsoluteUri), orderedDirectoryUrls.OrderBy(static directoryUrl => directoryUrl.AbsoluteUri));
     }
 
+    [Fact]
+    public void ChooseRelayForRequestSkipsRelayFailedForSession()
+    {
+        var firstRelay = new SystemUri("https://relay-1.example/");
+        var secondRelay = new SystemUri("https://relay-2.example/");
+        var selector = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        selector.MarkRelayFailedForSession("invoice-1", firstRelay);
+
+        var selected = selector.ChooseRelayForRequest(
+            new PayjoinStoreSettings
+            {
+                DirectoryUrls = [new SystemUri("https://directory.example/")],
+                OhttpRelayUrls = [firstRelay, secondRelay]
+            },
+            "invoice-1");
+
+        Assert.Equal(secondRelay, selected);
+    }
+
+    [Fact]
+    public void SessionFailedRelayDoesNotAffectOtherSessions()
+    {
+        var relayUrl = new SystemUri("https://relay-1.example/");
+        var selector = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        selector.MarkRelayFailedForSession("invoice-1", relayUrl);
+
+        var selected = selector.ChooseRelayForRequest(
+            new PayjoinStoreSettings
+            {
+                DirectoryUrls = [new SystemUri("https://directory.example/")],
+                OhttpRelayUrls = [relayUrl]
+            },
+            "invoice-2");
+
+        Assert.Equal(relayUrl, selected);
+    }
+
+    [Fact]
+    public void ClearSessionFailedRelaysRestoresRelaySelection()
+    {
+        var relayUrl = new SystemUri("https://relay-1.example/");
+        var selector = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        selector.MarkRelayFailedForSession("invoice-1", relayUrl);
+        Assert.Null(selector.ChooseRelayForRequest([relayUrl], "invoice-1"));
+
+        selector.ClearSessionFailedRelays("invoice-1");
+
+        Assert.Equal(relayUrl, selector.ChooseRelayForRequest([relayUrl], "invoice-1"));
+    }
+
+    [Fact]
+    public void MarkRelayFailedForSessionAcceptsFullRelayRequestUrl()
+    {
+        // Relay request URLs append the directory origin as a path; the authority identifies
+        // the configured relay that must be blocked for the session.
+        var relayUrl = new SystemUri("https://relay-1.example/");
+        var otherRelay = new SystemUri("https://relay-2.example/");
+        var selector = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        selector.MarkRelayFailedForSession("invoice-1", new SystemUri("https://relay-1.example/https://directory.example/"));
+
+        var selected = selector.ChooseRelayForRequest([relayUrl, otherRelay], "invoice-1");
+
+        Assert.Equal(otherRelay, selected);
+    }
+
+    [Fact]
+    public void SessionFailedRelayBecomesAvailableAfterQuarantineExpires()
+    {
+        var relay = new SystemUri("https://relay.example/");
+        var manager = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()), TimeSpan.Zero);
+        manager.MarkRelayFailedForSession("invoice-1", relay);
+
+        Assert.Equal(relay, manager.ChooseRelayForRequest([relay], "invoice-1"));
+    }
+
+    [Theory]
+    [InlineData("https://relay.example/custom/", "https://relay.example/https://directory.example/")]
+    [InlineData("https://relay.example/custom/?key=value", "https://relay.example/custom/?key=value")]
+    public void SessionQuarantineMatchesConfiguredRelayByAuthority(string configured, string failed)
+    {
+        var relay = new SystemUri(configured);
+        var otherPort = new SystemUri("https://relay.example:8443/custom/");
+        var manager = CreateManager((_, _, _, _) => Task.FromResult(CreateSuccessResult()));
+        manager.MarkRelayFailedForSession("invoice-1", new SystemUri(failed));
+
+        Assert.Null(manager.ChooseRelayForRequest([relay], "invoice-1"));
+        Assert.Equal(relay, manager.ChooseRelayForRequest([relay], "invoice-2"));
+        Assert.Equal(otherPort, manager.ChooseRelayForRequest([otherPort], "invoice-1"));
+    }
+
+    [Fact]
+    public void SessionQuarantineExpiresAtPositiveTtlWithoutSelectionExtendingIt()
+    {
+        var clock = new ManualTimeProvider();
+        var relay = new SystemUri("https://relay.example/");
+        var manager = CreateManager((_, _, _, _) => throw new NotSupportedException(), TimeSpan.FromMinutes(10), clock);
+        manager.MarkRelayFailedForSession("invoice-1", relay);
+        Assert.Null(manager.ChooseRelayForRequest([relay], "invoice-1"));
+
+        clock.Advance(TimeSpan.FromMinutes(5));
+        Assert.Null(manager.ChooseRelayForRequest([relay], "invoice-1"));
+        Assert.Equal(relay, manager.ChooseRelayForRequest([relay], "invoice-2"));
+        clock.Advance(TimeSpan.FromMinutes(5) - TimeSpan.FromTicks(1));
+        Assert.Null(manager.ChooseRelayForRequest([relay], "invoice-1"));
+
+        clock.Advance(TimeSpan.FromTicks(1));
+        Assert.Equal(relay, manager.ChooseRelayForRequest([relay], "invoice-1"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GlobalAndSessionQuarantinesExpireIndependently(bool sessionFailsFirst)
+    {
+        var clock = new ManualTimeProvider();
+        var relay = new SystemUri("https://relay.example/");
+        var manager = CreateManager((_, _, _, _) => throw new NotSupportedException(), TimeSpan.FromMinutes(10), clock);
+        if (sessionFailsFirst)
+        {
+            manager.MarkRelayFailedForSession("invoice-1", relay);
+            clock.Advance(TimeSpan.FromMinutes(2));
+            manager.MarkRelayTemporarilyUnavailable(relay);
+        }
+        else
+        {
+            manager.MarkRelayTemporarilyUnavailable(relay);
+            clock.Advance(TimeSpan.FromMinutes(2));
+            manager.MarkRelayFailedForSession("invoice-1", relay);
+        }
+
+        clock.Advance(TimeSpan.FromMinutes(8) - TimeSpan.FromTicks(1));
+        Assert.Null(manager.ChooseRelayForRequest([relay], "invoice-1"));
+        Assert.Null(manager.ChooseRelayForRequest([relay], "invoice-2"));
+        clock.Advance(TimeSpan.FromTicks(1));
+        Assert.Null(manager.ChooseRelayForRequest([relay], "invoice-1"));
+        Assert.Equal(sessionFailsFirst ? null : relay, manager.ChooseRelayForRequest([relay], "invoice-2"));
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.Equal(relay, manager.ChooseRelayForRequest([relay], "invoice-1"));
+        Assert.Equal(relay, manager.ChooseRelayForRequest([relay], "invoice-2"));
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _utcNow = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+        public void Advance(TimeSpan elapsed) => _utcNow += elapsed;
+    }
+
     private static PayjoinMailroomManager CreateManager(
         Func<SystemUri, string, string, CancellationToken, Task<PayjoinOhttpKeysFetchResult>> fetchKeysAsync,
-        TimeSpan? failedRelayCacheDuration = null)
+        TimeSpan? failedRelayCacheDuration = null,
+        TimeProvider? timeProvider = null)
     {
         return new PayjoinMailroomManager(
             NullLogger<PayjoinMailroomManager>.Instance,
             failedRelayCacheDuration ?? TimeSpan.FromMinutes(10),
-            fetchKeysAsync);
+            fetchKeysAsync,
+            timeProvider);
     }
 
     private static PayjoinOhttpKeysFetchResult CreateSuccessResult()

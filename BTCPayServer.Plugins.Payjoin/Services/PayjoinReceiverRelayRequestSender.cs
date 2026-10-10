@@ -50,7 +50,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
         while (remainingRelays.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relayUrl = _mailroomManager.ChooseRelayForRequest(remainingRelays);
+            var relayUrl = _mailroomManager.ChooseRelayForRequest(remainingRelays, invoiceId);
             if (relayUrl is null)
             {
                 break;
@@ -73,7 +73,15 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
             catch (System.Net.Http.HttpRequestException ex)
             {
                 requestContext.Dispose();
-                _mailroomManager.MarkRelayTemporarilyUnavailable(relayUrl);
+                if (ex.StatusCode is not null)
+                {
+                    _mailroomManager.MarkRelayFailedForSession(invoiceId, relayUrl);
+                }
+                else
+                {
+                    _mailroomManager.MarkRelayTemporarilyUnavailable(relayUrl);
+                }
+
                 RemoveRelay(remainingRelays, relayUrl);
                 lastTransportError = ex;
             }

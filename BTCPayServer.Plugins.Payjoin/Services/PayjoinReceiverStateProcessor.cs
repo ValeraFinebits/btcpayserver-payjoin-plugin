@@ -1,6 +1,7 @@
 using Payjoin;
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,17 +15,20 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
     private readonly IPayjoinReceiverRelayRequestSender _relayRequestSender;
     private readonly IPayjoinWalletOwnershipService _walletOwnershipService;
     private readonly PayjoinSeenInputStore _seenInputStore;
+    private readonly PayjoinMailroomManager _mailroomManager;
 
     public PayjoinReceiverStateProcessor(
         PayjoinReceiverSessionStore sessionStore,
         IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinWalletOwnershipService walletOwnershipService,
-        PayjoinSeenInputStore seenInputStore)
+        PayjoinSeenInputStore seenInputStore,
+        PayjoinMailroomManager mailroomManager)
     {
         _sessionStore = sessionStore;
         _relayRequestSender = relayRequestSender;
         _walletOwnershipService = walletOwnershipService;
         _seenInputStore = seenInputStore;
+        _mailroomManager = mailroomManager;
     }
 
     public async Task ProcessInitializedAsync(
@@ -46,13 +50,25 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             cancellationToken).ConfigureAwait(false);
         using var relayRequestContext = requestResponse;
 
-        using var transition = initialized.ProcessResponse(responseBody, requestResponse.ClientResponse);
-        using var outcome = transition.Save(context.Persister);
-
-        if (outcome is InitializedTransitionOutcome.Progress progress)
+        InitializedTransitionOutcome outcome;
+        try
         {
-            var currentContext = RefreshCloseRequestedContext(context);
-            await ProcessUncheckedProposalAsync(currentContext, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
+            using var transition = initialized.ProcessResponse(responseBody, requestResponse.ClientResponse);
+            outcome = transition.Save(context.Persister);
+        }
+        catch (ReceiverPersistedException.Transient ex)
+        {
+            _mailroomManager.MarkRelayFailedForSession(context.InvoiceId, new SystemUri(requestResponse.Request.Url, UriKind.Absolute));
+            throw new HttpRequestException("Failed to process the OHTTP poll response.", ex);
+        }
+
+        using (outcome)
+        {
+            if (outcome is InitializedTransitionOutcome.Progress progress)
+            {
+                var currentContext = RefreshCloseRequestedContext(context);
+                await ProcessUncheckedProposalAsync(currentContext, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -68,8 +84,17 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             requestResponse => (new SystemUri(requestResponse.Request.Url, UriKind.Absolute), requestResponse.Request.ContentType, requestResponse.Request.Body),
             cancellationToken).ConfigureAwait(false);
         using var relayRequestContext = requestResponse;
-        using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
-        transition.Save(context.Persister);
+
+        try
+        {
+            using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
+            transition.Save(context.Persister);
+        }
+        catch (ReceiverPersistedException.Transient ex)
+        {
+            _mailroomManager.MarkRelayFailedForSession(context.InvoiceId, new SystemUri(requestResponse.Request.Url, UriKind.Absolute));
+            throw new HttpRequestException("Failed to process the OHTTP error reply response.", ex);
+        }
     }
 
     public async Task ProcessUncheckedProposalAsync(
