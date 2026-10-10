@@ -93,11 +93,11 @@ public sealed class PayjoinReceiverSessionStore
 
     public bool RemoveSession(string invoiceId)
     {
-        _mailroomManager?.ClearSessionFailedRelays(invoiceId);
         using var context = _pluginDbContextFactory.CreateContext();
         var sessionData = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
         if (sessionData is null)
         {
+            _mailroomManager?.ClearSessionFailedRelays(invoiceId);
             return false;
         }
 
@@ -119,6 +119,7 @@ public sealed class PayjoinReceiverSessionStore
 
         context.ReceiverSessions.Remove(sessionData);
         context.SaveChanges();
+        _mailroomManager?.ClearSessionFailedRelays(invoiceId);
         return true;
     }
 

@@ -1,6 +1,7 @@
 using Payjoin;
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -49,24 +50,25 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             cancellationToken).ConfigureAwait(false);
         using var relayRequestContext = requestResponse;
 
+        InitializedTransitionOutcome outcome;
         try
         {
             using var transition = initialized.ProcessResponse(responseBody, requestResponse.ClientResponse);
-            using var outcome = transition.Save(context.Persister);
+            outcome = transition.Save(context.Persister);
+        }
+        catch (ReceiverPersistedException.Transient ex)
+        {
+            _mailroomManager.MarkRelayFailedForSession(context.InvoiceId, new SystemUri(requestResponse.Request.Url, UriKind.Absolute));
+            throw new HttpRequestException("Failed to process the OHTTP poll response.", ex);
+        }
 
+        using (outcome)
+        {
             if (outcome is InitializedTransitionOutcome.Progress progress)
             {
                 var currentContext = RefreshCloseRequestedContext(context);
                 await ProcessUncheckedProposalAsync(currentContext, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
             }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // A directory rejection (e.g. same-instance relay, surfaced as an OHTTP response
-            // processing error) must block this relay for the session so later polls rotate to
-            // the other configured relays instead of retrying the rejected route forever.
-            _mailroomManager.MarkRelayFailedForSession(context.InvoiceId, new SystemUri(requestResponse.Request.Url, UriKind.Absolute));
-            throw;
         }
     }
 
@@ -88,10 +90,10 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             using var transition = replyableError.ProcessErrorResponse(responseBody, requestResponse.ClientResponse);
             transition.Save(context.Persister);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (ReceiverPersistedException.Transient ex)
         {
             _mailroomManager.MarkRelayFailedForSession(context.InvoiceId, new SystemUri(requestResponse.Request.Url, UriKind.Absolute));
-            throw;
+            throw new HttpRequestException("Failed to process the OHTTP error reply response.", ex);
         }
     }
 

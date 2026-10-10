@@ -42,7 +42,8 @@ public sealed class PayjoinReceiverRelayClient : IPayjoinReceiverRelayClient
         timeoutCts.CancelAfter(_relayRequestTimeout);
         try
         {
-            using var response = await client.SendAsync(message, timeoutCts.Token).ConfigureAwait(false);
+            using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
             return await response.Content.ReadAsByteArrayAsync(timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (IsExpectedRelayTimeout(ex, timeoutCts.Token, cancellationToken))

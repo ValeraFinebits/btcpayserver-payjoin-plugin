@@ -92,16 +92,7 @@ public class PayjoinReceiverProposalFinalizerTests
             // EnsureExpectedFinalTransactionAsync records through the bridge service only; the
             // session store participates in the finalize paths, which these tests do not drive.
             sessionStore: null!,
-            CreateNetworkProvider(),
-            CreateMailroomManager());
-    }
-
-    private static PayjoinMailroomManager CreateMailroomManager()
-    {
-        return new PayjoinMailroomManager(
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<PayjoinMailroomManager>.Instance,
-            TimeSpan.FromMinutes(10),
-            (_, _, _, _) => Task.FromResult(PayjoinOhttpKeysFetchResult.RetryableFailure(new HttpRequestException("unused"))));
+            CreateNetworkProvider());
     }
 
     private static PayjoinReceiverProposalFinalizationContext CreateContext()

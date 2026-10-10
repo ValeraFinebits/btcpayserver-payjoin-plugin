@@ -63,18 +63,19 @@ internal sealed class PayjoinMailroomManager
             new EventId(7, nameof(MarkRelayTemporarilyUnavailable)),
             "Payjoin OHTTP relay {OhttpRelayUrl} is temporarily unavailable and will be skipped for {QuarantineDuration}.");
 
-    private static readonly Action<ILogger, string, string, Exception?> LogRelayFailedForSession =
-        LoggerMessage.Define<string, string>(
+    private static readonly Action<ILogger, string, string, TimeSpan, Exception?> LogRelayFailedForSession =
+        LoggerMessage.Define<string, string, TimeSpan>(
             LogLevel.Warning,
             new EventId(8, nameof(MarkRelayFailedForSession)),
-            "Payjoin OHTTP relay {OhttpRelayUrl} failed for invoice {InvoiceId} and will be skipped for the rest of the session.");
+            "Payjoin OHTTP relay {OhttpRelayUrl} failed for invoice {InvoiceId} and will be skipped for {QuarantineDuration}.");
 
     private readonly ILogger<PayjoinMailroomManager> _logger;
     private readonly TimeSpan _failedRelayCacheDuration;
+    private readonly TimeProvider _timeProvider;
     private readonly Func<SystemUri, string, string, CancellationToken, Task<PayjoinOhttpKeysFetchResult>> _fetchKeysAsync;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _temporarilyUnavailableRoutes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _temporarilyUnavailableRelays = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _sessionFailedRelays = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, DateTimeOffset>> _sessionFailedRelays = new(StringComparer.OrdinalIgnoreCase);
 
     public PayjoinMailroomManager(
         PayjoinOhttpKeysProvider ohttpKeysProvider,
@@ -104,12 +105,14 @@ internal sealed class PayjoinMailroomManager
     internal PayjoinMailroomManager(
         ILogger<PayjoinMailroomManager> logger,
         TimeSpan failedRelayCacheDuration,
-        Func<SystemUri, string, string, CancellationToken, Task<PayjoinOhttpKeysFetchResult>> fetchKeysAsync)
+        Func<SystemUri, string, string, CancellationToken, Task<PayjoinOhttpKeysFetchResult>> fetchKeysAsync,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(fetchKeysAsync);
         _logger = logger;
         _failedRelayCacheDuration = failedRelayCacheDuration;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _fetchKeysAsync = fetchKeysAsync;
     }
 
@@ -128,7 +131,7 @@ internal sealed class PayjoinMailroomManager
             return null;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         var orderedDirectories = OrderDirectoryUrls(directoryUrls);
         var orderedRelays = OrderRelayUrls(relayUrls);
         var selected = await TrySelectRouteAsync(orderedDirectories, orderedRelays, storeId, invoiceId, now, cancellationToken).ConfigureAwait(false);
@@ -168,7 +171,7 @@ internal sealed class PayjoinMailroomManager
             return null;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         foreach (var relayUrl in relayUrls)
         {
             if (IsRelayTemporarilyUnavailable(relayUrl, now))
@@ -176,7 +179,7 @@ internal sealed class PayjoinMailroomManager
                 continue;
             }
 
-            if (invoiceId is not null && IsRelayFailedForSession(invoiceId, relayUrl))
+            if (invoiceId is not null && IsRelayFailedForSession(invoiceId, relayUrl, now))
             {
                 continue;
             }
@@ -190,13 +193,12 @@ internal sealed class PayjoinMailroomManager
     internal void MarkRelayTemporarilyUnavailable(SystemUri relayUrl)
     {
         ArgumentNullException.ThrowIfNull(relayUrl);
-        _temporarilyUnavailableRelays[CreateRelayKey(relayUrl)] = DateTimeOffset.UtcNow;
+        _temporarilyUnavailableRelays[CreateRelayKey(relayUrl)] = _timeProvider.GetUtcNow();
         LogRelayTemporarilyUnavailable(_logger, relayUrl.AbsoluteUri, _failedRelayCacheDuration, null);
     }
 
     /// <summary>
-    /// Blocks a relay for the remainder of a receiver session, mirroring the payjoin-cli
-    /// RelayManager session-lifetime failed relay list. Accepts either a configured relay
+    /// Temporarily excludes a relay for a receiver session. Accepts either a configured relay
     /// base URL or a full relay request URL whose path carries the directory origin.
     /// </summary>
     internal void MarkRelayFailedForSession(string invoiceId, SystemUri relayOrRequestUrl)
@@ -204,9 +206,9 @@ internal sealed class PayjoinMailroomManager
         ArgumentNullException.ThrowIfNull(invoiceId);
         ArgumentNullException.ThrowIfNull(relayOrRequestUrl);
         var relayUrl = ExtractRelayBaseUrl(relayOrRequestUrl);
-        var sessionRelays = _sessionFailedRelays.GetOrAdd(invoiceId, static _ => new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase));
-        sessionRelays[CreateRelayKey(relayUrl)] = 1;
-        LogRelayFailedForSession(_logger, relayUrl.AbsoluteUri, invoiceId, null);
+        var sessionRelays = _sessionFailedRelays.GetOrAdd(invoiceId, static _ => new ConcurrentDictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase));
+        sessionRelays[CreateRelayKey(relayUrl)] = _timeProvider.GetUtcNow();
+        LogRelayFailedForSession(_logger, relayUrl.AbsoluteUri, invoiceId, _failedRelayCacheDuration, null);
     }
 
     internal void ClearSessionFailedRelays(string invoiceId)
@@ -353,10 +355,22 @@ internal sealed class PayjoinMailroomManager
         return false;
     }
 
-    private bool IsRelayFailedForSession(string invoiceId, SystemUri relayUrl)
+    private bool IsRelayFailedForSession(string invoiceId, SystemUri relayUrl, DateTimeOffset now)
     {
-        return _sessionFailedRelays.TryGetValue(invoiceId, out var sessionRelays)
-            && sessionRelays.ContainsKey(CreateRelayKey(relayUrl));
+        var key = CreateRelayKey(ExtractRelayBaseUrl(relayUrl));
+        if (!_sessionFailedRelays.TryGetValue(invoiceId, out var sessionRelays)
+            || !sessionRelays.TryGetValue(key, out var failedAt))
+        {
+            return false;
+        }
+
+        if (now - failedAt < _failedRelayCacheDuration)
+        {
+            return true;
+        }
+
+        sessionRelays.TryRemove(key, out _);
+        return false;
     }
 
     internal static SystemUri ExtractRelayBaseUrl(SystemUri relayOrRequestUrl)
@@ -369,7 +383,7 @@ internal sealed class PayjoinMailroomManager
 
     private void MarkRouteUnavailable(SystemUri directoryUrl, SystemUri relayUrl)
     {
-        _temporarilyUnavailableRoutes[CreateRouteKey(directoryUrl, relayUrl)] = DateTimeOffset.UtcNow;
+        _temporarilyUnavailableRoutes[CreateRouteKey(directoryUrl, relayUrl)] = _timeProvider.GetUtcNow();
     }
 
     private static void RemoveRelay(List<SystemUri> remainingRelays, SystemUri relayUrl)

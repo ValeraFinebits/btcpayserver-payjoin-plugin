@@ -17,22 +17,19 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly BTCPayNetworkProvider _networkProvider;
-    private readonly PayjoinMailroomManager _mailroomManager;
 
     public PayjoinReceiverProposalFinalizer(
         IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinReceiverProposalSigner proposalSigner,
         IPayjoinAccountingBridgeService accountingBridgeService,
         PayjoinReceiverSessionStore sessionStore,
-        BTCPayNetworkProvider networkProvider,
-        PayjoinMailroomManager mailroomManager)
+        BTCPayNetworkProvider networkProvider)
     {
         _relayRequestSender = relayRequestSender;
         _proposalSigner = proposalSigner;
         _accountingBridgeService = accountingBridgeService;
         _sessionStore = sessionStore;
         _networkProvider = networkProvider;
-        _mailroomManager = mailroomManager;
     }
 
     public async Task FinalizeAsync(
@@ -168,16 +165,10 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         var requestResponse = relayResponse.RequestContext;
         using var relayRequestContext = requestResponse;
 
-        try
-        {
-            using var transition = proposal.ProcessResponse(responseBody, requestResponse.ClientResponse);
-            using var _ = transition.Save(context.Persister);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _mailroomManager.MarkRelayFailedForSession(context.InvoiceId, new SystemUri(requestResponse.Request.Url, UriKind.Absolute));
-            throw;
-        }
+        // TODO: Preserve POST error types in FFI and retry transient failures from the persisted proposal.
+        // https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/198
+        using var transition = proposal.ProcessResponse(responseBody, requestResponse.ClientResponse);
+        using var _ = transition.Save(context.Persister);
     }
 
     private static ExpectedFinalOutput? TryGetSettlementOutput(PayjoinAccountingBridgeState bridge, Transaction finalTransaction)

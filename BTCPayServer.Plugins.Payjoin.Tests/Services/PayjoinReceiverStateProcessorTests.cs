@@ -120,12 +120,10 @@ public class PayjoinReceiverStateProcessorTests
     }
 
     [Fact]
-    public async Task ProcessInitializedAsyncBlocksTheRelayForTheSessionWhenTheResponseCannotBeProcessed()
+    public async Task ProcessInitializedAsyncMakesTransientResponseFailureRetryableForTheSession()
     {
-        // Reproduces the same-instance relay rejection: the relay accepts the POST (transport
-        // succeeds) but forwards the directory's raw error, so the receiver sees an empty body
-        // that fails OHTTP response processing ("Unexpected response size 0, expected 8192").
-        // The failing relay must be blocked for the session so later polls rotate away from it.
+        // Even with a successful outer HTTP status, a truncated OHTTP body is transient.
+        // Preserve the native error while routing it through the session processor's retry path.
         using var receiverKey = new Key();
         var receiverScript = receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes();
         var rejectedRelay = new SystemUri("https://relay-1.example/");
@@ -158,22 +156,20 @@ public class PayjoinReceiverStateProcessorTests
             "invoice-1",
             _ => false);
 
-        // The transient persisted error is the same-instance rejection surface: the relay
-        // transport succeeds, but the directory's raw rejection fails OHTTP response processing.
-        var thrown = await Assert.ThrowsAsync<ReceiverPersistedException.Transient>(() => processor.ProcessInitializedAsync(
+        var thrown = await Assert.ThrowsAsync<HttpRequestException>(() => processor.ProcessInitializedAsync(
             context,
             initialized,
             static (_, _, _) => Task.CompletedTask,
             CancellationToken.None));
-        Assert.Contains("Unexpected response size", thrown.Message, StringComparison.Ordinal);
+        using var nativeError = Assert.IsType<ReceiverPersistedException.Transient>(thrown.InnerException);
+        Assert.Contains("Unexpected response size", nativeError.Message, StringComparison.Ordinal);
 
         Assert.Equal(otherRelay, mailroomManager.ChooseRelayForRequest([rejectedRelay, otherRelay], "invoice-1"));
         Assert.Equal(rejectedRelay, mailroomManager.ChooseRelayForRequest([rejectedRelay], "invoice-2"));
     }
 
     /// <summary>
-    /// Simulates a relay that accepts the request but returns an unprocessable body, as happens
-    /// when the directory rejects an OHTTP request from a same-instance relay.
+    /// Simulates a successful HTTP request with a truncated OHTTP response body.
     /// </summary>
     private sealed class GarbageResponseRelaySender(string relayUrl) : IPayjoinReceiverRelayRequestSender
     {

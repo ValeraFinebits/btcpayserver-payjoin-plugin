@@ -67,15 +67,21 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
             {
                 requestContext.Dispose();
                 _mailroomManager.MarkRelayTemporarilyUnavailable(relayUrl);
-                _mailroomManager.MarkRelayFailedForSession(invoiceId, relayUrl);
                 RemoveRelay(remainingRelays, relayUrl);
                 lastTransportError = ex;
             }
             catch (System.Net.Http.HttpRequestException ex)
             {
                 requestContext.Dispose();
-                _mailroomManager.MarkRelayTemporarilyUnavailable(relayUrl);
-                _mailroomManager.MarkRelayFailedForSession(invoiceId, relayUrl);
+                if (ex.StatusCode is not null)
+                {
+                    _mailroomManager.MarkRelayFailedForSession(invoiceId, relayUrl);
+                }
+                else
+                {
+                    _mailroomManager.MarkRelayTemporarilyUnavailable(relayUrl);
+                }
+
                 RemoveRelay(remainingRelays, relayUrl);
                 lastTransportError = ex;
             }
