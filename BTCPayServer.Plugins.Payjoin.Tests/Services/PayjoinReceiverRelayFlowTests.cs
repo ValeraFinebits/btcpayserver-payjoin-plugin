@@ -269,7 +269,7 @@ public class PayjoinReceiverRelayFlowTests
             using var bootstrap = builder.Build();
             var capture = new CapturingReceiverSessionPersister();
             Receiver = bootstrap.Save(capture);
-            Store.CreateSession("invoice", Address.ToString(), "store", DateTimeOffset.UtcNow.AddMinutes(20), capture.Events);
+            Store.GetOrCreateSession("invoice", Address.ToString(), "store", DateTimeOffset.UtcNow.AddMinutes(20), capture.Events);
             UseRelays(Transport.HealthyRelay);
             var httpFactory = Substitute.For<IHttpClientFactory>();
             httpFactory.CreateClient(Arg.Any<string>()).Returns(_http);
@@ -283,7 +283,7 @@ public class PayjoinReceiverRelayFlowTests
                 StateProcessor, null!, null!, bridge, null!, null!, Finalizer, null!, NullLogger<PayjoinReceiverSessionProcessor>.Instance);
         }
 
-        public void UseRelays(params Uri[] relays) => _settings.GetAsync("store").Returns(Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = relays }));
+        public void UseRelays(params Uri[] relays) => _settings.GetAsync("store").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings { OhttpRelayUrls = relays }));
 
         public PayjoinReceiverSessionState Session()
         {

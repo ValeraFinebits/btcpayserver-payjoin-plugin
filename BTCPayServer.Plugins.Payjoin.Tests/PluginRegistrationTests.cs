@@ -78,6 +78,7 @@ public class PluginRegistrationTests
     private static IServiceCollection CreateBitcoinPluginServices()
     {
         var services = new ServiceCollection();
+        services.AddMemoryCache();
         var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
         var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
         var network = CreateBitcoinNetwork(nbxplorerNetworkProvider);

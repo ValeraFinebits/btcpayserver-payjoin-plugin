@@ -16,7 +16,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenOutPointMissing()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var selector = CreateSelector(context.CreateStore());
         var session = CreateSession();
 
@@ -28,7 +28,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenContributedInputTransactionIdIsInvalid()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var selector = CreateSelector(context.CreateStore());
         var session = CreateSession(
             contributedInputTransactionId: "not-a-transaction-id",
@@ -42,7 +42,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenContributedInputOutputIndexIsNegative()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var selector = CreateSelector(context.CreateStore());
         var session = CreateSession(
             contributedInputTransactionId: uint256.One.ToString(),
@@ -56,7 +56,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenContributedInputOutputIndexOverflowsUInt()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var selector = CreateSelector(context.CreateStore());
         var session = CreateSession(
             contributedInputTransactionId: uint256.One.ToString(),
@@ -70,7 +70,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryGetPersistedContributedCoinsAsyncReturnsNullWhenCoinUnavailable()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var selector = CreateSelector(context.CreateStore());
         var outPoint = new OutPoint(uint256.Parse("8888888888888888888888888888888888888888888888888888888888888888"), 2);
         var session = CreateSession(
@@ -85,7 +85,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryContributeInputsAsyncContributesTheSelectedCandidate()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var store = context.CreateStore();
         CreatePersistedSession(store, "invoice-1");
         var candidates = CreateCandidates(2);
@@ -104,7 +104,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryContributeInputsAsyncReselectsWhenReservationConflicts()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var store = context.CreateStore();
         CreatePersistedSession(store, "invoice-1");
         CreatePersistedSession(store, "other-invoice");
@@ -125,7 +125,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryContributeInputsAsyncFailsWhenEveryCandidateIsReserved()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var store = context.CreateStore();
         CreatePersistedSession(store, "invoice-1");
         var candidates = CreateCandidates(2);
@@ -151,7 +151,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryContributeInputsAsyncReselectsWhenContributionIsRejected()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var store = context.CreateStore();
         CreatePersistedSession(store, "invoice-1");
         var candidates = CreateCandidates(2);
@@ -174,7 +174,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryContributeInputsAsyncFailsWhenSelectionCannotBeMappedBackToACoin()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var candidates = CreateCandidates(1);
         var selector = CreateSelector(
             context.CreateStore(),
@@ -190,7 +190,7 @@ public class PayjoinReceiverInputSelectorTests
     [Fact]
     public async Task TryContributeInputsAsyncFailsWhenTheLibraryCannotSelect()
     {
-        using var context = new TestContext();
+        using var context = new SessionStoreFixture();
         var candidates = CreateCandidates(1);
         var selector = CreateSelector(
             context.CreateStore(),
@@ -205,7 +205,7 @@ public class PayjoinReceiverInputSelectorTests
 
     private static void CreatePersistedSession(PayjoinReceiverSessionStore store, string invoiceId)
     {
-        store.CreateSession(
+        store.GetOrCreateSession(
             invoiceId,
             "bcrt1qexampleaddress0000000000000000000000000",
             "store-1",
@@ -267,46 +267,6 @@ public class PayjoinReceiverInputSelectorTests
             contributedInputTransactionId,
             contributedInputOutputIndex,
             events);
-    }
-
-    private sealed class TestContext : IDisposable
-    {
-        private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
-        private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
-
-        public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
-
-        public void Dispose()
-        {
-            using var db = _dbContextFactory.CreateContext();
-            db.Database.EnsureDeleted();
-        }
-    }
-
-    private sealed class TestPayjoinPluginDbContextFactory : PayjoinPluginDbContextFactory
-    {
-        private static readonly InMemoryDatabaseRoot SharedDatabaseRoot = new();
-        private readonly DbContextOptions<PayjoinPluginDbContext> _dbContextOptions;
-
-        public TestPayjoinPluginDbContextFactory()
-            : base(Options.Create(new DatabaseOptions
-            {
-                ConnectionString = "Host=localhost;Database=payjoin-plugin-tests;Username=postgres"
-            }))
-        {
-            var databaseName = $"payjoin-input-selector-tests-{Guid.NewGuid():N}";
-            _dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
-                .UseInMemoryDatabase(databaseName, SharedDatabaseRoot)
-                .Options;
-
-            using var db = CreateContext();
-            db.Database.EnsureCreated();
-        }
-
-        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
-        {
-            return new PayjoinPluginDbContext(_dbContextOptions);
-        }
     }
 
     private sealed class TestReceiverWalletAdapter : IPayjoinReceiverWalletAdapter

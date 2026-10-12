@@ -217,6 +217,10 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int>("DestructiveWriteStamp")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer");
+
                     b.Property<bool>("InitializedPollAfterCloseRequestConsumed")
                         .HasColumnType("boolean");
 
@@ -225,6 +229,9 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.Property<DateTimeOffset>("MonitoringExpiresAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PayjoinUri")
+                        .HasColumnType("text");
 
                     b.Property<string>("ReceiverAddress")
                         .IsRequired()

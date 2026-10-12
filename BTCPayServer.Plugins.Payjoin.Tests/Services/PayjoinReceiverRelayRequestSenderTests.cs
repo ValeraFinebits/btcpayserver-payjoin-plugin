@@ -1,4 +1,4 @@
-using BTCPayServer.Plugins.Payjoin.Models;
+﻿using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -15,7 +15,7 @@ public class PayjoinReceiverRelayRequestSenderTests
         var firstRelay = new SystemUri("https://relay-1.example/");
         var secondRelay = new SystemUri("https://relay-2.example/");
         var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
-        settingsRepository.GetAsync("store-1").Returns(Task.FromResult(new PayjoinStoreSettings
+        settingsRepository.GetAsync("store-1").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings
         {
             OhttpRelayUrls = [firstRelay, secondRelay]
         }));
@@ -69,7 +69,7 @@ public class PayjoinReceiverRelayRequestSenderTests
     public async Task SendAsyncThrowsWhenNoRelayUrlsAreConfigured()
     {
         var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
-        settingsRepository.GetAsync("store-1").Returns(Task.FromResult(new PayjoinStoreSettings
+        settingsRepository.GetAsync("store-1").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings
         {
             OhttpRelayUrls = []
         }));
@@ -92,14 +92,39 @@ public class PayjoinReceiverRelayRequestSenderTests
     }
 
     [Fact]
+    public async Task SendAsyncThrowsItsOwnTypeWhenStoreSettingsCannotBeRead()
+    {
+        var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
+        settingsRepository.GetAsync("store-1").Returns(Task.FromResult<PayjoinStoreSettings?>(null));
+
+        var relayClient = Substitute.For<IPayjoinReceiverRelayClient>();
+        var manager = new PayjoinMailroomManager(
+            NullLogger<PayjoinMailroomManager>.Instance,
+            TimeSpan.FromMinutes(10),
+            (_, _, _, _) => Task.FromResult(PayjoinOhttpKeysFetchResult.RetryableFailure(new HttpRequestException("unused"))));
+        var sender = new PayjoinReceiverRelayRequestSender(settingsRepository, manager, relayClient);
+
+        var exception = await Assert.ThrowsAsync<PayjoinStoreSettingsUnavailableException>(() => sender.SendAsync(
+            "store-1",
+            "invoice-1",
+            relayUri => new TestRequestContext(relayUri),
+            context => (new SystemUri(context.RelayUri), "application/http", [0x01]),
+            CancellationToken.None));
+
+        Assert.IsNotType<InvalidOperationException>(exception);
+        Assert.IsNotType<ArgumentNullException>(exception);
+        Assert.Contains("could not be read", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SendAsyncUsesCurrentStoreRelaySettingsOnEachCall()
     {
         var firstRelay = new SystemUri("https://relay-1.example/");
         var secondRelay = new SystemUri("https://relay-2.example/");
         var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
         settingsRepository.GetAsync("store-1").Returns(
-            Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = [firstRelay] }),
-            Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = [secondRelay] }));
+            Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings { OhttpRelayUrls = [firstRelay] }),
+            Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings { OhttpRelayUrls = [secondRelay] }));
 
         var relayClient = Substitute.For<IPayjoinReceiverRelayClient>();
         relayClient
@@ -138,7 +163,7 @@ public class PayjoinReceiverRelayRequestSenderTests
     {
         var relay = new SystemUri("https://relay-1.example/");
         var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
-        settingsRepository.GetAsync("store-1").Returns(Task.FromResult(new PayjoinStoreSettings
+        settingsRepository.GetAsync("store-1").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings
         {
             OhttpRelayUrls = [relay]
         }));
@@ -184,7 +209,7 @@ public class PayjoinReceiverRelayRequestSenderTests
         var firstRelay = new SystemUri("https://relay-1.example/");
         var secondRelay = new SystemUri("https://relay-2.example/");
         var settingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
-        settingsRepository.GetAsync("store-1").Returns(Task.FromResult(new PayjoinStoreSettings
+        settingsRepository.GetAsync("store-1").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings
         {
             OhttpRelayUrls = [firstRelay, secondRelay]
         }));
@@ -235,7 +260,7 @@ public class PayjoinReceiverRelayRequestSenderTests
     {
         var relays = new[] { new SystemUri("https://relay-1.example/"), new SystemUri("https://relay-2.example/") };
         var settings = Substitute.For<IPayjoinStoreSettingsRepository>();
-        settings.GetAsync("store").Returns(Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = relays }));
+        settings.GetAsync("store").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings { OhttpRelayUrls = relays }));
         var client = Substitute.For<IPayjoinReceiverRelayClient>();
         SystemUri? rejectedRelay = null;
         client.SendAsync(Arg.Any<SystemUri>(), Arg.Any<string>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
@@ -282,7 +307,7 @@ public class PayjoinReceiverRelayRequestSenderTests
     {
         var relays = Enumerable.Range(1, relayCount).Select(i => new SystemUri($"https://relay-{i}.example/")).ToArray();
         var settings = Substitute.For<IPayjoinStoreSettingsRepository>();
-        settings.GetAsync("store").Returns(Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = relays }));
+        settings.GetAsync("store").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings { OhttpRelayUrls = relays }));
         var client = Substitute.For<IPayjoinReceiverRelayClient>();
         var failing = true;
         var calls = 0;
@@ -343,7 +368,7 @@ public class PayjoinReceiverRelayRequestSenderTests
     {
         var relay = new SystemUri("https://relay.example/");
         var settings = Substitute.For<IPayjoinStoreSettingsRepository>();
-        settings.GetAsync("store").Returns(Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = [relay] }));
+        settings.GetAsync("store").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings { OhttpRelayUrls = [relay] }));
         using var cancellation = new CancellationTokenSource();
         var client = Substitute.For<IPayjoinReceiverRelayClient>();
         client.SendAsync(Arg.Any<SystemUri>(), Arg.Any<string>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())

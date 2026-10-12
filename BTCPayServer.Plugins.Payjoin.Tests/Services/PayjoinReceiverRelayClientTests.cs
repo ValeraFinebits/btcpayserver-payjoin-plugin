@@ -41,7 +41,7 @@ public class PayjoinReceiverRelayClientTests
         var factory = Substitute.For<IHttpClientFactory>();
         factory.CreateClient(nameof(PayjoinReceiverPoller)).Returns(httpClient);
         var settings = Substitute.For<IPayjoinStoreSettingsRepository>();
-        settings.GetAsync("store").Returns(Task.FromResult(new PayjoinStoreSettings { OhttpRelayUrls = [relay] }));
+        settings.GetAsync("store").Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings { OhttpRelayUrls = [relay] }));
         var manager = new PayjoinMailroomManager(NullLogger<PayjoinMailroomManager>.Instance, TimeSpan.FromMinutes(10),
             (_, _, _, _) => throw new NotSupportedException());
         var sender = new PayjoinReceiverRelayRequestSender(settings, manager, new PayjoinReceiverRelayClient(factory));
