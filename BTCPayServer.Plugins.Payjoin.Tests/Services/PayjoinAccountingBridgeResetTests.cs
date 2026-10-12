@@ -5,7 +5,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
-using System.Linq;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
@@ -23,6 +22,11 @@ public class PayjoinAccountingBridgeResetTests
         var now = DateTimeOffset.UtcNow;
         await CreateBridgeAsync(service, "invoice-1", now.AddHours(1));
         await service.AttachFallbackAsync("invoice-1", FallbackTransactionId, 0, 900, 900, "CCDD", CancellationToken.None);
+        using (var db = context.CreateDbContext())
+        {
+            db.AccountingBridges.Single(x => x.InvoiceId == "invoice-1").SettlementKeyPath = "1/42";
+            db.SaveChanges();
+        }
 
         var reset = await service.ResetForNewSessionAsync("invoice-1", 1200, now.AddHours(2), CancellationToken.None);
 
@@ -30,6 +34,7 @@ public class PayjoinAccountingBridgeResetTests
         Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, reset!.Status);
         Assert.Null(reset.FallbackTransactionId);
         Assert.Null(reset.SettlementScript);
+        Assert.Null(reset.SettlementKeyPath);
         Assert.Null(reset.ExpectedFinalTransactionId);
         Assert.Null(reset.ExpectedFinalOutputIndex);
         Assert.Null(reset.ExpectedFinalValueSats);
@@ -169,6 +174,7 @@ public class PayjoinAccountingBridgeResetTests
         Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, second!.Status);
         Assert.Null(second.FallbackTransactionId);
         Assert.Null(second.SettlementScript);
+        Assert.Null(second.SettlementKeyPath);
         Assert.Null(second.ExpectedFinalTransactionId);
         Assert.Equal(first!.ExpiresAt, second.ExpiresAt);
         Assert.Equal(1200, second.EffectiveInvoiceValueSats);

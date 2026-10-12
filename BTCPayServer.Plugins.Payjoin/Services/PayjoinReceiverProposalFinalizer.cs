@@ -84,6 +84,7 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
                 var finalTransaction = PSBT.Parse(payjoinProposal.Psbt(), btcPayNetwork.NBitcoinNetwork).GetGlobalTransaction();
                 var finalTransactionId = finalTransaction.GetHash().ToString();
                 var expectedFinalOutput = TryGetSettlementOutput(bridge, finalTransaction);
+                // TODO: Remove the sender-PSBT fallback and require the invoice-pinned settlement amount.
                 var expectedFinalValueSats = expectedFinalOutput?.ValueSats ?? bridge.EffectiveInvoiceValueSats ?? bridge.FallbackValueSats;
                 _sessionStore.AppendEventsWithAccountingUpdate(
                     context.InvoiceId,
@@ -142,6 +143,7 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         }
 
         var expectedFinalOutput = TryGetSettlementOutput(bridge, finalTransaction);
+        // TODO: Remove the sender-PSBT fallback and require the invoice-pinned settlement amount.
         await _accountingBridgeService.SetExpectedFinalTransactionAsync(
             context.InvoiceId,
             finalTransactionId,
