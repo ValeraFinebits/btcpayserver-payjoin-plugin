@@ -134,20 +134,26 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
-        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
+        try
         {
-            try
+            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
             {
-                await ProcessTickOnceAsync(stoppingToken).ConfigureAwait(false);
+                try
+                {
+                    await ProcessTickOnceAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    LogPayjoinReceiverPollingFailed(_logger, ex);
+                }
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                LogPayjoinReceiverPollingFailed(_logger, ex);
-            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
         }
     }
 }

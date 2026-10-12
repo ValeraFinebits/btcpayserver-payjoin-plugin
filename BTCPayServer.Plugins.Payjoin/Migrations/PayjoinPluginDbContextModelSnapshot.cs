@@ -81,6 +81,10 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Property<DateTimeOffset?>("ReconciledAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("SettlementKeyPath")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
                     b.Property<string>("SettlementScript")
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");

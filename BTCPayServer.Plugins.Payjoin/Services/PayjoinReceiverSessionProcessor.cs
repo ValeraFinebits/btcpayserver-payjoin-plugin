@@ -278,7 +278,9 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         DateTimeOffset reservationExpiresAt,
         CancellationToken stoppingToken)
     {
-        var settlementOutputs = await CreateSettlementOutputsOrRemoveSessionAsync(proposal, storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
+        var settlementOutputs = await CreateSettlementOutputsOrRemoveSessionAsync(
+            proposal.OutputSubstitution() == OutputSubstitution.Disabled,
+            storeId, invoiceId, receiverScript, stoppingToken).ConfigureAwait(false);
         if (settlementOutputs is null)
         {
             return;
@@ -324,14 +326,13 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         }
     }
 
-    private async Task<PayjoinReceiverOutputBuilder.OutputReplacement?> CreateSettlementOutputsOrRemoveSessionAsync(
-        WantsOutputs proposal,
+    internal async Task<PayjoinReceiverOutputBuilder.OutputReplacement?> CreateSettlementOutputsOrRemoveSessionAsync(
+        bool preserveReceiverScript,
         string storeId,
         string invoiceId,
         byte[] receiverScript,
         CancellationToken stoppingToken)
     {
-        var preserveReceiverScript = proposal.OutputSubstitution() == OutputSubstitution.Disabled;
         var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(invoiceId, stoppingToken).ConfigureAwait(false);
         var settlementOutputs = await _outputBuilder.TryCreateSettlementOutputsAsync(
             storeId,
@@ -340,13 +341,16 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             preserveReceiverScript,
             bridge?.EffectiveInvoiceValueSats,
             stoppingToken).ConfigureAwait(false);
-        if (settlementOutputs is not null)
+        if (settlementOutputs.Status == PayjoinReceiverOutputBuilder.OutputBuildStatus.Ready)
         {
-            return settlementOutputs;
+            return settlementOutputs.Outputs;
         }
 
         LogPayjoinReceiverSettlementOutputsUnavailable(_logger, invoiceId, null);
-        RemoveSession(invoiceId, "settlement outputs unavailable");
+        if (settlementOutputs.Status == PayjoinReceiverOutputBuilder.OutputBuildStatus.InvalidDestination)
+        {
+            RemoveSession(invoiceId, "invalid settlement destination or amount");
+        }
         return null;
     }
 
@@ -387,6 +391,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             bridge =>
             {
                 bridge.SettlementScript = settlementScriptHex;
+                bridge.SettlementKeyPath = settlementOutputs.SettlementKeyPath?.ToString();
                 bridge.EffectiveInvoiceValueSats = settlementAmountSats;
             });
     }
@@ -505,6 +510,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         var valueSats = fallbackOutputMatch.ValueSats!.Value;
         var invoice = await _invoiceLookup.GetInvoiceAsync(session.InvoiceId).ConfigureAwait(false);
         var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        // TODO: Require the invoice-pinned amount and reject a missing or mismatched sender PSBT amount.
         var effectiveInvoiceValueSats = invoice?.GetPaymentPrompt(paymentMethodId)?.Calculate().Due is { } due && due > 0m
             ? Money.Coins(due).Satoshi
             : valueSats;

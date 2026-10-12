@@ -1,5 +1,6 @@
 using BTCPayServer.Tests;
 using NBitcoin;
+using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 
@@ -9,26 +10,6 @@ internal static class PayjoinCliIntegrationTestSupport
         ServerTester tester,
         TestAccount merchant,
         BTCPayNetwork network,
-        CancellationToken cancellationToken)
-    {
-        return await CreateAndPayInvoiceWithInvoiceIdAsync(tester, merchant, network, options: null, cancellationToken: cancellationToken).ConfigureAwait(true);
-    }
-
-    public static async Task<(string InvoiceId, Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceWithInvoiceIdAsync(
-        ServerTester tester,
-        TestAccount merchant,
-        BTCPayNetwork network,
-        BitcoindNodeOptions? options,
-        CancellationToken cancellationToken)
-    {
-        return await CreateAndPayInvoiceWithInvoiceIdAsync(tester, merchant, network, options, TimeSpan.Zero, cancellationToken).ConfigureAwait(true);
-    }
-
-    public static async Task<(string InvoiceId, Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceWithInvoiceIdAsync(
-        ServerTester tester,
-        TestAccount merchant,
-        BTCPayNetwork network,
-        BitcoindNodeOptions? options,
         TimeSpan preSendReceiverPollDelay,
         CancellationToken cancellationToken)
     {
@@ -36,7 +17,7 @@ internal static class PayjoinCliIntegrationTestSupport
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, payjoinContext.InvoiceId, cancellationToken).ConfigureAwait(true);
 
         var receiverDiagnosticsBeforeSend = await PayjoinReceiverTestHelper.GetReceiverSideDiagnosticsAsync(tester, payjoinContext.InvoiceId, cancellationToken).ConfigureAwait(true);
-        using var senderWallet = await PayjoinCliSenderWallet.CreateInitializedAsync(tester, network, options, cancellationToken).ConfigureAwait(true);
+        using var senderWallet = await PayjoinCliSenderWallet.CreateInitializedAsync(tester, network, cancellationToken).ConfigureAwait(true);
         using var payjoinCliPayer = new PayjoinCliPayer(senderWallet);
 
         if (preSendReceiverPollDelay > TimeSpan.Zero)
@@ -78,23 +59,32 @@ internal static class PayjoinCliIntegrationTestSupport
         }
     }
 
-    public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceAsync(
-        ServerTester tester,
-        TestAccount merchant,
-        BTCPayNetwork network,
+    public static async Task AssertSuccessfulSenderSessionStateAsync(
+        PayjoinCliPayer payjoinCliPayer,
+        PayjoinCliPaymentResult paymentResult,
+        IReadOnlyList<Uri> ohttpRelayUrls,
         CancellationToken cancellationToken)
     {
-        return await CreateAndPayInvoiceAsync(tester, merchant, network, options: null, cancellationToken: cancellationToken).ConfigureAwait(true);
-    }
+        ArgumentNullException.ThrowIfNull(payjoinCliPayer);
+        ArgumentNullException.ThrowIfNull(paymentResult);
+        ArgumentNullException.ThrowIfNull(ohttpRelayUrls);
 
-    public static async Task<(Transaction PayjoinTransaction, Script InvoiceScript, string TransactionId)> CreateAndPayInvoiceAsync(
-        ServerTester tester,
-        TestAccount merchant,
-        BTCPayNetwork network,
-        BitcoindNodeOptions? options,
-        CancellationToken cancellationToken)
-    {
-        var paymentResult = await CreateAndPayInvoiceWithInvoiceIdAsync(tester, merchant, network, options, cancellationToken).ConfigureAwait(true);
-        return (paymentResult.PayjoinTransaction, paymentResult.InvoiceScript, paymentResult.TransactionId);
+        Assert.False(string.IsNullOrWhiteSpace(paymentResult.SessionId), "payjoin-cli did not report a sender session ID.");
+        var sessionId = paymentResult.SessionId!;
+        var history = await payjoinCliPayer.GetHistoryAsync(
+            ohttpRelayUrls,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Contains(sessionId, history.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Session success", history.StandardOutput, StringComparison.Ordinal);
+
+        await payjoinCliPayer.CancelCompletedSessionWithoutBroadcastAsync(
+            sessionId,
+            paymentResult.TransactionId,
+            ohttpRelayUrls,
+            cancellationToken).ConfigureAwait(true);
+
+        await payjoinCliPayer.ResumeExpectingNoSessionsAsync(
+            ohttpRelayUrls,
+            cancellationToken).ConfigureAwait(true);
     }
 }
