@@ -2,6 +2,10 @@ using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using NBitcoin;
 using Xunit;
+using OhttpKeys = Payjoin.OhttpKeys;
+using ReceiverBuilder = Payjoin.ReceiverBuilder;
+using ReceiverPersistedException = Payjoin.ReceiverPersistedException;
+using SystemUri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
@@ -113,6 +117,73 @@ public class PayjoinReceiverStateProcessorTests
 
         Assert.True(open);
         Assert.False(closed);
+    }
+
+    [Fact]
+    public async Task ProcessInitializedAsyncMakesTransientResponseFailureRetryableForTheSession()
+    {
+        // Even with a successful outer HTTP status, a truncated OHTTP body is transient.
+        // Preserve the native error while routing it through the session processor's retry path.
+        using var receiverKey = new Key();
+        var receiverScript = receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes();
+        var rejectedRelay = new SystemUri("https://relay-1.example/");
+        var otherRelay = new SystemUri("https://relay-2.example/");
+        var mailroomManager = new PayjoinMailroomManager(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<PayjoinMailroomManager>.Instance,
+            TimeSpan.FromMinutes(10),
+            (_, _, _, _) => Task.FromResult(PayjoinOhttpKeysFetchResult.RetryableFailure(new HttpRequestException("unused"))));
+        var processor = new PayjoinReceiverStateProcessor(
+            sessionStore: null!,
+            new GarbageResponseRelaySender(rejectedRelay.AbsoluteUri),
+            walletOwnershipService: null!,
+            seenInputStore: null!,
+            mailroomManager);
+
+        using var ohttpKeys = OhttpKeys.Decode(Convert.FromHexString(
+            "01001604ba48c49c3d4a92a3ad00ecc63a024da10ced02180c73ec12d8a7ad2cc91bb483824fe2bee8d28bfe2eb2fc6453bc4d31cd851e8a6540e86c5382af588d370957000400010003"));
+        var persister = new CapturingReceiverSessionPersister();
+        using var builder = new ReceiverBuilder(
+            receiverKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString(),
+            "https://directory.example/",
+            ohttpKeys);
+        using var bootstrap = builder.Build();
+        using var initialized = bootstrap.Save(persister);
+        var context = new PayjoinReceiverStateContext(
+            CreateSession(),
+            persister,
+            receiverScript,
+            "store-1",
+            "invoice-1",
+            _ => false);
+
+        var thrown = await Assert.ThrowsAsync<HttpRequestException>(() => processor.ProcessInitializedAsync(
+            context,
+            initialized,
+            static (_, _, _) => Task.CompletedTask,
+            CancellationToken.None));
+        using var nativeError = Assert.IsType<ReceiverPersistedException.Transient>(thrown.InnerException);
+        Assert.Contains("Unexpected response size", nativeError.Message, StringComparison.Ordinal);
+
+        Assert.Equal(otherRelay, mailroomManager.ChooseRelayForRequest([rejectedRelay, otherRelay], "invoice-1"));
+        Assert.Equal(rejectedRelay, mailroomManager.ChooseRelayForRequest([rejectedRelay], "invoice-2"));
+    }
+
+    /// <summary>
+    /// Simulates a successful HTTP request with a truncated OHTTP response body.
+    /// </summary>
+    private sealed class GarbageResponseRelaySender(string relayUrl) : IPayjoinReceiverRelayRequestSender
+    {
+        public Task<(byte[] ResponseBody, TRequestContext RequestContext)> SendAsync<TRequestContext>(
+            string storeId,
+            string invoiceId,
+            Func<string, TRequestContext> buildRequest,
+            Func<TRequestContext, (SystemUri Url, string ContentType, byte[] Body)> describeRequest,
+            CancellationToken cancellationToken)
+            where TRequestContext : IDisposable
+        {
+            var requestContext = buildRequest(relayUrl);
+            return Task.FromResult((Array.Empty<byte>(), requestContext));
+        }
     }
 
     private static PayjoinReceiverSessionState CreateSession(

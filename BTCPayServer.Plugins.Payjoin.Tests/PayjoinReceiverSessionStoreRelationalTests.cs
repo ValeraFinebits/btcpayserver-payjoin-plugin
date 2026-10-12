@@ -7,6 +7,52 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 
 public class PayjoinReceiverSessionStoreRelationalTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RemoveSessionClearsRelayQuarantineOnlyAfterSuccessfulDeletion(bool failSave)
+    {
+        using var factory = new SqliteTestPayjoinPluginDbContextFactory();
+        var manager = new PayjoinMailroomManager(Microsoft.Extensions.Logging.Abstractions.NullLogger<PayjoinMailroomManager>.Instance,
+            TimeSpan.FromMinutes(10), (_, _, _, _) => throw new NotSupportedException());
+        var store = new PayjoinReceiverSessionStore(factory, new SqliteUniqueConstraintViolationDetector(), manager);
+        var session = CreateSession(store, "invoice-quarantine");
+        var relay = new Uri("https://relay.example/");
+        manager.MarkRelayFailedForSession(session.InvoiceId, relay);
+        manager.MarkRelayFailedForSession("another-invoice", relay);
+        factory.FailSaveChanges = failSave;
+
+        if (failSave)
+        {
+            Assert.Throws<Microsoft.EntityFrameworkCore.DbUpdateException>(() => store.RemoveSession(session.InvoiceId));
+            factory.FailSaveChanges = false;
+            Assert.True(store.TryGetSession(session.InvoiceId, out _));
+            Assert.Null(manager.ChooseRelayForRequest([relay], session.InvoiceId));
+        }
+        else
+        {
+            Assert.True(store.RemoveSession(session.InvoiceId));
+            Assert.False(store.TryGetSession(session.InvoiceId, out _));
+            Assert.Equal(relay, manager.ChooseRelayForRequest([relay], session.InvoiceId));
+        }
+
+        Assert.Null(manager.ChooseRelayForRequest([relay], "another-invoice"));
+    }
+
+    [Fact]
+    public void RemoveMissingSessionClearsItsRelayQuarantine()
+    {
+        using var factory = new SqliteTestPayjoinPluginDbContextFactory();
+        var manager = new PayjoinMailroomManager(Microsoft.Extensions.Logging.Abstractions.NullLogger<PayjoinMailroomManager>.Instance,
+            TimeSpan.FromMinutes(10), (_, _, _, _) => throw new NotSupportedException());
+        var store = new PayjoinReceiverSessionStore(factory, new SqliteUniqueConstraintViolationDetector(), manager);
+        var relay = new Uri("https://relay.example/");
+        manager.MarkRelayFailedForSession("missing-invoice", relay);
+
+        Assert.False(store.RemoveSession("missing-invoice"));
+        Assert.Equal(relay, manager.ChooseRelayForRequest([relay], "missing-invoice"));
+    }
+
     [Fact]
     public void MarkSeenAndWasPresentReportsRepeatedOutpointsAsSeen()
     {

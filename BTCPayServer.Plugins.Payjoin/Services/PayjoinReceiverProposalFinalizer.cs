@@ -165,6 +165,8 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         var requestResponse = relayResponse.RequestContext;
         using var relayRequestContext = requestResponse;
 
+        // TODO: Preserve POST error types in FFI and retry transient failures from the persisted proposal.
+        // https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/198
         using var transition = proposal.ProcessResponse(responseBody, requestResponse.ClientResponse);
         using var _ = transition.Save(context.Persister);
     }

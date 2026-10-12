@@ -139,6 +139,8 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         catch (UniffiException ex)
         {
             LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+            // TODO: Handle Storage errors without deleting the session; recover by replaying its event log.
+            // https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/198
             RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
         }
     }
