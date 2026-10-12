@@ -46,7 +46,7 @@ jobs:
         env:
           XUNIT_EXPLICIT_MODE: ${{ github.event_name == 'pull_request' && 'off' || 'on' }}
         run: >-
-          dotnet test "BTCPayServer.Plugins.Payjoin.IntegrationTests/BTCPayServer.Plugins.Payjoin.IntegrationTests.csproj"
+          dotnet test --project "BTCPayServer.Plugins.Payjoin.IntegrationTests/BTCPayServer.Plugins.Payjoin.IntegrationTests.csproj"
           -c Release --no-build --no-restore
           -- --minimum-expected-tests 1 --explicit ${{ env.XUNIT_EXPLICIT_MODE }}
 

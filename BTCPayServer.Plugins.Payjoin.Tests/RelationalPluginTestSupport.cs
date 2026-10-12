@@ -18,6 +18,7 @@ internal sealed class RelationalPluginTestContext : IDisposable
     private readonly SqliteUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
     public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+    public PayjoinSenderSessionStore CreateSenderStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
     public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
@@ -35,6 +36,12 @@ internal sealed class RelationalPluginTestContext : IDisposable
     {
         get => _dbContextFactory.FailSaveChanges;
         set => _dbContextFactory.FailSaveChanges = value;
+    }
+
+    public Action? BeforeSaveChanges
+    {
+        get => _dbContextFactory.BeforeSaveChanges;
+        set => _dbContextFactory.BeforeSaveChanges = value;
     }
 
     public void Dispose()
@@ -84,6 +91,7 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
     }
 
     public bool FailSaveChanges { get; set; }
+    public Action? BeforeSaveChanges { get; set; }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The created SQLite connection is owned and disposed by SqliteOwnedPayjoinPluginDbContext.")]
     public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
@@ -157,6 +165,7 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
 
         private void ThrowIfSaveFailureInjected()
         {
+            _factory.BeforeSaveChanges?.Invoke();
             if (_factory.FailSaveChanges)
             {
                 throw new DbUpdateException("Injected persistence failure.");
