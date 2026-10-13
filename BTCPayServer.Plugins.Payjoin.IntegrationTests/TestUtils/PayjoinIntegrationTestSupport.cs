@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Mvc;
 using NBitcoin;
 using NBitpayClient;
 using NBXplorer.DerivationStrategy;
+using Newtonsoft.Json;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
@@ -66,10 +67,11 @@ internal static class PayjoinIntegrationTestSupport
 
     public static async Task<CheckoutModel> GetCheckoutModelAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken)
     {
-        var controller = tester.PayTester.GetController<UIInvoiceController>();
-        var actionResult = await controller.Checkout(invoiceId).ConfigureAwait(true);
-        var viewResult = Assert.IsType<ViewResult>(actionResult);
-        return Assert.IsType<CheckoutModel>(viewResult.Model);
+        using var response = await tester.PayTester.HttpClient.GetAsync(
+            new Uri($"invoice/status?invoiceId={Uri.EscapeDataString(invoiceId)}&paymentMethodId=BTC-CHAIN", UriKind.Relative), cancellationToken).ConfigureAwait(true);
+        response.EnsureSuccessStatusCode();
+        return Assert.IsType<CheckoutModel>(JsonConvert.DeserializeObject<CheckoutModel>(
+            await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(true)));
     }
 
     public static void AssertPlainBip21(GetBip21Response bip21Response)
