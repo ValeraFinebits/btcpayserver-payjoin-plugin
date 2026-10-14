@@ -98,15 +98,18 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
     private readonly PayjoinPluginDbContextFactory _dbContextFactory;
     private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
     private readonly PayjoinSessionBuildLock _sessionBuildLock;
+    private readonly IPayjoinInvoiceEventPublisher? _invoiceEvents;
 
     public PayjoinAccountingBridgeService(
         PayjoinPluginDbContextFactory dbContextFactory,
         IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector,
-        PayjoinSessionBuildLock sessionBuildLock)
+        PayjoinSessionBuildLock sessionBuildLock,
+        IPayjoinInvoiceEventPublisher? invoiceEvents = null)
     {
         _dbContextFactory = dbContextFactory;
         _uniqueConstraintViolationDetector = uniqueConstraintViolationDetector;
         _sessionBuildLock = sessionBuildLock;
+        _invoiceEvents = invoiceEvents;
     }
 
     public async Task<PayjoinAccountingBridgeState> CreateOrGetAsync(CreatePayjoinAccountingBridgeRequest request, CancellationToken cancellationToken)
@@ -147,6 +150,7 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
         try
         {
             await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            _invoiceEvents?.Publish(PayjoinInvoiceEventKind.TrackingStarted, bridge.InvoiceId);
             return ToState(bridge);
         }
         catch (DbUpdateException ex) when (IsInvoiceBridgeConflict(ex))
@@ -236,7 +240,8 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
                 bridge.ReconciledAt = reconciledAt;
                 bridge.FailureMessage = null;
             },
-            cancellationToken);
+            cancellationToken,
+            PayjoinInvoiceEventKind.Reconciled);
     }
 
     public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken)
@@ -248,7 +253,8 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
                 bridge.Status = PayjoinAccountingBridgeStatus.Failed;
                 bridge.FailureMessage = failureMessage;
             },
-            cancellationToken);
+            cancellationToken,
+            PayjoinInvoiceEventKind.Failed);
     }
 
     public async Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken)
@@ -304,6 +310,7 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
         bridge.ExpiresAt = expiresAt ?? bridge.ExpiresAt;
         bridge.UpdatedAt = DateTimeOffset.UtcNow;
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        _invoiceEvents?.Publish(PayjoinInvoiceEventKind.TrackingStarted, bridge.InvoiceId);
         return ToState(bridge);
     }
 
@@ -351,6 +358,7 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
             bridge.Status = PayjoinAccountingBridgeStatus.Expired;
             bridge.UpdatedAt = now;
             await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            _invoiceEvents?.Publish(PayjoinInvoiceEventKind.Expired, bridge.InvoiceId, bridge.ExpectedFinalTransactionId);
             expired.Add(ToState(bridge));
         }
 
@@ -406,10 +414,15 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
         bridge.FailureMessage = null;
         bridge.UpdatedAt = now;
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        _invoiceEvents?.Publish(PayjoinInvoiceEventKind.RetryRequested, bridge.InvoiceId);
         return ToState(bridge);
     }
 
-    private async Task<PayjoinAccountingBridgeState?> UpdateAsync(string invoiceId, Action<PayjoinAccountingBridgeData> update, CancellationToken cancellationToken)
+    private async Task<PayjoinAccountingBridgeState?> UpdateAsync(
+        string invoiceId,
+        Action<PayjoinAccountingBridgeData> update,
+        CancellationToken cancellationToken,
+        PayjoinInvoiceEventKind? invoiceEventKind = null)
     {
         using var context = _dbContextFactory.CreateContext();
         var bridge = await TryLoadByInvoiceIdAsync(context, invoiceId, cancellationToken).ConfigureAwait(false);
@@ -418,9 +431,14 @@ internal sealed class PayjoinAccountingBridgeService : IPayjoinAccountingBridgeS
             return null;
         }
 
+        var previousStatus = bridge.Status;
         update(bridge);
         bridge.UpdatedAt = DateTimeOffset.UtcNow;
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (invoiceEventKind.HasValue && previousStatus != bridge.Status)
+        {
+            _invoiceEvents?.Publish(invoiceEventKind.Value, bridge.InvoiceId, bridge.ExpectedFinalTransactionId);
+        }
         return ToState(bridge);
     }
 

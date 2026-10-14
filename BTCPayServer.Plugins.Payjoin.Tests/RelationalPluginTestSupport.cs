@@ -27,7 +27,8 @@ internal sealed class RelationalPluginTestContext : IDisposable
 
     public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
 
-    public PayjoinAccountingBridgeService CreateBridgeService() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
+    public PayjoinAccountingBridgeService CreateBridgeService(IPayjoinInvoiceEventPublisher? invoiceEvents = null) =>
+        new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock, invoiceEvents);
 
     public PayjoinAttentionRecordSeeder CreateAttentionRecordSeeder() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
 

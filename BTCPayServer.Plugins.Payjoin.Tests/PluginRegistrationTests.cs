@@ -9,6 +9,7 @@ using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Rates;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 using NBXplorer;
@@ -36,7 +37,7 @@ public class PluginRegistrationTests
         Assert.Contains(uiExtensions, extension =>
             extension.Location == "checkout-end" &&
             extension.Partial == "PayJoinBitcoinCheckoutEnd");
-        Assert.Contains(uiExtensions, extension =>
+        Assert.DoesNotContain(uiExtensions, extension =>
             extension.Location == "store-invoices-payments" &&
             extension.Partial == "PayjoinInvoiceOutcome");
         Assert.Contains(services, descriptor =>
@@ -59,8 +60,17 @@ public class PluginRegistrationTests
             descriptor.ImplementationType == typeof(PayjoinAttentionRecordSeeder) &&
             descriptor.Lifetime == ServiceLifetime.Singleton);
         Assert.Contains(services, descriptor =>
-            descriptor.ServiceType == typeof(PayjoinInvoiceOutcomeService) &&
-            descriptor.ImplementationFactory is not null);
+            descriptor.ServiceType == typeof(IPayjoinInvoiceEventPublisher) &&
+            descriptor.ImplementationType == typeof(PayjoinInvoiceEventPublisher) &&
+            descriptor.Lifetime == ServiceLifetime.Singleton);
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(IPayjoinInvoiceEventWriter) &&
+            descriptor.ImplementationType == typeof(PayjoinInvoiceEventWriter));
+        var hostedServices = services.Where(descriptor => descriptor.ServiceType == typeof(IHostedService)).ToArray();
+        var migrationIndex = Array.FindIndex(hostedServices, descriptor => descriptor.ImplementationType == typeof(PluginMigrationRunner));
+        var writerIndex = Array.FindIndex(hostedServices, descriptor => descriptor.ImplementationType == typeof(PayjoinInvoiceEventHostedService));
+        var pollerIndex = Array.FindIndex(hostedServices, descriptor => descriptor.ImplementationFactory is not null);
+        Assert.True(migrationIndex >= 0 && writerIndex > migrationIndex && pollerIndex > writerIndex);
     }
 
     [Fact]
