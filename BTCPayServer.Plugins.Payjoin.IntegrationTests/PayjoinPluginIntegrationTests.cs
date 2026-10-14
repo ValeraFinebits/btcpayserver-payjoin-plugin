@@ -182,6 +182,7 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyRemovedAsync(tester, invoiceId, cts.Token).ConfigureAwait(true);
         await PayjoinInvoiceTestHelper.FinalizePayjoinPaymentAsync(tester, context.Merchant, payjoinContext, walletPayment.GetHash().ToString(), cts.Token).ConfigureAwait(true);
         await PayjoinInvoiceTestHelper.AssertInvoiceNotOverpaidEventuallyAsync(tester, payjoinContext, cts.Token).ConfigureAwait(true);
+        await PayjoinInvoiceTestHelper.AssertPayjoinJournalCompletedAsync(tester, invoiceId, walletPayment.GetHash().ToString(), cts.Token).ConfigureAwait(true);
 
         var bestBlock = await tester.ExplorerNode.GetBestBlockHashAsync(cts.Token).ConfigureAwait(true);
         var broadcastedTransaction = await tester.ExplorerNode

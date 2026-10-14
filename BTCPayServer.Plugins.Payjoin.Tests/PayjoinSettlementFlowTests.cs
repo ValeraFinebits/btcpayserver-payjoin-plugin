@@ -112,7 +112,10 @@ public class PayjoinSettlementFlowTests
         var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
         CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
         var relaySender = new PostAttemptRecordingRelaySender();
-        var finalizer = CreateFinalizer(store, bridgeService, relaySender);
+        var publisher = CreateInvoiceEventPublisher(out var invoiceEvents, out var aggregator);
+        using var aggregatorLifetime = aggregator;
+        using var subscription = aggregator.Subscribe<PayjoinInvoiceEvent>(invoiceEvents.Add);
+        var finalizer = CreateFinalizer(store, bridgeService, relaySender, publisher);
 
         await Assert.ThrowsAsync<PostAttemptedException>(() => finalizer.FinalizeCoreAsync(
             CreateFinalizationContext(),
@@ -133,6 +136,9 @@ public class PayjoinSettlementFlowTests
         Assert.Equal(1, bridge.ExpectedFinalOutputIndex);
         Assert.Equal(20_000, bridge.ExpectedFinalValueSats);
         Assert.Equal(Data.PayjoinAccountingBridgeStatus.PendingFinalTransaction, bridge.Status);
+        var notification = Assert.Single(invoiceEvents);
+        Assert.Equal(PayjoinInvoiceEventKind.ProposalPrepared, notification.Kind);
+        Assert.Contains(finalTransaction.GetHash().ToString(), Assert.Single(notification.Logs.ToList()).Log, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -145,7 +151,10 @@ public class PayjoinSettlementFlowTests
         var proposal = CreateProposal(out _, out var settlementScript);
         CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
         var relaySender = new PostAttemptRecordingRelaySender();
-        var finalizer = CreateFinalizer(store, bridgeService, relaySender);
+        var publisher = CreateInvoiceEventPublisher(out var invoiceEvents, out var aggregator);
+        using var aggregatorLifetime = aggregator;
+        using var subscription = aggregator.Subscribe<PayjoinInvoiceEvent>(invoiceEvents.Add);
+        var finalizer = CreateFinalizer(store, bridgeService, relaySender, publisher);
 
         testContext.FailSaveChanges = true;
         await Assert.ThrowsAsync<DbUpdateException>(() => finalizer.FinalizeCoreAsync(
@@ -159,6 +168,7 @@ public class PayjoinSettlementFlowTests
         testContext.FailSaveChanges = false;
 
         Assert.Equal(0, relaySender.PostAttempts);
+        Assert.Empty(invoiceEvents);
         using var context = testContext.CreateDbContext();
         Assert.Equal(new[] { "bootstrap-event" }, ReadEvents(context));
         var bridge = Assert.Single(context.AccountingBridges.Where(x => x.InvoiceId == InvoiceId));
@@ -176,7 +186,10 @@ public class PayjoinSettlementFlowTests
         var proposal = CreateProposal(out _, out var settlementScript);
         CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
         var relaySender = new PostAttemptRecordingRelaySender();
-        var finalizer = CreateFinalizer(store, bridgeService, relaySender);
+        var publisher = CreateInvoiceEventPublisher(out var invoiceEvents, out var aggregator);
+        using var aggregatorLifetime = aggregator;
+        using var subscription = aggregator.Subscribe<PayjoinInvoiceEvent>(invoiceEvents.Add);
+        var finalizer = CreateFinalizer(store, bridgeService, relaySender, publisher);
         await Assert.ThrowsAsync<PostAttemptedException>(() => finalizer.FinalizeCoreAsync(
             CreateFinalizationContext(),
             persister =>
@@ -196,6 +209,92 @@ public class PayjoinSettlementFlowTests
         Assert.Equal(bridgeAfterFinalize, bridgeAfterReplay);
         using var context = testContext.CreateDbContext();
         Assert.Equal(new[] { "bootstrap-event", "finalize-event" }, ReadEvents(context));
+        Assert.Equal(PayjoinInvoiceEventKind.ProposalPrepared, Assert.Single(invoiceEvents).Kind);
+    }
+
+    [Fact]
+    public async Task ReplayBackfillPublishesThePreparedProposalOnlyAfterPersistingItsExpectation()
+    {
+        using var testContext = new RelationalPluginTestContext();
+        var store = testContext.CreateStore();
+        var bridgeService = testContext.CreateBridgeService();
+        CreateSession(store);
+        var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
+        CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
+        store.AppendEventsWithAccountingUpdate(InvoiceId, ["finalize-event"], updateBridge: null);
+        var publisher = CreateInvoiceEventPublisher(out var invoiceEvents, out var aggregator);
+        using var aggregatorLifetime = aggregator;
+        using var subscription = aggregator.Subscribe<PayjoinInvoiceEvent>(invoiceEvents.Add);
+        var finalizer = CreateFinalizer(store, bridgeService, new PostAttemptRecordingRelaySender(), publisher);
+
+        testContext.FailSaveChanges = true;
+        await Assert.ThrowsAsync<DbUpdateException>(() => finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(), proposal, TestContext.Current.CancellationToken));
+        testContext.FailSaveChanges = false;
+        Assert.Empty(invoiceEvents);
+        await finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(), proposal, TestContext.Current.CancellationToken);
+        await finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(), proposal, TestContext.Current.CancellationToken);
+
+        var notification = Assert.Single(invoiceEvents);
+        Assert.Equal(PayjoinInvoiceEventKind.ProposalPrepared, notification.Kind);
+        Assert.Contains(finalTransaction.GetHash().ToString(), Assert.Single(notification.Logs.ToList()).Log, StringComparison.Ordinal);
+        using var persisted = testContext.CreateDbContext();
+        var bridge = Assert.Single(persisted.AccountingBridges);
+        Assert.Equal(finalTransaction.GetHash().ToString(), bridge.ExpectedFinalTransactionId);
+        Assert.Equal(1, bridge.ExpectedFinalOutputIndex);
+        Assert.Equal(new[] { "bootstrap-event", "finalize-event" }, ReadEvents(persisted));
+    }
+
+    [Fact]
+    public async Task FinalizingStillPersistsAndPostsWhileTheInvoiceEventWriterIsBlocked()
+    {
+        using var testContext = new RelationalPluginTestContext();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writer = new RecordingInvoiceEventWriter(evt =>
+        {
+            if (evt.Kind == PayjoinInvoiceEventKind.TrackingStarted)
+            {
+                entered.TrySetResult();
+                return resume.Task;
+            }
+            return Task.CompletedTask;
+        });
+        var publisher = CreateInvoiceEventPublisher(out _, out var aggregator);
+        using var aggregatorLifetime = aggregator;
+        var eventService = new PayjoinInvoiceEventHostedService(aggregator, writer, NullLogger<PayjoinInvoiceEventHostedService>.Instance);
+        await eventService.StartAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var store = testContext.CreateStore();
+            var bridgeService = testContext.CreateBridgeService(publisher);
+            CreateSession(store);
+            var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
+            CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            var relaySender = new PostAttemptRecordingRelaySender();
+            var finalizer = CreateFinalizer(store, bridgeService, relaySender, publisher);
+
+            await Assert.ThrowsAsync<PostAttemptedException>(() => finalizer.FinalizeCoreAsync(
+                CreateFinalizationContext(),
+                persister =>
+                {
+                    persister.Save("finalize-event");
+                    return proposal;
+                }, TestContext.Current.CancellationToken));
+
+            Assert.Equal(1, relaySender.PostAttempts);
+            Assert.Empty(writer.Writes);
+            using var persisted = testContext.CreateDbContext();
+            Assert.Equal(finalTransaction.GetHash().ToString(), Assert.Single(persisted.AccountingBridges).ExpectedFinalTransactionId);
+            resume.TrySetResult();
+            await eventService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.Equal(new[] { PayjoinInvoiceEventKind.TrackingStarted, PayjoinInvoiceEventKind.ProposalPrepared }, writer.Writes.Select(evt => evt.Kind));
+        }
+        finally
+        {
+            resume.TrySetResult();
+            await eventService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        }
     }
 
     [Fact]
@@ -292,14 +391,23 @@ public class PayjoinSettlementFlowTests
     private static PayjoinReceiverProposalFinalizer CreateFinalizer(
         PayjoinReceiverSessionStore store,
         PayjoinAccountingBridgeService bridgeService,
-        IPayjoinReceiverRelayRequestSender relaySender)
+        IPayjoinReceiverRelayRequestSender relaySender,
+        IPayjoinInvoiceEventPublisher? invoiceEvents = null)
     {
         return new PayjoinReceiverProposalFinalizer(
             relaySender,
             new UnusedProposalSigner(),
             bridgeService,
             store,
-            CreateNetworkProvider());
+            CreateNetworkProvider(),
+            invoiceEvents);
+    }
+
+    private static PayjoinInvoiceEventPublisher CreateInvoiceEventPublisher(out List<PayjoinInvoiceEvent> invoiceEvents, out EventAggregator aggregator)
+    {
+        invoiceEvents = [];
+        aggregator = new EventAggregator(new Logs());
+        return new PayjoinInvoiceEventPublisher(aggregator, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
     }
 
     private static PayjoinReceiverSessionProcessor CreateProcessor(
