@@ -78,12 +78,22 @@ internal sealed class PayjoinReceiverWalletAdapter : IPayjoinReceiverWalletAdapt
 
     internal static PayjoinInputPair CreateInputPair(ReceivedCoin coin)
     {
+        var outpoint = new PayjoinOutPoint(coin.OutPoint.Hash.ToString(), coin.OutPoint.N);
+        var txout = new PayjoinTxOut(checked((ulong)coin.Coin.Amount.Satoshi), coin.ScriptPubKey.ToBytes());
+        if (coin.ScriptPubKey.IsScriptType(NBitcoin.ScriptType.Taproot))
+        {
+            return PayjoinInputPair.NewP2trKeyspend(txout, outpoint);
+        }
+        if (coin.ScriptPubKey.IsScriptType(NBitcoin.ScriptType.P2WPKH))
+        {
+            return PayjoinInputPair.NewP2wpkh(txout, outpoint);
+        }
+
         var txin = new PayjoinTxIn(
-            new PayjoinOutPoint(coin.OutPoint.Hash.ToString(), coin.OutPoint.N),
+            outpoint,
             Array.Empty<byte>(),
             uint.MaxValue,
             Array.Empty<byte[]>());
-        var txout = new PayjoinTxOut(checked((ulong)coin.Coin.Amount.Satoshi), coin.ScriptPubKey.ToBytes());
         var psbtIn = new PayjoinPsbtInput(txout, null, null);
         return new PayjoinInputPair(txin, psbtIn, null);
     }

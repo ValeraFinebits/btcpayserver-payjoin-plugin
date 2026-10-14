@@ -11,10 +11,12 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 /// </summary>
 public class PayjoinReceiverWalletAdapterTests
 {
-    [Fact]
-    public void CreateInputPairRoundTripsTheCoinOutpointThroughTheLibrary()
+    [Theory]
+    [InlineData(ScriptPubKeyType.Segwit)]
+    [InlineData(ScriptPubKeyType.TaprootBIP86)]
+    public void CreateInputPairRoundTripsTheCoinOutpointThroughTheLibrary(ScriptPubKeyType scriptPubKeyType)
     {
-        var coin = CreateCoin("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3, 25_000);
+        var coin = CreateCoin("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3, 25_000, scriptPubKeyType);
 
         using var inputPair = PayjoinReceiverWalletAdapter.CreateInputPair(coin);
         var outpoint = inputPair.Outpoint();
@@ -58,11 +60,11 @@ public class PayjoinReceiverWalletAdapterTests
         Assert.Null(resolved);
     }
 
-    private static ReceivedCoin CreateCoin(string txId, uint vout, long valueSats)
+    private static ReceivedCoin CreateCoin(string txId, uint vout, long valueSats, ScriptPubKeyType scriptPubKeyType = ScriptPubKeyType.Segwit)
     {
         using var key = new Key();
         var outPoint = new OutPoint(uint256.Parse(txId), vout);
-        var scriptPubKey = key.PubKey.WitHash.ScriptPubKey;
+        var scriptPubKey = key.PubKey.GetAddress(scriptPubKeyType, Network.RegTest).ScriptPubKey;
         return new ReceivedCoin
         {
             OutPoint = outPoint,
