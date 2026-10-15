@@ -82,6 +82,51 @@ public class PayjoinReceiverInputSelectorTests
         Assert.Null(result);
     }
 
+    [Theory]
+    [InlineData(ScriptPubKeyType.Segwit)]
+    [InlineData(ScriptPubKeyType.TaprootBIP86)]
+    public async Task TryGetPersistedContributedCoinsAsyncReturnsTheMatchingSupportedCoin(ScriptPubKeyType scriptPubKeyType)
+    {
+        using var context = new SessionStoreFixture();
+        using var key = new Key();
+        var outpoint = new OutPoint(uint256.Parse("8888888888888888888888888888888888888888888888888888888888888888"), 2);
+        var script = key.PubKey.GetAddress(scriptPubKeyType, Network.RegTest).ScriptPubKey;
+        var coin = new ReceivedCoin
+        {
+            OutPoint = outpoint,
+            ScriptPubKey = script,
+            Coin = new Coin(outpoint, new TxOut(Money.Satoshis(25_000), script))
+        };
+        Assert.True(PayjoinAvailabilityService.IsSupportedReceiverCoin(coin.ScriptPubKey));
+        var selector = CreateSelector(context.CreateStore(),
+            new TestReceiverWalletAdapter { ConfirmedCoins = [coin] });
+        var session = CreateSession(
+            contributedInputTransactionId: outpoint.Hash.ToString(), contributedInputOutputIndex: outpoint.N);
+
+        var result = await selector.TryGetPersistedContributedCoinsAsync(session, CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Same(coin, Assert.Single(result));
+    }
+
+    [Fact]
+    public async Task TryContributeInputsAsyncReturnsTheExistingNoInputFailureForAnEmptySnapshot()
+    {
+        using var context = new SessionStoreFixture();
+        var store = context.CreateStore();
+        CreatePersistedSession(store, "invoice-1");
+        var candidates = PayjoinReceiverWalletAdapter.CreateInputCandidates(Array.Empty<ReceivedCoin>(), CancellationToken.None);
+        var selector = CreateSelector(store,
+            new TestReceiverWalletAdapter { Candidates = candidates.ToList() });
+
+        var result = await selector.TryContributeInputsAsync(null!, "store-1", "invoice-1",
+            DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+
+        Assert.Null(result.ProposalWithInputs);
+        Assert.Null(result.ContributedCoins);
+        Assert.Equal("no confirmed receiver coins available", result.FailureMessage);
+    }
+
     [Fact]
     public async Task TryContributeInputsAsyncContributesTheSelectedCandidate()
     {

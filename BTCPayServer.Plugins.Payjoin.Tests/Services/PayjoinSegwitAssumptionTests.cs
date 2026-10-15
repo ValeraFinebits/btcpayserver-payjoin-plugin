@@ -12,11 +12,11 @@ public class PayjoinSegwitAssumptionTests
 
     [Theory]
     [InlineData("p2wpkh", true)]
-    [InlineData("p2wsh", true)]
+    [InlineData("p2wsh", false)]
     [InlineData("taproot", true)]
     [InlineData("p2pkh", false)]
     [InlineData("p2sh-p2wpkh", false)]
-    public void IsSupportedReceiverCoinAcceptsNativelySegwitScriptsOnly(string kind, bool expected)
+    public void IsSupportedReceiverCoinAcceptsConstructibleReceiverScripts(string kind, bool expected)
     {
         using var key = new Key();
         Script script = kind switch
