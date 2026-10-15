@@ -417,6 +417,38 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
+    public async Task GetBip21DoesNotEnablePayjoinWhenMerchantHasOnlyP2wshCoins()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedP2wshTestContextAsync(tester, cts.Token).ConfigureAwait(true);
+
+        var wallet = tester.PayTester.GetService<BTCPayWalletProvider>().GetWallet(context.Network);
+        Assert.NotNull(wallet);
+        var coin = Assert.Single(await wallet.GetUnspentCoins(context.Merchant.DerivationScheme,
+            excludeUnconfirmed: true, cancellation: cts.Token).ConfigureAwait(true));
+        Assert.True(coin.Confirmations > 0);
+        Assert.True(coin.ScriptPubKey.IsScriptType(ScriptType.P2WSH));
+        Assert.Equal(Money.Coins(1.0m), coin.Coin.Amount);
+
+        var availability = tester.PayTester.GetService<PayjoinAvailabilityService>();
+        Assert.False(await availability.HasConfirmedReceiverInputsAsync(context.Merchant.StoreId,
+            PayjoinConstants.BitcoinCode, context.Network, cts.Token).ConfigureAwait(true));
+        var adapter = tester.PayTester.GetService<IPayjoinReceiverWalletAdapter>();
+        Assert.Empty(await adapter.GetInputCandidatesAsync(context.Merchant.StoreId, cts.Token).ConfigureAwait(true));
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        var (invoiceId, bip21Response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(
+            tester, context.Merchant, cts.Token).ConfigureAwait(true);
+
+        PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
+        Assert.Equal(PayjoinAvailabilityStatus.TemporarilyUnavailable, bip21Response.Status);
+        Assert.Equal(PayjoinUnavailableReasons.NoConfirmedReceiverInputs, bip21Response.UnavailableReason);
+        Assert.False(tester.PayTester.GetService<PayjoinReceiverSessionStore>().TryGetSession(invoiceId, out _));
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
     public async Task PayjoinChangeOutputGoesToColdWalletWithExternalPayer()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
