@@ -56,18 +56,15 @@ public sealed class PayjoinAvailabilityService
         // TODO: Decide whether receiver contribution should ever fall back to unconfirmed merchant coins instead of requiring confirmed inputs before advertising payjoin.
         var coins = await wallet.GetUnspentCoins(derivationScheme.AccountDerivation, true, cancellationToken).ConfigureAwait(false);
 
-        // The receiver input path constructs PSBT inputs from the witness UTXO alone (no
-        // non_witness_utxo, redeem or witness scripts), which is only valid for natively segwit
-        // coins. Offering anything else produces inputs the library rejects, so candidates are
-        // limited here - which also keeps checkout from advertising payjoin a legacy-funded wallet
-        // cannot actually serve.
+        // Only advertise coins the receiver adapter can construct from the witness UTXO alone.
+        // P2WPKH and Taproot key-path inputs have typed constructors with known expected weights.
+        // P2WSH needs a spend-specific expected weight, which the adapter does not supply.
         return coins.Where(coin => IsSupportedReceiverCoin(coin.ScriptPubKey)).ToArray();
     }
 
     internal static bool IsSupportedReceiverCoin(Script scriptPubKey)
     {
         return scriptPubKey.IsScriptType(ScriptType.P2WPKH) ||
-               scriptPubKey.IsScriptType(ScriptType.P2WSH) ||
                scriptPubKey.IsScriptType(ScriptType.Taproot);
     }
 }
