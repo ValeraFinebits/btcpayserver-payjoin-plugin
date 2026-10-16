@@ -126,6 +126,38 @@ internal static class PayjoinInvoiceTestHelper
         Assert.Fail($"Expected invoice '{payjoinContext.InvoiceId}' to remain not overpaid while accounting exactly '{payjoinContext.ExpectedDue}'.");
     }
 
+    public static async Task<BTCPayServer.Data.InvoiceEventData[]> AssertPayjoinJournalCompletedAsync(
+        ServerTester tester,
+        string invoiceId,
+        string transactionId,
+        CancellationToken cancellationToken)
+    {
+        var repository = tester.PayTester.GetService<InvoiceRepository>();
+        var bridges = tester.PayTester.GetService<IPayjoinAccountingBridgeService>();
+        BTCPayServer.Data.InvoiceEventData[] logs = [];
+        var successMessage = PayjoinInvoiceEventPublisher.MessagePrefix + $"Settled with Payjoin. Transaction: {transactionId}.";
+        var proposalMessage = PayjoinInvoiceEventPublisher.MessagePrefix + $"Payjoin proposal prepared. Awaiting transaction: {transactionId}.";
+        await AsyncPolling.WaitUntilAsync(
+            InvoiceStatusTimeout,
+            PollInterval,
+            async token =>
+            {
+                var bridge = await bridges.TryGetByInvoiceIdAsync(invoiceId, token).ConfigureAwait(true);
+                logs = (await repository.GetInvoiceLogs(invoiceId).WaitAsync(token).ConfigureAwait(true))
+                    .Where(log => log.Message.StartsWith(PayjoinInvoiceEventPublisher.MessagePrefix, StringComparison.Ordinal)).ToArray();
+                return bridge?.Status == Data.PayjoinAccountingBridgeStatus.Reconciled &&
+                       string.Equals(bridge.ExpectedFinalTransactionId, transactionId, StringComparison.OrdinalIgnoreCase) &&
+                       logs.Any(log => log.Message == successMessage) && logs.Any(log => log.Message == proposalMessage);
+            },
+            shouldRetry: null,
+            _ => $"Expected committed Payjoin settlement and journal entries for invoice '{invoiceId}', transaction '{transactionId}'. Messages: {string.Join("; ", logs.Select(log => log.Message))}",
+            cancellationToken).ConfigureAwait(true);
+        Assert.Single(logs, log => log.Message == successMessage);
+        Assert.Single(logs, log => log.Message == proposalMessage);
+        Assert.DoesNotContain(logs, log => log.Message.Contains("Settled with Async Payjoin", StringComparison.Ordinal));
+        return logs;
+    }
+
     public static async Task AssertInvoiceProcessingThenSettledAsync(
         ServerTester tester,
         string invoiceId,

@@ -23,6 +23,8 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddUIExtension("store-nav", "PayjoinStoreNavExtension");
         applicationBuilder.AddUIExtension("checkout-bitcoin-post-content", "PayJoinBitcoinCheckoutPostContent");
         applicationBuilder.AddUIExtension("checkout-end", "PayJoinBitcoinCheckoutEnd");
+        applicationBuilder.AddSingleton<IPayjoinInvoiceEventPublisher, PayjoinInvoiceEventPublisher>();
+        applicationBuilder.AddSingleton<IPayjoinInvoiceEventWriter, PayjoinInvoiceEventWriter>();
         applicationBuilder.AddSingleton<PayjoinAvailabilityService>();
         applicationBuilder.AddSingleton<PayjoinSessionUriReader>();
         applicationBuilder.AddSingleton<PayjoinBitcoinCheckoutModelExtension>();
@@ -47,7 +49,8 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinAccountingBridgeService>(provider => new PayjoinAccountingBridgeService(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
             provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>(),
-            provider.GetRequiredService<PayjoinSessionBuildLock>()));
+            provider.GetRequiredService<PayjoinSessionBuildLock>(),
+            provider.GetRequiredService<IPayjoinInvoiceEventPublisher>()));
         applicationBuilder.AddSingleton<IPayjoinAttentionRecordSeeder, PayjoinAttentionRecordSeeder>();
         applicationBuilder.AddSingleton<IPayjoinStalePaidOverCorrectionService, PayjoinStalePaidOverCorrectionService>();
         applicationBuilder.AddSingleton<IPayjoinPlatformPaymentRecorder, PayjoinPlatformPaymentRecorder>();
@@ -76,6 +79,7 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<PayjoinInvoicePaymentUrlService>();
         applicationBuilder.AddSingleton<IPayjoinInvoicePaymentUrlService>(provider => provider.GetRequiredService<PayjoinInvoicePaymentUrlService>());
         applicationBuilder.AddHostedService<PluginMigrationRunner>();
+        applicationBuilder.AddHostedService<PayjoinInvoiceEventHostedService>();
         applicationBuilder.AddHostedService(provider => new PayjoinReceiverPoller(
             provider.GetRequiredService<PayjoinReceiverSessionStore>(),
             provider.GetRequiredService<IPayjoinReceiverSessionProcessor>(),
