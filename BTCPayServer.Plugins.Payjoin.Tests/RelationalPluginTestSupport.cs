@@ -23,7 +23,7 @@ internal sealed class RelationalPluginTestContext : IDisposable
     public PayjoinReceiverSessionStore CreateStore(ILogger<PayjoinReceiverSessionStore> logger) =>
         new(_dbContextFactory, _uniqueConstraintViolationDetector, logger: logger);
 
-    public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+    public PayjoinSeenInputStore CreateSeenInputStore() => new(_dbContextFactory);
 
     public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
 

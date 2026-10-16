@@ -275,7 +275,7 @@ public class PayjoinReceiverRelayFlowTests
             httpFactory.CreateClient(Arg.Any<string>()).Returns(_http);
             var sender = new PayjoinReceiverRelayRequestSender(_settings, Manager, new PayjoinReceiverRelayClient(httpFactory));
             StateProcessor = new PayjoinReceiverStateProcessor(Store, sender, Wallet,
-                new PayjoinSeenInputStore(Factory, new SqliteUniqueConstraintViolationDetector()), Manager);
+                new PayjoinSeenInputStore(Factory), Manager);
             var bridge = new PayjoinAccountingBridgeService(Factory, new SqliteUniqueConstraintViolationDetector(), new PayjoinSessionBuildLock());
             ProposalSigner = new RecordingProposalSigner(Signer);
             Finalizer = new PayjoinReceiverProposalFinalizer(sender, ProposalSigner, bridge, Store, null!);

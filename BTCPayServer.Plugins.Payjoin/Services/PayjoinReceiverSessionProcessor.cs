@@ -126,11 +126,13 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                 LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
                 RemoveSession(session.InvoiceId, "receiver session failed with invalid operation");
             }
+            catch (ReceiverPersistedException ex)
+            {
+                LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
+            }
             catch (UniffiException ex)
             {
                 LogPayjoinReceiverPollingFailedForInvoice(_logger, session.InvoiceId, ex);
-                // TODO: Handle Storage errors without deleting the session; recover by replaying its event log.
-                // https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/198
                 RemoveSession(session.InvoiceId, "receiver session failed with uniffi error");
             }
         }
@@ -232,6 +234,9 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     await _proposalFinalizer.PostAsync(finalizationContext, payjoinProposal.Inner, stoppingToken).ConfigureAwait(false);
                     break;
                 }
+            case ReceiveSession.ReceiverPendingFallback pendingFallback:
+                await _stateProcessor.ProcessPendingFallbackAsync(stateContext, pendingFallback.Inner, stoppingToken).ConfigureAwait(false);
+                break;
             case ReceiveSession.Monitor:
                 break;
             case ReceiveSession.Closed:
