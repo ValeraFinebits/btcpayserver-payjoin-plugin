@@ -141,6 +141,28 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
         }
     }
 
+    internal static async Task<PayjoinReceiverStateContext?> RefreshAfterExternalCheckAsync(
+        IPayjoinReceiverSessionGuard guard, PayjoinReceiverSessionStore store,
+        PayjoinReceiverStateContext context, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        store.RequireNegotiationAllowed(context.Persister);
+        using var prepared = await guard.TryPrepareAsync(
+            store.GetAttempt(context.InvoiceId, context.Persister.SessionInstanceId), cancellationToken).ConfigureAwait(false);
+        if (prepared is null) return null;
+        store.RequireNegotiationAllowed(context.Persister);
+        var latest = store.GetAttempt(context.InvoiceId, context.Persister.SessionInstanceId);
+        if (latest.AttemptVersion != context.Persister.AttemptVersion) throw new PayjoinSessionStaleException();
+        return new PayjoinReceiverStateContext(latest, context.Persister, context.ReceiverScript,
+            context.StoreId, context.InvoiceId, prepared.StateContext.RemoveCloseRequestedSession)
+        {
+            OriginalInputOutpoints = context.OriginalInputOutpoints,
+            OriginalOutputScripts = context.OriginalOutputScripts,
+            InputOwnershipResolver = context.InputOwnershipResolver,
+            OutputOwnershipResolver = context.OutputOwnershipResolver
+        };
+    }
+
     internal async Task<PayjoinReceiverSessionState?> RefreshInvoiceCloseStateAsync(PayjoinReceiverSessionState session)
     {
         var invoice = await _invoiceRepository.GetInvoice(session.InvoiceId).ConfigureAwait(false);

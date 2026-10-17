@@ -58,6 +58,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private readonly IPayjoinReceiverProposalFinalizer _proposalFinalizer;
     private readonly BTCPayNetworkProvider _networkProvider;
     private readonly ILogger<PayjoinReceiverSessionProcessor> _logger;
+    private readonly IPayjoinOriginalTransactionValidator _originalValidator;
 
     public PayjoinReceiverSessionProcessor(
         PayjoinReceiverSessionStore sessionStore,
@@ -68,7 +69,8 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         IPayjoinAccountingBridgeService accountingBridgeService,
         IPayjoinReceiverProposalFinalizer proposalFinalizer,
         BTCPayNetworkProvider networkProvider,
-        ILogger<PayjoinReceiverSessionProcessor> logger)
+        ILogger<PayjoinReceiverSessionProcessor> logger,
+        IPayjoinOriginalTransactionValidator originalValidator)
     {
         _sessionStore = sessionStore;
         _sessionGuard = sessionGuard;
@@ -79,6 +81,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         _proposalFinalizer = proposalFinalizer;
         _networkProvider = networkProvider;
         _logger = logger;
+        _originalValidator = originalValidator;
     }
 
     public async Task ProcessTickAsync(CancellationToken stoppingToken)
@@ -160,10 +163,51 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         var stateContext = guardedSession.StateContext;
         try
         {
+            if (guardedSession.State is ReceiveSession.PayjoinProposal prepared)
+            {
+                if (ValidateAndAttachOriginalPayment(persister, receiverScript) is null) return;
+                await _proposalFinalizer.EnsureExpectedFinalTransactionAsync(
+                    new PayjoinReceiverProposalFinalizationContext(persister, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode),
+                    prepared.Inner, stoppingToken).ConfigureAwait(false);
+            }
+
+            if (guardedSession.State is ReceiveSession.MaybeInputsOwned or ReceiveSession.MaybeInputsSeen or
+                ReceiveSession.OutputsUnknown or ReceiveSession.WantsOutputs or ReceiveSession.WantsInputs or
+                ReceiveSession.WantsFeeRange or ReceiveSession.ProvisionalProposal or ReceiveSession.PayjoinProposal)
+            {
+                using var history = guardedSession.Replay.SessionHistory();
+                var original = history.FallbackTx();
+                var validation = original is { Length: > 0 }
+                    ? await _originalValidator.ValidateAsync(original, stoppingToken).ConfigureAwait(false)
+                    : new OriginalTransactionValidation(OriginalTransactionVerdict.Unavailable, "Saved original is unavailable");
+                stoppingToken.ThrowIfCancellationRequested();
+                if (validation.Verdict == OriginalTransactionVerdict.Unavailable)
+                {
+                    LogPayjoinReceiverAmountRejected(_logger, session.InvoiceId, "original broadcast check: " + validation.Reason, null);
+                    return;
+                }
+                var refreshed = await PayjoinReceiverSessionGuard.RefreshAfterExternalCheckAsync(
+                    _sessionGuard, _sessionStore, stateContext, stoppingToken).ConfigureAwait(false);
+                if (refreshed is null || refreshed.Session.IsCloseRequested) return;
+                stateContext = refreshed;
+                session = refreshed.Session;
+                if (validation.Verdict != OriginalTransactionVerdict.Accepted)
+                {
+                    LogPayjoinReceiverAmountRejected(_logger, session.InvoiceId, "original broadcast check: " + validation.Reason, null);
+                    if (guardedSession.State is not ReceiveSession.PayjoinProposal && validation.Verdict == OriginalTransactionVerdict.Rejected)
+                    {
+                        var current = _sessionStore.ReadPaymentSnapshot(persister);
+                        if (current.Bridge?.ExpectedFinalTransactionId is null)
+                            _sessionStore.FailPayment(persister, "original broadcast check: " + validation.Reason);
+                    }
+                    return;
+                }
+            }
+
             // Earlier states may still be waiting for a payload. Replayed proposals, however, must
             // pass the same gate before contributing inputs, signing or posting again.
             if (guardedSession.State is ReceiveSession.WantsInputs or ReceiveSession.WantsFeeRange or
-                ReceiveSession.ProvisionalProposal or ReceiveSession.PayjoinProposal &&
+                ReceiveSession.ProvisionalProposal &&
                 ValidateAndAttachOriginalPayment(persister, receiverScript) is null)
             {
                 return;
@@ -235,11 +279,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                     }
                 case ReceiveSession.PayjoinProposal payjoinProposal:
                     {
-                        // A replay can land here when the previous attempt stopped between finalizing the
-                        // proposal and recording its expected transaction on the accounting bridge, so the
-                        // recording is completed before the proposal is handed to the sender again.
                         var finalizationContext = new PayjoinReceiverProposalFinalizationContext(persister, session.StoreId, session.InvoiceId, PayjoinConstants.BitcoinCode);
-                        await _proposalFinalizer.EnsureExpectedFinalTransactionAsync(finalizationContext, payjoinProposal.Inner, stoppingToken).ConfigureAwait(false);
                         await _proposalFinalizer.PostAsync(finalizationContext, payjoinProposal.Inner, stoppingToken).ConfigureAwait(false);
                         break;
                     }
