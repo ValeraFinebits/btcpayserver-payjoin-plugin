@@ -1,3 +1,4 @@
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Wallets;
@@ -40,7 +41,7 @@ public class PayjoinReceiverRelayFlowTests
         using var retainedUri = initialized.Inner.PjUri();
         Assert.Equal(originalUri.AsString(), retainedUri.AsString());
         Assert.Equal(2, fixture.Transport.Responses.Count);
-        Assert.Equal((HttpStatusCode.OK, 8192), fixture.Transport.Responses[1]);
+        Assert.Equal((HttpStatusCode.OK, PayjoinReceiverRelayClient.MaxResponseBodySize), fixture.Transport.Responses[1]);
     }
 
     [Fact]
@@ -58,7 +59,7 @@ public class PayjoinReceiverRelayFlowTests
         using var state = replay.State();
         Assert.IsType<ReceiveSession.Initialized>(state);
         Assert.Equal(2, fixture.Transport.Responses.Count);
-        Assert.Equal((HttpStatusCode.OK, 8192), fixture.Transport.Responses[1]);
+        Assert.Equal((HttpStatusCode.OK, PayjoinReceiverRelayClient.MaxResponseBodySize), fixture.Transport.Responses[1]);
     }
 
     [Fact]
@@ -140,7 +141,7 @@ public class PayjoinReceiverRelayFlowTests
     public async Task FatalPollResponseRemainsFatalWithoutQuarantiningRelay()
     {
         using var fixture = new ReceiverFixture();
-        fixture.Transport.ResponseBody = new byte[8192];
+        fixture.Transport.ResponseBody = new byte[PayjoinReceiverRelayClient.MaxResponseBodySize];
 
         using var error = await Assert.ThrowsAsync<ReceiverPersistedException.Fatal>(() =>
             fixture.StateProcessor.ProcessInitializedAsync(fixture.Context(), fixture.Receiver,
@@ -213,6 +214,67 @@ public class PayjoinReceiverRelayFlowTests
         }
 
         fixture.UseRelays(new Uri(fixture.Services.DirectoryUrl()), fixture.Transport.HealthyRelay);
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+
+        using var completedReplay = fixture.Replay();
+        using var completedState = completedReplay.State();
+        Assert.IsType<ReceiveSession.Monitor>(completedState);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(eventsBeforePost.Length + 1, fixture.Events().Length);
+    }
+
+    [Fact]
+    public async Task OversizedPostResponsePreservesProposalAndInputReservationForRetry()
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var clock = Substitute.For<TimeProvider>();
+        clock.GetUtcNow().Returns(_ => now);
+        var quarantineDuration = TimeSpan.FromMinutes(10);
+        using var fixture = new ReceiverFixture(quarantineDuration, clock);
+        using var proposal = await fixture.PrepareProposalAsync();
+        var expectedPsbt = proposal.Psbt();
+        var eventsBeforePost = fixture.Events();
+        var reservation = new PayjoinReceiverInputReservationData
+        {
+            InvoiceId = "invoice",
+            StoreId = "store",
+            TransactionId = new string('b', 64),
+            OutputIndex = 0,
+            ReservedAt = DateTimeOffset.UtcNow,
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(20)
+        };
+        using (var context = fixture.Factory.CreateContext())
+        {
+            context.ReceiverInputReservations.Add(reservation);
+            await context.SaveChangesAsync(global::Xunit.TestContext.Current.CancellationToken);
+            await context.Entry(reservation).ReloadAsync(global::Xunit.TestContext.Current.CancellationToken);
+        }
+        fixture.Transport.ResponseBody = new byte[PayjoinReceiverRelayClient.MaxResponseBodySize + 1];
+        var responsesBeforePost = fixture.Transport.Responses.Count;
+
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+
+        Assert.True(fixture.Store.TryGetSession("invoice", out _));
+        Assert.Equal(eventsBeforePost, fixture.Events());
+        Assert.Null(fixture.Manager.ChooseRelayForRequest([fixture.Transport.HealthyRelay], "invoice"));
+        using (var replay = fixture.Replay())
+        using (var state = replay.State())
+        {
+            Assert.Equal(expectedPsbt, Assert.IsType<ReceiveSession.PayjoinProposal>(state).Inner.Psbt());
+        }
+        using (var context = fixture.Factory.CreateContext())
+        {
+            var retained = Assert.Single(context.ReceiverInputReservations);
+            Assert.Equal(reservation.Id, retained.Id);
+            Assert.Equal(reservation.TransactionId, retained.TransactionId);
+            Assert.Equal(reservation.OutputIndex, retained.OutputIndex);
+            Assert.Equal(reservation.ExpiresAt, retained.ExpiresAt);
+        }
+
+        fixture.Transport.ResponseBody = null;
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(responsesBeforePost + 1, fixture.Transport.Responses.Count);
+        now += quarantineDuration;
         await fixture.Processor.ProcessTickAsync(CancellationToken.None);
 
         using var completedReplay = fixture.Replay();
