@@ -29,7 +29,8 @@ public sealed class PayjoinBridgeAttentionService
                 bridge.Status == PayjoinAccountingBridgeStatus.Failed,
                 bridge.ExpectedFinalTransactionId,
                 bridge.FailureMessage,
-                bridge.UpdatedAt))
+                bridge.UpdatedAt)
+            { RetryAllowed = bridge.RetryAllowed })
             .ToArray();
         return new PayjoinBridgeAttentionList(items, result.TotalCount);
     }
@@ -46,7 +47,10 @@ public sealed record PayjoinBridgeAttentionItem(
     bool IsFailed,
     string? ExpectedFinalTransactionId,
     string? FailureMessage,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    public bool RetryAllowed { get; init; } = true;
+}
 
 public sealed record PayjoinBridgeAttentionList(
     IReadOnlyCollection<PayjoinBridgeAttentionItem> Items,

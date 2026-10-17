@@ -12,6 +12,36 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinReceiverSessionGuardTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task GuardStopsEvenWhenHistoryCannotBeDeletedAndReconciliationReleasesIt(bool expire, bool failed)
+    {
+        using var context = new RelationalPluginTestContext();
+        var store = context.CreateStore();
+        var guard = CreateGuard(store);
+        var session = store.GetOrCreateSession("retained", "receiver", "store", DateTimeOffset.UtcNow.AddMinutes(expire ? -1 : 10), ["original", "signed proposal"]);
+        store.StorePayjoinUri(session.InvoiceId, session.ReceiverAddress, "bitcoin:receiver?amount=0.1&pj=https://example.com/exact");
+        var bridge = context.CreateBridgeService();
+        await context.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest(session.InvoiceId, session.StoreId, "BTC", "BTC-CHAIN", session.MonitoringExpiresAt, ExpectedFinalTransactionId: uint256.One.ToString(), ExpectedFinalOutputIndex: 0, ExpectedFinalValueSats: 123), CancellationToken.None);
+        if (failed) await bridge.MarkFailedAsync(session.InvoiceId, "accounting mismatch", CancellationToken.None);
+        store.RequestClose(session.InvoiceId, InvoiceStatus.Expired);
+        Assert.True(store.TryGetSession(session.InvoiceId, out var closed));
+        Assert.NotNull(closed);
+        using var state = CreateMonitorState();
+        Assert.True(expire ? guard.TryExpireSession(closed) : guard.TryRemoveCloseRequestedSession(closed, state));
+        Assert.True(store.TryGetSession(session.InvoiceId, out var retained));
+        Assert.NotNull(retained);
+        Assert.Equal(closed.PayjoinUri, retained.PayjoinUri);
+        Assert.Equal(closed.GetEvents(), retained.GetEvents());
+        await bridge.MarkReconciledAsync(session.InvoiceId, null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
+        retained = store.GetAttempt(session.InvoiceId, session.SessionInstanceId);
+        Assert.True(expire ? guard.TryExpireSession(retained) : guard.TryRemoveCloseRequestedSession(retained, state));
+        Assert.False(store.TryGetSession(session.InvoiceId, out _));
+    }
+
     [Fact]
     public void TryExpireSessionRemovesExpiredSession()
     {

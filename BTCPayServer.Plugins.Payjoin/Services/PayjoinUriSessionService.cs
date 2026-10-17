@@ -1,4 +1,5 @@
 using BTCPayServer.Payments;
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Models;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
@@ -12,6 +13,7 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinUriSessionService
 {
+    internal const string ManualRecoveryRequiredReason = "Payjoin is stopped for this invoice; manual recovery is required";
     private static readonly Action<ILogger, string, Exception?> LogReceiverBuilderFailure =
         LoggerMessage.Define<string>(
             LogLevel.Error,
@@ -89,6 +91,10 @@ public sealed class PayjoinUriSessionService
         }
 
         var bip21 = network.GenerateBIP21(destination, due).ToString();
+        if (await GetPayjoinUriBlockReasonAsync(invoiceId, cancellationToken).ConfigureAwait(false) is { } blockReason0)
+        {
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, blockReason0, retryable: false);
+        }
 
         if (!enablePayjoin)
         {
@@ -123,14 +129,21 @@ public sealed class PayjoinUriSessionService
             return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.NoConfirmedReceiverInputs);
         }
 
+        Guid? attemptedInstance = null;
         try
         {
             using var sessionBuildLock = await _sessionBuildLock.AcquireAsync(invoiceId, cancellationToken).ConfigureAwait(false);
+            if (await GetPayjoinUriBlockReasonAsync(invoiceId, cancellationToken).ConfigureAwait(false) is { } blockReason1)
+            {
+                return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, blockReason1, retryable: false);
+            }
+
             PayjoinReceiverSessionState? session = null;
             if (_receiverSessionStore.TryGetSession(invoiceId, out var persistedSession) && persistedSession is not null)
             {
+                attemptedInstance = persistedSession.SessionInstanceId;
                 PayjoinUriResult? DiscardForRebuild() =>
-                    TryDiscardUnusableSession(invoiceId)
+                    TryDiscardUnusableSession(invoiceId, attemptedInstance)
                         ? null
                         : LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.SessionMidNegotiation);
 
@@ -176,13 +189,6 @@ public sealed class PayjoinUriSessionService
                     return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.OhttpKeysUnavailable);
                 }
 
-                // The accounting reset must precede session persistence. A crash between the two
-                // steps then leaves a reset bridge without a session, and the retry simply resets
-                // again (the reset is idempotent) before creating one. The reverse order left a
-                // persisted session whose retry found it, skipped the reset, and carried the
-                // previous session's accounting data forward.
-                await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, resetForNewSession: true, cancellationToken).ConfigureAwait(false);
-
                 var maxEffectiveFeeRateSatPerVb = await _feeRateProvider.GetMaxEffectiveFeeRateSatPerVbAsync(
                     storeId,
                     storeSettings.MaxFeeRateSatPerVb,
@@ -194,16 +200,18 @@ public sealed class PayjoinUriSessionService
                     destination,
                     storeId,
                     monitoringExpiresAt,
-                    bootstrapPersister.Load());
+                    bootstrapPersister.Load(), new CreatePayjoinAccountingBridgeRequest(invoiceId, storeId, cryptoCode,
+                        PaymentTypes.CHAIN.GetPaymentMethodId(cryptoCode).ToString(), monitoringExpiresAt));
+                attemptedInstance = session.SessionInstanceId;
 
                 if (!session.GetServability().MatchesInvoice(destination))
                 {
                     return LogUnexpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.SessionAddressOutdated);
                 }
             }
-            else
+            else if (await _accountingBridgeService.TryGetByInvoiceIdAsync(invoiceId, cancellationToken).ConfigureAwait(false) is null)
             {
-                await EnsureAccountingBridgeAsync(invoiceId, storeId, cryptoCode, due, monitoringExpiresAt, resetForNewSession: false, cancellationToken).ConfigureAwait(false);
+                return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, ManualRecoveryRequiredReason, retryable: false);
             }
 
             var persister = _receiverSessionStore.CreatePersister(session);
@@ -216,7 +224,7 @@ public sealed class PayjoinUriSessionService
             var verdict = PayjoinBip21.JudgeReplayedUri(payjoinUri, bip21, out var mergedPaymentUrl, out var mergeFault);
             if (verdict != PayjoinReplayedUriVerdict.Servable)
             {
-                if (!IndictsTheInvoice(verdict) && !TryDiscardUnusableSession(invoiceId))
+                if (!IndictsTheInvoice(verdict) && !TryDiscardUnusableSession(invoiceId, attemptedInstance))
                 {
                     return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.SessionMidNegotiation);
                 }
@@ -244,10 +252,29 @@ public sealed class PayjoinUriSessionService
 
             if (session.PayjoinUri is null)
             {
-                CachePayjoinUri(invoiceId, destination, payjoinUri);
+                CachePayjoinUri(invoiceId, destination, payjoinUri, session.SessionInstanceId);
             }
 
+            if (await GetPayjoinUriBlockReasonAsync(invoiceId, cancellationToken).ConfigureAwait(false) is { } blockReason2)
+            {
+                return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, blockReason2, retryable: false);
+            }
+            _receiverSessionStore.GetAttempt(invoiceId, session.SessionInstanceId);
             return PayjoinUriResult.Active(mergedPaymentUrl);
+        }
+        catch (Exception ex) when (PayjoinSessionStaleException.IsStale(ex))
+        {
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.SessionMidNegotiation);
+        }
+        catch (PayjoinAccountingReconciliationDataException)
+        {
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, ManualRecoveryRequiredReason, retryable: false);
+        }
+        catch (ReceiverReplayException e)
+        {
+            LogReceiverBuilderFailure(_logger, invoiceId, e);
+            e.Dispose();
+            return PayjoinUriResult.Unavailable(bip21, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.ReceiverSessionBuildFailed);
         }
         catch (UniffiException e)
         {
@@ -258,11 +285,26 @@ public sealed class PayjoinUriSessionService
                 disposableFault.Dispose();
             }
 
-            var discarded = TryDiscardUnusableSession(invoiceId);
+            var discarded = TryDiscardUnusableSession(invoiceId, attemptedInstance);
             return discarded
                 ? PayjoinUriResult.Unavailable(bip21, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.ReceiverSessionBuildFailed)
                 : PayjoinUriResult.Unavailable(bip21, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.SessionMidNegotiation);
         }
+    }
+
+    private async Task<string?> GetPayjoinUriBlockReasonAsync(string invoiceId, CancellationToken cancellationToken)
+    {
+        var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(invoiceId, cancellationToken).ConfigureAwait(false);
+        if (bridge is null) return null;
+        if (bridge.Status == PayjoinAccountingBridgeStatus.Failed) return ManualRecoveryRequiredReason;
+        if (bridge.ExpectedFinalTransactionId is null && bridge.SettlementScript is null) return null;
+        return bridge.Status switch
+        {
+            PayjoinAccountingBridgeStatus.PendingFallback or PayjoinAccountingBridgeStatus.PendingFinalTransaction =>
+                "the current Payjoin attempt is being processed or awaiting settlement",
+            PayjoinAccountingBridgeStatus.Reconciled => "the Payjoin attempt has already completed",
+            _ => ManualRecoveryRequiredReason
+        };
     }
 
     internal static string ReasonFor(PayjoinReplayedUriVerdict verdict) => verdict switch
@@ -279,15 +321,19 @@ public sealed class PayjoinUriSessionService
     internal static bool IndictsTheInvoice(PayjoinReplayedUriVerdict verdict) =>
         verdict is PayjoinReplayedUriVerdict.MergeLostEndpoint;
 
-    private bool TryDiscardUnusableSession(string invoiceId) =>
-        _receiverSessionStore.TryRemoveSessionUnlessNegotiating(invoiceId);
+    private bool TryDiscardUnusableSession(string invoiceId, Guid? sessionInstanceId) =>
+        sessionInstanceId.HasValue && _receiverSessionStore.TryRemoveSessionUnlessNegotiating(invoiceId, sessionInstanceId);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A failed cache write must never change the payjoin availability answer that has already been determined.")]
-    private void CachePayjoinUri(string invoiceId, string destination, string payjoinUri)
+    private void CachePayjoinUri(string invoiceId, string destination, string payjoinUri, Guid sessionInstanceId)
     {
         try
         {
-            _receiverSessionStore.StorePayjoinUri(invoiceId, destination, payjoinUri);
+            _receiverSessionStore.StorePayjoinUri(invoiceId, destination, payjoinUri, sessionInstanceId);
+        }
+        catch (Exception e) when (PayjoinSessionStaleException.IsStale(e))
+        {
+            throw;
         }
         catch (Exception e)
         {
@@ -326,35 +372,6 @@ public sealed class PayjoinUriSessionService
         }
 
         return (ulong)Math.Min(remainingSeconds, uint.MaxValue);
-    }
-
-    private async Task EnsureAccountingBridgeAsync(
-        string invoiceId,
-        string storeId,
-        string cryptoCode,
-        decimal due,
-        DateTimeOffset monitoringExpiresAt,
-        bool resetForNewSession,
-        CancellationToken cancellationToken)
-    {
-        var effectiveInvoiceValueSats = due > 0m
-            ? Money.Coins(due).Satoshi
-            : (long?)null;
-
-        await _accountingBridgeService.CreateOrGetAsync(
-            new CreatePayjoinAccountingBridgeRequest(
-                invoiceId,
-                storeId,
-                cryptoCode,
-                PaymentTypes.CHAIN.GetPaymentMethodId(cryptoCode).ToString(),
-                monitoringExpiresAt,
-                EffectiveInvoiceValueSats: effectiveInvoiceValueSats),
-            cancellationToken).ConfigureAwait(false);
-
-        if (resetForNewSession)
-        {
-            await _accountingBridgeService.ResetForNewSessionAsync(invoiceId, effectiveInvoiceValueSats, monitoringExpiresAt, cancellationToken).ConfigureAwait(false);
-        }
     }
 
     internal static bool HasExpectedAmount(ulong? amountSats, decimal due)

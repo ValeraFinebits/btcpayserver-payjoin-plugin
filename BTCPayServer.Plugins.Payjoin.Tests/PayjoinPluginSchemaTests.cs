@@ -1,6 +1,8 @@
 using BTCPayServer.Plugins.Payjoin.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -13,6 +15,20 @@ public class PayjoinPluginSchemaTests
     {
         using var context = CreateDesignTimeContext();
         Assert.False(context.Database.HasPendingModelChanges());
+    }
+
+    [Fact]
+    public void AttemptVersionRenameRequiresNoSchemaOperationsFromTheLastHistoricalMigration()
+    {
+        using var context = CreateDesignTimeContext();
+        var migrations = context.GetService<IMigrationsAssembly>();
+        var lastMigration = migrations.CreateMigration(migrations.Migrations.Last().Value, context.Database.ProviderName!);
+        var previous = context.GetService<IModelRuntimeInitializer>().Initialize(lastMigration.TargetModel, designTime: true);
+        var current = context.GetService<IDesignTimeModel>().Model;
+        Assert.Empty(context.GetService<IMigrationsModelDiffer>().GetDifferences(previous.GetRelationalModel(), current.GetRelationalModel()));
+        var version = context.Model.FindEntityType(typeof(PayjoinReceiverSessionData))!.FindProperty(nameof(PayjoinReceiverSessionData.AttemptVersion))!;
+        Assert.Equal("DestructiveWriteStamp", version.GetColumnName());
+        Assert.True(version.IsConcurrencyToken);
     }
 
     [Fact]

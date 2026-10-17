@@ -129,11 +129,6 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
             bridge.InvoiceId);
 
         var accountedValueSats = ResolveAccountedValueSats(bridge);
-        if (!accountedValueSats.HasValue)
-        {
-            return null;
-        }
-
         var finalTransactionRbf = finalTx.Transaction.RBF;
         var finalOutPoint = new OutPoint(finalTransactionId, outputIndex.Value);
 
@@ -152,7 +147,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         var finalPaymentIsNew = false;
         if (finalPayment is null)
         {
-            var paymentData = CreateObservedPaymentData(accountingContext, accountedValueSats.Value, finalTransactionId, outputIndex.Value, finalTx.Confirmations, finalTransactionRbf, keyPath, settlementDestination);
+            var paymentData = CreateObservedPaymentData(accountingContext, accountedValueSats, finalTransactionId, outputIndex.Value, finalTx.Confirmations, finalTransactionRbf, keyPath, settlementDestination);
             finalPayment = await _paymentRecorder.AddPaymentAsync(paymentData, [bridge.ExpectedFinalTransactionId]).ConfigureAwait(false);
             finalPaymentIsNew = finalPayment is not null;
             if (finalPayment is null)
@@ -178,7 +173,7 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         var previousValue = finalPayment.Value;
         var previousDestination = finalPayment.Destination;
         var previousDetails = finalPayment.Details?.ToString(Newtonsoft.Json.Formatting.None);
-        ApplyFinalPaymentState(accountingContext, finalPayment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats.Value, finalTransactionRbf, keyPath, settlementDestination);
+        ApplyFinalPaymentState(accountingContext, finalPayment, finalTx.Confirmations, finalTransactionId, outputIndex.Value, accountedValueSats, finalTransactionRbf, keyPath, settlementDestination);
         var finalPaymentChanged = finalPaymentIsNew ||
                                   finalPayment.Status != previousStatus ||
                                   finalPayment.Value != previousValue ||
@@ -277,10 +272,16 @@ internal sealed class PayjoinAccountingPaymentService : IPayjoinAccountingPaymen
         return FindSettlementOutputIndex(finalTransaction, bridge);
     }
 
-    private static long? ResolveAccountedValueSats(PayjoinAccountingBridgeState bridge)
+    private static long ResolveAccountedValueSats(PayjoinAccountingBridgeState bridge)
     {
-        // TODO: Never credit the sender-PSBT value; require EffectiveInvoiceValueSats from the invoice session.
-        return bridge.EffectiveInvoiceValueSats ?? bridge.FallbackValueSats;
+        if (bridge.EffectiveInvoiceValueSats is not > 0 ||
+            bridge.FallbackValueSats != bridge.EffectiveInvoiceValueSats)
+        {
+            throw new PayjoinAccountingReconciliationDataException(
+                $"Missing or inconsistent original/session amount for invoice '{bridge.InvoiceId}'; manual recovery required.");
+        }
+
+        return bridge.EffectiveInvoiceValueSats.Value;
     }
 
     private static PaymentEntity? FindTrackedPayment(AccountingContext accountingContext, PayjoinAccountingBridgeState bridge)

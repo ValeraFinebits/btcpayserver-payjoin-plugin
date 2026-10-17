@@ -10,9 +10,8 @@ internal interface IPayjoinReceiverInputSelector
     Task<ReceiverInputContributionResult> TryContributeInputsAsync(
         WantsInputs proposal,
         string storeId,
-        string invoiceId,
         System.DateTimeOffset reservationExpiresAt,
-        CancellationToken cancellationToken);
+        PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister owner, CancellationToken cancellationToken);
 
     Task<ReceivedCoin[]?> TryGetPersistedContributedCoinsAsync(
         PayjoinReceiverSessionState session,
