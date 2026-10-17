@@ -1,16 +1,106 @@
-﻿using BTCPayServer.Client.Models;
+using BTCPayServer.Client.Models;
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
+using NSubstitute;
+using IPayjoinProposal = Payjoin.IPayjoinProposal;
+using NBXplorer;
+using BTCPayServer.Logging;
+using OutPoint = NBitcoin.OutPoint;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
 
 public class PayjoinReceiverSessionStoreRelationalTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProtocolOwnerCannotAdoptCompetingProgressAfterAWriteConflict(bool reserve)
+    {
+        using var fixture = new RelationalPluginTestContext();
+        var store = fixture.CreateStore();
+        var session = CreateSession(store, "owner-conflict");
+        var owner = store.CreatePersister(session);
+        fixture.BeforeNextSaveChanges = () => store.Owner(session.InvoiceId).Save("competing event");
+        Assert.Throws<PayjoinSessionStaleException>(() =>
+        {
+            if (reserve) store.TryReserveContributedInput(owner, session.StoreId, new OutPoint(uint256.One, 0), DateTimeOffset.UtcNow.AddMinutes(1));
+            else store.AppendEvents(owner, ["losing event"]);
+        });
+        Assert.Equal(session.AttemptVersion, owner.AttemptVersion);
+        Assert.Throws<PayjoinSessionStaleException>(() => owner.Load());
+        using var db = fixture.CreateDbContext();
+        Assert.Empty(db.ReceiverInputReservations);
+        Assert.Equal(new[] { "bootstrap-event", "competing event" }, db.ReceiverSessionEvents.OrderBy(e => e.Sequence).Select(e => e.Event).ToArray());
+    }
+
     private const int ConcurrencyRetryEventId = 1;
     private const int ConcurrencyExhaustedEventId = 2;
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HeldFailuresAndExpiredArmedSessionsAreExcludedBeforeEventQueries(bool expired)
+    {
+        using var factory = new SqliteTestPayjoinPluginDbContextFactory();
+        var detector = new SqliteUniqueConstraintViolationDetector();
+        var store = new PayjoinReceiverSessionStore(factory, detector);
+        var session = CreateSession(store, "invoice-held");
+        store.StorePayjoinUri(session.InvoiceId, session.ReceiverAddress, "bitcoin:receiver?amount=0.1&pj=https://example.com/session");
+        var bridges = new PayjoinAccountingBridgeService(factory, new PayjoinSessionBuildLock());
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, new OutPoint(uint256.One, 0), DateTimeOffset.UtcNow.AddMinutes(1)));
+        await factory.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest(session.InvoiceId, session.StoreId, "BTC", "BTC-CHAIN",
+            DateTimeOffset.UtcNow.AddHours(-7), ExpectedFinalTransactionId: expired ? uint256.One.ToString() : null), CancellationToken.None);
+        if (expired) await bridges.ExpirePendingAsync(DateTimeOffset.UtcNow, CancellationToken.None);
+        else await bridges.MarkFailedAsync(session.InvoiceId, "unrelated opaque reason", CancellationToken.None);
+        var queries = new List<string>();
+        factory.OnReaderExecuting = queries.Add;
+        Assert.Empty(store.GetSessions());
+        Assert.DoesNotContain(queries, sql => sql.Contains("ReceiverSessionEvents", StringComparison.Ordinal));
+        Assert.False(store.RemoveSession(session.InvoiceId));
+        Assert.False(store.TryRemoveSessionUnlessNegotiating(session.InvoiceId));
+        Assert.Null(store.GetServablePayjoinUri(session.InvoiceId, session.ReceiverAddress));
+        Assert.True(store.TryGetSession(session.InvoiceId, out var held));
+        Assert.Equal(session.GetEvents(), held!.GetEvents());
+        Assert.NotNull(held.PayjoinUri);
+        Assert.Equal(held.GetEvents(), store.GetAttempt(session.InvoiceId, session.SessionInstanceId).GetEvents());
+        Assert.Equal(1, store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow.AddMinutes(2)));
+        Assert.Equal(held.PayjoinUri, store.GetAttempt(session.InvoiceId, session.SessionInstanceId).PayjoinUri);
+        Assert.Equal(held.GetEvents(), store.GetAttempt(session.InvoiceId, session.SessionInstanceId).GetEvents());
+        Assert.Contains(queries, sql => sql.Contains("ReceiverSessionEvents", StringComparison.Ordinal));
+        CreateSession(store, "invoice-pollable");
+        var pollable = Assert.Single(store.GetSessions());
+        Assert.Equal("invoice-pollable", pollable.InvoiceId);
+        var retry = await bridges.TryRetryAsync(session.InvoiceId, session.StoreId, DateTimeOffset.UtcNow, CancellationToken.None);
+        if (!expired) { Assert.Null(retry); return; }
+        Assert.NotNull(retry);
+        Assert.Contains(await bridges.GetPendingReconciliationAsync(DateTimeOffset.UtcNow, CancellationToken.None), bridge => bridge.InvoiceId == session.InvoiceId);
+        Assert.Contains(store.GetSessions(), row => row.InvoiceId == session.InvoiceId);
+        await bridges.MarkReconciledAsync(session.InvoiceId, null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.True(store.RemoveSession(session.InvoiceId, session.SessionInstanceId));
+        Assert.False(store.TryGetSession(session.InvoiceId, out _));
+    }
+
+    [Theory]
+    [InlineData("unarmed")]
+    [InlineData("empty-expected")]
+    [InlineData("reconciled")]
+    public async Task ExpiredDeadlineDoesNotExcludeSessionsNeededForCleanup(string kind)
+    {
+        using var fixture = new RelationalPluginTestContext();
+        var store = fixture.CreateStore();
+        var bridge = fixture.CreateBridgeService();
+        var session = store.GetOrCreateSession("cleanup", "receiver", "store", DateTimeOffset.UtcNow.AddMinutes(-1), ["retained event"]);
+        await fixture.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest("cleanup", "store", "BTC", "BTC-CHAIN", DateTimeOffset.UtcNow.AddHours(-7),
+            ExpectedFinalTransactionId: kind == "unarmed" ? null : kind == "empty-expected" ? "" : uint256.One.ToString()), CancellationToken.None);
+        if (kind == "reconciled") await bridge.MarkReconciledAsync("cleanup", null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
+        else await bridge.ExpirePendingAsync(DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(session.GetEvents(), Assert.Single(store.GetSessions()).GetEvents());
+        if (kind != "empty-expected") Assert.True(store.RemoveSession("cleanup", session.SessionInstanceId));
+    }
 
     [Theory]
     [InlineData(false)]
@@ -76,7 +166,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
         if (contributedInput)
         {
             var outPoint = new OutPoint(uint256.Parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 0);
-            Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+            Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
             Assert.False(store.TryRemoveSessionUnlessNegotiating(session.InvoiceId));
             Assert.True(store.TryGetSession(session.InvoiceId, out _));
             Assert.Null(manager.ChooseRelayForRequest([relay], session.InvoiceId));
@@ -172,9 +262,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
             1);
 
         Assert.Throws<global::Payjoin.ReceiverPersistedException.Transient>(() =>
-            store.ExecuteSeenInputTransition<TestTransitionState>(
-                session.InvoiceId,
-                (callback, _) =>
+            store.ExecuteSeenInputTransition<TestTransitionState>(testContext.CreateStore().Owner(session.InvoiceId), (callback, _) =>
                 {
                     Assert.False(callback.Callback(firstInput));
                     throw new global::Payjoin.ReceiverPersistedException.Transient(
@@ -194,9 +282,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
         }
 
         var wasSeenBeforeRetry = true;
-        using var retryState = store.ExecuteSeenInputTransition<TestTransitionState>(
-            session.InvoiceId,
-            (callback, persister) =>
+        using var retryState = store.ExecuteSeenInputTransition<TestTransitionState>(testContext.CreateStore().Owner(session.InvoiceId), (callback, persister) =>
             {
                 wasSeenBeforeRetry = callback.Callback(firstInput);
                 Assert.False(callback.Callback(secondInput));
@@ -228,9 +314,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
             "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             2);
 
-        using var firstState = store.ExecuteSeenInputTransition<TestTransitionState>(
-            firstSession.InvoiceId,
-            (callback, persister) =>
+        using var firstState = store.ExecuteSeenInputTransition<TestTransitionState>(testContext.CreateStore().Owner(firstSession.InvoiceId), (callback, persister) =>
             {
                 Assert.False(callback.Callback(input));
                 persister.Save("first-session-checked-inputs");
@@ -238,9 +322,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
             });
 
         var wasSeenBySecondSession = false;
-        using var secondState = store.ExecuteSeenInputTransition<TestTransitionState>(
-            secondSession.InvoiceId,
-            (callback, persister) =>
+        using var secondState = store.ExecuteSeenInputTransition<TestTransitionState>(testContext.CreateStore().Owner(secondSession.InvoiceId), (callback, persister) =>
             {
                 wasSeenBySecondSession = callback.Callback(input);
                 persister.Save("second-session-rejected-input");
@@ -276,9 +358,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
         };
 
         Assert.Throws<Microsoft.EntityFrameworkCore.DbUpdateException>(() =>
-            store.ExecuteSeenInputTransition<TestTransitionState>(
-                session.InvoiceId,
-                (callback, persister) =>
+            store.ExecuteSeenInputTransition<TestTransitionState>(testContext.CreateStore().Owner(session.InvoiceId), (callback, persister) =>
                 {
                     Assert.False(callback.Callback(input));
                     persister.Save("event-that-must-roll-back");
@@ -324,9 +404,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
 
         // Assert
         Assert.Throws<global::Payjoin.ReceiverPersistedException.Fatal>(() =>
-            store.ExecuteSeenInputTransition<TestTransitionState>(
-                session.InvoiceId,
-                (callback, persister) =>
+            store.ExecuteSeenInputTransition<TestTransitionState>(testContext.CreateStore().Owner(session.InvoiceId), (callback, persister) =>
                 {
                     Assert.False(callback.Callback(freshInput));
                     Assert.True(callback.Callback(inputSeenByAnEarlierSession));
@@ -361,8 +439,8 @@ public class PayjoinReceiverSessionStoreRelationalTests
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
         // Act
-        Assert.True(firstStore.TryReserveContributedInput(firstSession.StoreId, firstSession.InvoiceId, outPoint, expiresAt));
-        Assert.False(secondStore.TryReserveContributedInput(secondSession.StoreId, secondSession.InvoiceId, outPoint, expiresAt));
+        Assert.True(firstStore.TryReserveContributedInput(firstStore.Owner(firstSession.InvoiceId), firstSession.StoreId, outPoint, expiresAt));
+        Assert.False(secondStore.TryReserveContributedInput(secondStore.Owner(secondSession.InvoiceId), secondSession.StoreId, outPoint, expiresAt));
 
         // Assert
         using var context = testContext.CreateDbContext();
@@ -388,12 +466,12 @@ public class PayjoinReceiverSessionStoreRelationalTests
         var firstAttempt = Task.Run(() =>
         {
             start.Wait();
-            return firstStore.TryReserveContributedInput(firstSession.StoreId, firstSession.InvoiceId, outPoint, expiresAt);
+            return firstStore.TryReserveContributedInput(firstStore.Owner(firstSession.InvoiceId), firstSession.StoreId, outPoint, expiresAt);
         });
         var secondAttempt = Task.Run(() =>
         {
             start.Wait();
-            return secondStore.TryReserveContributedInput(secondSession.StoreId, secondSession.InvoiceId, outPoint, expiresAt);
+            return secondStore.TryReserveContributedInput(secondStore.Owner(secondSession.InvoiceId), secondSession.StoreId, outPoint, expiresAt);
         });
 
         // Act
@@ -412,7 +490,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
     }
 
     [Fact]
-    public void AppendEventsWithAccountingUpdateWritesEventsAndBridgeTogether()
+    public void CommitReceiverOutputsWritesEventsAndBridgeTogether()
     {
         using var testContext = new RelationalPluginTestContext();
         var store = testContext.CreateStore();
@@ -425,6 +503,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
                 StoreId = session.StoreId,
                 CryptoCode = PayjoinConstants.BitcoinCode,
                 PaymentMethodId = "BTC-BTC",
+                EffectiveInvoiceValueSats = 1234,
                 Status = Data.PayjoinAccountingBridgeStatus.PendingFallback,
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow
@@ -432,14 +511,8 @@ public class PayjoinReceiverSessionStoreRelationalTests
             seed.SaveChanges();
         }
 
-        store.AppendEventsWithAccountingUpdate(
-            session.InvoiceId,
-            ["event-a", "event-b"],
-            bridge =>
-            {
-                bridge.SettlementScript = "AABB";
-                bridge.EffectiveInvoiceValueSats = 1234;
-            });
+        store.CommitReceiverOutputs(store.CreatePersister(session), ["event-a", "event-b"],
+            new PayjoinReceiverOutputBuilder.OutputReplacement([], [0xaa, 0xbb], 1234, null));
 
         using var context = testContext.CreateDbContext();
         var events = context.ReceiverSessionEvents
@@ -454,13 +527,13 @@ public class PayjoinReceiverSessionStoreRelationalTests
     }
 
     [Fact]
-    public void AppendEventsWithAccountingUpdateAppendsEventsWhenNoBridgeExists()
+    public void CommitReceiverOutputsDoesNotAdvanceWhenRequiredBridgeIsMissing()
     {
         using var testContext = new RelationalPluginTestContext();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-atomic-no-bridge");
 
-        store.AppendEventsWithAccountingUpdate(session.InvoiceId, ["event-a"], bridge => bridge.SettlementScript = "AABB");
+        Assert.Throws<PayjoinAccountingReconciliationDataException>(() => store.CommitReceiverOutputs(store.Owner(session.InvoiceId), ["event-a"], new PayjoinReceiverOutputBuilder.OutputReplacement([], Convert.FromHexString("AABB"), 50_000, null)));
 
         using var context = testContext.CreateDbContext();
         var events = context.ReceiverSessionEvents
@@ -468,7 +541,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
             .OrderBy(x => x.Sequence)
             .Select(x => x.Event)
             .ToArray();
-        Assert.Equal(new[] { "bootstrap-event", "event-a" }, events);
+        Assert.Equal(new[] { "bootstrap-event" }, events);
         Assert.Empty(context.AccountingBridges.Where(x => x.InvoiceId == session.InvoiceId));
     }
 
@@ -613,7 +686,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-contributed");
         var outPoint = new OutPoint(uint256.Parse("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"), 2);
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
 
         Assert.False(store.TryRemoveSessionUnlessNegotiating(session.InvoiceId));
         Assert.True(store.TryGetSession(session.InvoiceId, out _));
@@ -631,11 +704,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
         var outPoint = new OutPoint(uint256.Parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 3);
 
         testContext.BeforeNextSaveChanges = () =>
-            Assert.True(testContext.CreateStore().TryReserveContributedInput(
-                session.StoreId,
-                session.InvoiceId,
-                outPoint,
-                DateTimeOffset.UtcNow.AddMinutes(10)));
+            Assert.True(testContext.CreateStore().TryReserveContributedInput(testContext.CreateStore().Owner(session.InvoiceId), session.StoreId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
 
         Assert.False(store.TryRemoveSessionUnlessNegotiating(session.InvoiceId));
         Assert.True(store.TryGetSession(session.InvoiceId, out var reloaded));
@@ -656,7 +725,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
         {
             using var concurrentContext = testContext.CreateDbContext();
             var concurrentRow = concurrentContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
-            concurrentRow.DestructiveWriteStamp = checked(concurrentRow.DestructiveWriteStamp + 1);
+            concurrentRow.AttemptVersion = checked(concurrentRow.AttemptVersion + 1);
             concurrentContext.SaveChanges();
         };
 
@@ -678,7 +747,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
             using (var concurrentContext = testContext.CreateDbContext())
             {
                 var concurrentRow = concurrentContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
-                concurrentRow.DestructiveWriteStamp = checked(concurrentRow.DestructiveWriteStamp + 1);
+                concurrentRow.AttemptVersion = checked(concurrentRow.AttemptVersion + 1);
                 concurrentContext.SaveChanges();
             }
 
@@ -720,11 +789,11 @@ public class PayjoinReceiverSessionStoreRelationalTests
         var session = CreateSession(store, "invoice-token-advanced");
         var outPoint = new OutPoint(uint256.Parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 7);
 
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
 
         Assert.True(store.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(store.TryConsumeInitializedPollAfterCloseRequest(session.InvoiceId));
-        store.AppendEventsWithAccountingUpdate(session.InvoiceId, ["event-after-reservation"], updateBridge: null);
+        store.AppendEvents(store.Owner(session.InvoiceId), ["event-after-reservation"]);
         Assert.Equal(1, store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow.AddMinutes(20)));
         Assert.True(store.RemoveSession(session.InvoiceId));
         Assert.False(store.TryGetSession(session.InvoiceId, out _));
@@ -741,7 +810,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
         var staleRow = readContext.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId);
 
         var outPoint = new OutPoint(uint256.Parse("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"), 1);
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
 
         Assert.Null(staleRow.ContributedInputTransactionId);
         PayjoinReceiverSessionStore.RemoveAllSessionEvents(readContext, staleRow);
@@ -752,32 +821,66 @@ public class PayjoinReceiverSessionStoreRelationalTests
     }
 
     [Fact]
-    public void OnlyDestructiveWritesAdvanceTheDestructiveWriteStamp()
+    public async Task DestructiveAndProtectingWritesAdvanceTheAttemptVersion()
     {
         using var testContext = new RelationalPluginTestContext();
         var store = testContext.CreateStore();
-        var session = CreateSession(store, "invoice-stamp-contract");
+        var session = CreateSession(store, "invoice-version-contract");
 
-        int ReadStamp()
+        int ReadVersion()
         {
             using var context = testContext.CreateDbContext();
-            return context.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId).DestructiveWriteStamp;
+            return context.ReceiverSessions.Single(x => x.InvoiceId == session.InvoiceId).AttemptVersion;
         }
 
-        var initialStamp = ReadStamp();
+        var initialVersion = ReadVersion();
 
-        store.AppendEventsWithAccountingUpdate(session.InvoiceId, ["stamp-contract-event"], updateBridge: null);
+        store.AppendEvents(store.Owner(session.InvoiceId), ["version-contract-event"]);
         store.StorePayjoinUri(session.InvoiceId, ReceiverAddress, PayjoinUri);
         Assert.True(store.RequestClose(session.InvoiceId, InvoiceStatus.Expired));
         Assert.True(store.TryConsumeInitializedPollAfterCloseRequest(session.InvoiceId));
-        Assert.Equal(initialStamp, ReadStamp());
+        Assert.Equal(initialVersion + 1, ReadVersion());
 
         var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 5);
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
-        Assert.Equal(initialStamp + 1, ReadStamp());
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.Equal(initialVersion + 2, ReadVersion());
 
         Assert.Equal(1, store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow.AddMinutes(20)));
-        Assert.Equal(initialStamp + 1, ReadStamp());
+        Assert.Equal(initialVersion + 3, ReadVersion());
+
+        var bridges = testContext.CreateBridgeService();
+        var transaction = Network.RegTest.CreateTransaction();
+        transaction.Inputs.Add(new OutPoint(uint256.One, 0));
+        transaction.Outputs.Add(Money.Satoshis(123), Script.FromHex("51"));
+        await testContext.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest(session.InvoiceId, session.StoreId, "BTC", "BTC-CHAIN", session.MonitoringExpiresAt, EffectiveInvoiceValueSats: 123), CancellationToken.None);
+        store.CommitReceiverOutputs(store.Owner(session.InvoiceId), ["outputs"], new PayjoinReceiverOutputBuilder.OutputReplacement([], Convert.FromHexString("51"), 123, null));
+        Assert.Equal(initialVersion + 4, ReadVersion());
+        store.CommitProposal(store.Owner(session.InvoiceId), ["signed-proposal"], new PayjoinReceiverSessionStore.ProposalSettlement(transaction.GetHash().ToString(), 0, 123));
+        Assert.Equal(initialVersion + 5, ReadVersion());
+        store.AppendEvents(store.Owner(session.InvoiceId), ["normal-append"]);
+        Assert.Equal(initialVersion + 6, ReadVersion());
+        var proposal = Substitute.For<IPayjoinProposal>();
+        proposal.Psbt().Returns(PSBT.FromTransaction(transaction, Network.RegTest).ToBase64());
+        var nbx = new NBXplorerNetworkProvider(ChainName.Regtest);
+        var networks = new BTCPayNetworkProvider([new BTCPayNetwork { CryptoCode = "BTC", NBXplorerNetwork = nbx.GetFromCryptoCode("BTC") }], nbx, new Logs());
+        var finalizer = new PayjoinReceiverProposalFinalizer(null!, null!, bridges, store, networks);
+        await finalizer.EnsureExpectedFinalTransactionAsync(new PayjoinReceiverProposalFinalizationContext(
+            store.Owner(session.InvoiceId), session.StoreId, session.InvoiceId, "BTC"), proposal, CancellationToken.None);
+        Assert.Equal(initialVersion + 6, ReadVersion());
+        using (var legacy = testContext.CreateDbContext())
+        {
+            var bridge = legacy.AccountingBridges.Single();
+            bridge.ExpectedFinalOutputIndex = null;
+            bridge.ExpectedFinalValueSats = null;
+            legacy.SaveChanges();
+        }
+        await finalizer.EnsureExpectedFinalTransactionAsync(new PayjoinReceiverProposalFinalizationContext(
+            store.CreatePersister(store.GetAttempt(session.InvoiceId, session.SessionInstanceId)), session.StoreId, session.InvoiceId, "BTC"), proposal, CancellationToken.None);
+        Assert.Equal(initialVersion + 7, ReadVersion());
+        await bridges.MarkFailedAsync(session.InvoiceId, "manual review", CancellationToken.None);
+        Assert.Equal(initialVersion + 8, ReadVersion());
+        await bridges.MarkReconciledAsync(session.InvoiceId, null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(initialVersion + 9, ReadVersion());
 
         using (var context = testContext.CreateDbContext())
         {
@@ -786,7 +889,7 @@ public class PayjoinReceiverSessionStoreRelationalTests
             context.SaveChanges();
         }
 
-        Assert.Equal(initialStamp + 2, ReadStamp());
+        Assert.Equal(initialVersion + 10, ReadVersion());
     }
 
     private const string ReceiverAddress = "bcrt1qexampleaddress0000000000000000000000000";

@@ -16,7 +16,9 @@ internal sealed class SessionStoreFixture : IDisposable
 
     public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
 
-    public PayjoinAccountingBridgeService CreateBridgeService() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
+    public PayjoinAccountingBridgeService CreateBridgeService() => new(_dbContextFactory, SessionBuildLock);
+
+    public Task<PayjoinAccountingBridgeState> SeedBridgeAsync(CreatePayjoinAccountingBridgeRequest request, CancellationToken token) => _dbContextFactory.SeedBridgeAsync(request, token);
 
     public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
 

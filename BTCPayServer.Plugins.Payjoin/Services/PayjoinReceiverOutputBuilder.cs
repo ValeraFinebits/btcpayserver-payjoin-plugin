@@ -76,9 +76,7 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
         long? pinnedSettlementAmountSats,
         CancellationToken cancellationToken)
     {
-        // TODO: Add a rust-payjoin / payjoin-ffi API for reading the receiver amount from the proposal or
-        // original PSBT data, so the settlement amount can be validated against what the sender actually
-        // proposed instead of being derived on the receiver side.
+        if (pinnedSettlementAmountSats is not > 0) return new OutputBuildResult(OutputBuildStatus.InvalidDestination);
         (SettlementDestination? Destination, OutputBuildStatus Status) destinationResult;
         if (preserveReceiverScript)
         {
@@ -94,46 +92,14 @@ internal sealed class PayjoinReceiverOutputBuilder : IPayjoinReceiverOutputBuild
             return new OutputBuildResult(destinationResult.Status);
         }
 
-        // The amount recorded on the accounting bridge when the sender's original arrived is preferred
-        // over the live invoice accounting state: the latter can drift between replays (partial payments,
-        // re-quotes), and whichever value ends up committed with the outputs is what crediting later uses.
-        var exactPaymentAmountSats = pinnedSettlementAmountSats is > 0
-            ? checked((ulong)pinnedSettlementAmountSats.Value)
-            : await TryGetExactPaymentAmountSatsAsync(invoiceId).ConfigureAwait(false);
-        if (exactPaymentAmountSats is null)
-        {
-            return new OutputBuildResult(OutputBuildStatus.InvalidDestination);
-        }
-
+        // The processor supplies the verified session URI pin. Live invoice accounting can drift
+        // between replays and cannot replace the amount committed with these outputs.
+        var exactPaymentAmountSats = checked((ulong)pinnedSettlementAmountSats.Value);
         return new OutputBuildResult(
             OutputBuildStatus.Ready,
-            CreateSettlementOutputs(exactPaymentAmountSats.Value, settlementDestination.Script, settlementDestination.KeyPath));
+            CreateSettlementOutputs(exactPaymentAmountSats, settlementDestination.Script, settlementDestination.KeyPath));
     }
 
-    internal async Task<ulong?> TryGetExactPaymentAmountSatsAsync(string invoiceId)
-    {
-        var invoice = await _invoiceRepository.GetInvoice(invoiceId).ConfigureAwait(false);
-        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
-        var prompt = invoice?.GetPaymentPrompt(paymentMethodId);
-        if (prompt is null)
-        {
-            return null;
-        }
-
-        var due = prompt.Calculate().Due;
-        if (due <= 0m)
-        {
-            return null;
-        }
-
-        var dueSats = Money.Coins(due).Satoshi;
-        if (dueSats <= 0)
-        {
-            return null;
-        }
-
-        return checked((ulong)dueSats);
-    }
 
     internal static OutputReplacement CreateSettlementOutputs(
         ulong exactPaymentAmountSats,

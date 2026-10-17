@@ -1,4 +1,4 @@
-﻿using BTCPayServer.Client.Models;
+using BTCPayServer.Client.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
 using NBitcoin;
 using Xunit;
@@ -64,7 +64,7 @@ public class PayjoinReceiverSessionStoreTests
         var session = CreateSession(store, "invoice-input");
         var expectedOutPoint = new OutPoint(uint256.Parse("1111111111111111111111111111111111111111111111111111111111111111"), uint.MaxValue);
 
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
 
         var reloadedStore = testContext.CreateStore();
         Assert.True(reloadedStore.TryGetSession(session.InvoiceId, out var reloadedSession));
@@ -80,13 +80,13 @@ public class PayjoinReceiverSessionStoreTests
         var session = CreateSession(store, "invoice-same-input");
         var expectedOutPoint = new OutPoint(uint256.Parse("3333333333333333333333333333333333333333333333333333333333333333"), 3);
 
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
         using var firstContext = testContext.CreateDbContext();
         var firstUpdatedAt = firstContext.ReceiverSessions
             .Single(x => x.InvoiceId == session.InvoiceId)
             .UpdatedAt;
 
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
         using var secondContext = testContext.CreateDbContext();
         var secondUpdatedAt = secondContext.ReceiverSessions
             .Single(x => x.InvoiceId == session.InvoiceId)
@@ -105,7 +105,7 @@ public class PayjoinReceiverSessionStoreTests
         var firstPersister = firstStore.CreatePersister(firstSession);
 
         firstPersister.Save("event-before-input");
-        Assert.True(firstStore.TryReserveContributedInput(firstSession.StoreId, firstSession.InvoiceId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(firstStore.TryReserveContributedInput(firstPersister, firstSession.StoreId, expectedOutPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
         firstPersister.Save("event-after-input");
 
         var replayedStore = testContext.CreateStore();
@@ -126,7 +126,7 @@ public class PayjoinReceiverSessionStoreTests
         var outPoint = new OutPoint(uint256.Parse("4444444444444444444444444444444444444444444444444444444444444444"), 4);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, expiresAt));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, expiresAt));
 
         var reloadedStore = testContext.CreateStore();
         Assert.True(reloadedStore.TryGetSession(session.InvoiceId, out var reloadedSession));
@@ -152,8 +152,8 @@ public class PayjoinReceiverSessionStoreTests
         var outPoint = new OutPoint(uint256.Parse("5555555555555555555555555555555555555555555555555555555555555555"), 5);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
-        Assert.True(store.TryReserveContributedInput(firstSession.StoreId, firstSession.InvoiceId, outPoint, expiresAt));
-        Assert.False(store.TryReserveContributedInput(secondSession.StoreId, secondSession.InvoiceId, outPoint, expiresAt));
+        Assert.True(store.TryReserveContributedInput(store.Owner(firstSession.InvoiceId), firstSession.StoreId, outPoint, expiresAt));
+        Assert.False(store.TryReserveContributedInput(store.Owner(secondSession.InvoiceId), secondSession.StoreId, outPoint, expiresAt));
     }
 
     [Fact]
@@ -165,8 +165,8 @@ public class PayjoinReceiverSessionStoreTests
         var outPoint = new OutPoint(uint256.Parse("6666666666666666666666666666666666666666666666666666666666666666"), 6);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, expiresAt));
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, expiresAt));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, expiresAt));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, expiresAt));
 
         using var context = testContext.CreateDbContext();
         Assert.Single(context.ReceiverInputReservations);
@@ -182,8 +182,8 @@ public class PayjoinReceiverSessionStoreTests
         var secondOutPoint = new OutPoint(uint256.Parse("8888888888888888888888888888888888888888888888888888888888888888"), 8);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
 
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, firstOutPoint, expiresAt));
-        Assert.False(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, secondOutPoint, expiresAt));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, firstOutPoint, expiresAt));
+        Assert.False(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, secondOutPoint, expiresAt));
     }
 
     [Fact]
@@ -213,7 +213,7 @@ public class PayjoinReceiverSessionStoreTests
         var session = CreateSession(store, "invoice-remove-reservation");
         var outPoint = new OutPoint(uint256.Parse("9999999999999999999999999999999999999999999999999999999999999999"), 9);
 
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, DateTimeOffset.UtcNow.AddMinutes(10)));
         Assert.True(store.RemoveSession(session.InvoiceId));
 
         using var context = testContext.CreateDbContext();
@@ -228,16 +228,8 @@ public class PayjoinReceiverSessionStoreTests
         var expiredSession = CreateSession(store, "invoice-expired-reservation");
         var activeSession = CreateSession(store, "invoice-active-reservation");
 
-        Assert.True(store.TryReserveContributedInput(
-            expiredSession.StoreId,
-            expiredSession.InvoiceId,
-            new OutPoint(uint256.Parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 1),
-            DateTimeOffset.UtcNow.AddMinutes(-1)));
-        Assert.True(store.TryReserveContributedInput(
-            activeSession.StoreId,
-            activeSession.InvoiceId,
-            new OutPoint(uint256.Parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 2),
-            DateTimeOffset.UtcNow.AddMinutes(10)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(expiredSession.InvoiceId), expiredSession.StoreId, new OutPoint(uint256.Parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 1), DateTimeOffset.UtcNow.AddMinutes(-1)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(activeSession.InvoiceId), activeSession.StoreId, new OutPoint(uint256.Parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 2), DateTimeOffset.UtcNow.AddMinutes(10)));
 
         var affected = store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow);
 
@@ -255,11 +247,7 @@ public class PayjoinReceiverSessionStoreTests
         var session = CreateSession(store, "invoice-expired-metadata");
         var reservedOutPoint = new OutPoint(uint256.Parse("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"), 3);
 
-        Assert.True(store.TryReserveContributedInput(
-            session.StoreId,
-            session.InvoiceId,
-            reservedOutPoint,
-            DateTimeOffset.UtcNow.AddMinutes(-1)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, reservedOutPoint, DateTimeOffset.UtcNow.AddMinutes(-1)));
 
         store.CleanupExpiredInputReservations(DateTimeOffset.UtcNow);
 

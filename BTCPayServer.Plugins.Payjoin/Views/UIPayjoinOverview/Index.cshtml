@@ -232,9 +232,16 @@ else if (store.Status.Severity == "danger")
                                         @if (Model.CanRetryBridges)
                                         {
                                             <td class="text-end">
-                                                <form method="post" asp-action="RetryBridge" asp-route-invoiceId="@bridge.InvoiceId">
-                                                    <button type="submit" class="btn btn-sm btn-outline-secondary" text-translate="true">Retry</button>
-                                                </form>
+                                                @if (bridge.RetryAllowed)
+                                                {
+                                                    <form method="post" asp-action="RetryBridge" asp-route-invoiceId="@bridge.InvoiceId">
+                                                        <button type="submit" class="btn btn-sm btn-outline-secondary" text-translate="true">Retry</button>
+                                                    </form>
+                                                }
+                                                else
+                                                {
+                                                    <span class="text-muted" text-translate="true">Manual recovery required</span>
+                                                }
                                             </td>
                                         }
                                     </tr>

@@ -27,9 +27,8 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
     public async Task<ReceiverInputContributionResult> TryContributeInputsAsync(
         WantsInputs proposal,
         string storeId,
-        string invoiceId,
         DateTimeOffset reservationExpiresAt,
-        CancellationToken cancellationToken)
+        PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister owner, CancellationToken cancellationToken)
     {
         // Retry model: the candidate set is snapshotted once per attempt and failed entries are
         // removed locally. The wallet view does not exclude coins reserved by concurrent sessions,
@@ -42,7 +41,7 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
         var allCandidates = (await _walletAdapter.GetInputCandidatesAsync(storeId, cancellationToken).ConfigureAwait(false)).ToList();
         try
         {
-            return TryContributeFromCandidates(proposal, allCandidates, storeId, invoiceId, reservationExpiresAt);
+            return TryContributeFromCandidates(proposal, allCandidates, storeId, reservationExpiresAt, owner);
         }
         finally
         {
@@ -60,8 +59,7 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
         WantsInputs proposal,
         List<PayjoinReceiverInputCandidate> allCandidates,
         string storeId,
-        string invoiceId,
-        DateTimeOffset reservationExpiresAt)
+        DateTimeOffset reservationExpiresAt, PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister owner)
     {
         var candidates = new List<PayjoinReceiverInputCandidate>(allCandidates);
         var contributionFailures = new List<string>();
@@ -96,7 +94,7 @@ internal sealed class PayjoinReceiverInputSelector : IPayjoinReceiverInputSelect
             {
                 withInputs = _proposalOperations.ContributeInputs(proposal, selected);
                 var contributedCoins = new[] { selected.Coin };
-                if (_sessionStore.TryReserveContributedInput(storeId, invoiceId, contributedCoins[0].OutPoint, reservationExpiresAt))
+                if (_sessionStore.TryReserveContributedInput(owner, storeId, contributedCoins[0].OutPoint, reservationExpiresAt))
                 {
                     return ReceiverInputContributionResult.Success(withInputs, contributedCoins);
                 }
