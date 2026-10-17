@@ -9,6 +9,9 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 public sealed class PayjoinReceiverRelayClient : IPayjoinReceiverRelayClient
 {
+    // Matches rust-payjoin's directory::ENCAPSULATED_MESSAGE_BYTES.
+    internal const int MaxResponseBodySize = 8192;
+
     // Exceeds the payjoin directory's ~30s long-poll window so an empty mailbox returns a 202 instead of timing out client-side.
     // TODO: Make this timeout (and the assumed directory long-poll window) configurable per store/directory. It is hardcoded
     // against the payjoin-mailroom default of 30s, so a directory configured with a longer window would silently push empty
@@ -44,6 +47,7 @@ public sealed class PayjoinReceiverRelayClient : IPayjoinReceiverRelayClient
         {
             using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
+            await response.Content.LoadIntoBufferAsync(MaxResponseBodySize, timeoutCts.Token).ConfigureAwait(false);
             return await response.Content.ReadAsByteArrayAsync(timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (IsExpectedRelayTimeout(ex, timeoutCts.Token, cancellationToken))
