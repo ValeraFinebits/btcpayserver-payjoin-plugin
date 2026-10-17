@@ -18,6 +18,47 @@ public class PayjoinAccountingPaymentServiceTests
 {
     private static readonly KeyPath ExpectedKeyPath = new("0/18");
 
+    [Theory]
+    [InlineData("missing-pin")]
+    [InlineData("zero-pin")]
+    [InlineData("negative-pin")]
+    [InlineData("missing-original")]
+    [InlineData("underpaid")]
+    [InlineData("overpaid")]
+    public async Task InconsistentAmountsRequireManualRecoveryWithoutWritingPayments(string kind)
+    {
+        using var fixture = EndToEndFixture.Create();
+        fixture.SetFinalTransactionConfirmations(1);
+        var bridge = fixture.Bridge with
+        {
+            EffectiveInvoiceValueSats = kind switch
+            {
+                "missing-pin" => null,
+                "zero-pin" => 0,
+                "negative-pin" => -1,
+                _ => fixture.AccountedValueSats
+            },
+            FallbackValueSats = kind switch
+            {
+                "missing-original" => null,
+                "underpaid" => fixture.AccountedValueSats - 1,
+                "overpaid" => fixture.AccountedValueSats + 1,
+                _ => fixture.AccountedValueSats
+            }
+        };
+        var nativePayment = Assert.Single(fixture.World.Materialize().GetPayments(true));
+
+        await Assert.ThrowsAsync<PayjoinAccountingReconciliationDataException>(() =>
+            fixture.Service.ReconcileWithFinalTransactionAsync(bridge, TestContext.Current.CancellationToken));
+
+        Assert.Single(fixture.World.Rows);
+        var preserved = Assert.Single(fixture.World.Materialize().GetPayments(true));
+        Assert.Equal(nativePayment.Value, preserved.Value);
+        Assert.Equal(nativePayment.Status, preserved.Status);
+        Assert.Equal(0, fixture.InvoiceNeedUpdateEvents);
+        Assert.Equal(0, fixture.StalePaidOverCorrections);
+    }
+
     [Fact]
     public void ResolveFinalOutputIndexFallsBackToSettlementScriptWhenExpectedFinalOutputIndexMissing()
     {

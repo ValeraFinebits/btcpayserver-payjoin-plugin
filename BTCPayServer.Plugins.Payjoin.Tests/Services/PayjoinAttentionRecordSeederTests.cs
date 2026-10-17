@@ -58,7 +58,7 @@ public class PayjoinAttentionRecordSeederTests
         var seeder = context.CreateAttentionRecordSeeder();
         var bridgeService = context.CreateBridgeService();
         var seededAt = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        await bridgeService.CreateOrGetAsync(
+        await context.SeedBridgeAsync(
             new CreatePayjoinAccountingBridgeRequest("invoice-unrelated", "store-1", PayjoinConstants.BitcoinCode, "BTC-BTC", seededAt.AddHours(2)),
             CancellationToken.None);
         var unrelated = await bridgeService.TryGetByInvoiceIdAsync("invoice-unrelated", CancellationToken.None);
@@ -115,7 +115,7 @@ public class PayjoinAttentionRecordSeederTests
         var seeder = context.CreateAttentionRecordSeeder();
         var bridgeService = context.CreateBridgeService();
         var now = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        await bridgeService.CreateOrGetAsync(
+        await context.SeedBridgeAsync(
             new CreatePayjoinAccountingBridgeRequest(
                 "invoice-existing", "store-1", PayjoinConstants.BitcoinCode, "BTC-BTC", now.AddHours(1),
                 ExpectedFinalTransactionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

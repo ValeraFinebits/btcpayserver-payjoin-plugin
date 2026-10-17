@@ -46,16 +46,12 @@ public class PayjoinSettlementFlowTests
         var store = testContext.CreateStore();
         var bridgeService = testContext.CreateBridgeService();
         CreateSession(store);
-        CreateBridge(bridgeService);
-        var processor = CreateProcessor(store, bridgeService);
+        CreateBridge(testContext);
         using var settlementKey = new Key();
         var settlementScript = settlementKey.PubKey.WitHash.ScriptPubKey.ToBytes();
         var settlementKeyPath = keyPath is null ? null : new KeyPath(keyPath);
 
-        processor.PersistCommittedOutputs(
-            InvoiceId,
-            ["commit-outputs-event"],
-            new PayjoinReceiverOutputBuilder.OutputReplacement(
+        store.CommitReceiverOutputs(store.Owner(InvoiceId), ["commit-outputs-event"], new PayjoinReceiverOutputBuilder.OutputReplacement(
                 [new PayjoinTxOut(1234, settlementScript)],
                 settlementScript,
                 1234,
@@ -77,17 +73,13 @@ public class PayjoinSettlementFlowTests
         var store = testContext.CreateStore();
         var bridgeService = testContext.CreateBridgeService();
         CreateSession(store);
-        CreateBridge(bridgeService);
-        var processor = CreateProcessor(store, bridgeService);
+        CreateBridge(testContext);
         using var settlementKey = new Key();
         var settlementScript = settlementKey.PubKey.WitHash.ScriptPubKey.ToBytes();
         var settlementKeyPath = new KeyPath("1/42");
 
         testContext.FailSaveChanges = true;
-        Assert.Throws<DbUpdateException>(() => processor.PersistCommittedOutputs(
-            InvoiceId,
-            ["commit-outputs-event"],
-            new PayjoinReceiverOutputBuilder.OutputReplacement(
+        Assert.Throws<DbUpdateException>(() => store.CommitReceiverOutputs(store.Owner(InvoiceId), ["commit-outputs-event"], new PayjoinReceiverOutputBuilder.OutputReplacement(
                 [new PayjoinTxOut(1234, settlementScript)],
                 settlementScript,
                 1234,
@@ -99,7 +91,7 @@ public class PayjoinSettlementFlowTests
         var bridge = Assert.Single(context.AccountingBridges.Where(x => x.InvoiceId == InvoiceId));
         Assert.Null(bridge.SettlementScript);
         Assert.Null(bridge.SettlementKeyPath);
-        Assert.Null(bridge.EffectiveInvoiceValueSats);
+        Assert.Equal(1234, bridge.EffectiveInvoiceValueSats);
     }
 
     [Fact]
@@ -110,7 +102,7 @@ public class PayjoinSettlementFlowTests
         var bridgeService = testContext.CreateBridgeService();
         CreateSession(store);
         var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
-        CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
+        CreateBridge(testContext, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
         var relaySender = new PostAttemptRecordingRelaySender();
         var publisher = CreateInvoiceEventPublisher(out var invoiceEvents, out var aggregator);
         using var aggregatorLifetime = aggregator;
@@ -118,7 +110,7 @@ public class PayjoinSettlementFlowTests
         var finalizer = CreateFinalizer(store, bridgeService, relaySender, publisher);
 
         await Assert.ThrowsAsync<PostAttemptedException>(() => finalizer.FinalizeCoreAsync(
-            CreateFinalizationContext(),
+            CreateFinalizationContext(store),
             persister =>
             {
                 persister.Save("finalize-event");
@@ -149,7 +141,7 @@ public class PayjoinSettlementFlowTests
         var bridgeService = testContext.CreateBridgeService();
         CreateSession(store);
         var proposal = CreateProposal(out _, out var settlementScript);
-        CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
+        CreateBridge(testContext, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
         var relaySender = new PostAttemptRecordingRelaySender();
         var publisher = CreateInvoiceEventPublisher(out var invoiceEvents, out var aggregator);
         using var aggregatorLifetime = aggregator;
@@ -158,7 +150,7 @@ public class PayjoinSettlementFlowTests
 
         testContext.FailSaveChanges = true;
         await Assert.ThrowsAsync<DbUpdateException>(() => finalizer.FinalizeCoreAsync(
-            CreateFinalizationContext(),
+            CreateFinalizationContext(store),
             persister =>
             {
                 persister.Save("finalize-event");
@@ -184,14 +176,14 @@ public class PayjoinSettlementFlowTests
         var bridgeService = testContext.CreateBridgeService();
         CreateSession(store);
         var proposal = CreateProposal(out _, out var settlementScript);
-        CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
+        CreateBridge(testContext, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
         var relaySender = new PostAttemptRecordingRelaySender();
         var publisher = CreateInvoiceEventPublisher(out var invoiceEvents, out var aggregator);
         using var aggregatorLifetime = aggregator;
         using var subscription = aggregator.Subscribe<PayjoinInvoiceEvent>(invoiceEvents.Add);
         var finalizer = CreateFinalizer(store, bridgeService, relaySender, publisher);
         await Assert.ThrowsAsync<PostAttemptedException>(() => finalizer.FinalizeCoreAsync(
-            CreateFinalizationContext(),
+            CreateFinalizationContext(store),
             persister =>
             {
                 persister.Save("finalize-event");
@@ -202,8 +194,8 @@ public class PayjoinSettlementFlowTests
 
         // The replay path re-records the expectation and re-posts; with the finalization already
         // persisted it must observe the bridge up to date and change nothing.
-        await finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(), proposal, CancellationToken.None);
-        await Assert.ThrowsAsync<PostAttemptedException>(() => finalizer.PostAsync(CreateFinalizationContext(), proposal, CancellationToken.None));
+        await finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(store), proposal, CancellationToken.None);
+        await Assert.ThrowsAsync<PostAttemptedException>(() => finalizer.PostAsync(CreateFinalizationContext(store), proposal, CancellationToken.None));
 
         var bridgeAfterReplay = await bridgeService.TryGetByInvoiceIdAsync(InvoiceId, CancellationToken.None);
         Assert.Equal(bridgeAfterFinalize, bridgeAfterReplay);
@@ -305,7 +297,7 @@ public class PayjoinSettlementFlowTests
         var bridgeService = testContext.CreateBridgeService();
         var paymentService = new ObservedValuePaymentService(observedValueSats: 999);
         CreateBridge(
-            bridgeService,
+            testContext,
             expectedFinalTransactionId: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             expectedFinalValueSats: 1234);
         using var poller = CreatePoller(store, bridgeService, paymentService);
@@ -327,7 +319,7 @@ public class PayjoinSettlementFlowTests
         var bridgeService = testContext.CreateBridgeService();
         var paymentService = new ObservedValuePaymentService(observedValueSats: 1234);
         CreateBridge(
-            bridgeService,
+            testContext,
             expectedFinalTransactionId: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             expectedFinalValueSats: 1234);
         using var poller = CreatePoller(store, bridgeService, paymentService);
@@ -351,18 +343,20 @@ public class PayjoinSettlementFlowTests
     }
 
     private static void CreateBridge(
-        PayjoinAccountingBridgeService bridgeService,
+        RelationalPluginTestContext fixture,
         string? settlementScriptHex = null,
         string? expectedFinalTransactionId = null,
         long? expectedFinalValueSats = null)
     {
-        bridgeService.CreateOrGetAsync(
+        fixture.SeedBridgeAsync(
             new CreatePayjoinAccountingBridgeRequest(
                 InvoiceId,
                 StoreId,
                 PayjoinConstants.BitcoinCode,
                 "BTC-BTC",
                 DateTimeOffset.UtcNow.AddHours(1),
+                EffectiveInvoiceValueSats: 1234,
+                FallbackValueSats: 1234,
                 SettlementScript: settlementScriptHex,
                 ExpectedFinalTransactionId: expectedFinalTransactionId,
                 ExpectedFinalOutputIndex: expectedFinalTransactionId is null ? null : 1,
@@ -379,10 +373,10 @@ public class PayjoinSettlementFlowTests
             .ToArray();
     }
 
-    private static PayjoinReceiverProposalFinalizationContext CreateFinalizationContext()
+    private static PayjoinReceiverProposalFinalizationContext CreateFinalizationContext(PayjoinReceiverSessionStore store)
     {
         return new PayjoinReceiverProposalFinalizationContext(
-            persister: null!,
+            store.Owner(InvoiceId),
             StoreId,
             InvoiceId,
             PayjoinConstants.BitcoinCode);
@@ -408,24 +402,6 @@ public class PayjoinSettlementFlowTests
         invoiceEvents = [];
         aggregator = new EventAggregator(new Logs());
         return new PayjoinInvoiceEventPublisher(aggregator, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
-    }
-
-    private static PayjoinReceiverSessionProcessor CreateProcessor(
-        PayjoinReceiverSessionStore store,
-        PayjoinAccountingBridgeService bridgeService)
-    {
-        return new PayjoinReceiverSessionProcessor(
-            store,
-            new UnusedSessionGuard(),
-            new UnusedStateProcessor(),
-            new UnusedOutputBuilder(),
-            new UnusedInputSelector(),
-            bridgeService,
-            new UnusedPaymentService(),
-            new UnusedInvoiceLookup(),
-            new UnusedProposalFinalizer(),
-            CreateNetworkProvider(),
-            NullLogger<PayjoinReceiverSessionProcessor>.Instance);
     }
 
     private static PayjoinReceiverPoller CreatePoller(
@@ -541,48 +517,15 @@ public class PayjoinSettlementFlowTests
         public Task<ProcessPsbt> CreateContributedInputSignerAsync(string storeId, ReceivedCoin[] receiverCoins, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
-    private sealed class UnusedSessionGuard : IPayjoinReceiverSessionGuard
-    {
-        public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken) => throw new NotSupportedException();
-    }
 
-    private sealed class UnusedStateProcessor : IPayjoinReceiverStateProcessor
-    {
-        public Task ProcessInitializedAsync(PayjoinReceiverStateContext context, Initialized initialized, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task ProcessReplyableErrorAsync(PayjoinReceiverStateContext context, HasReplyableError replyableError, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task ProcessPendingFallbackAsync(PayjoinReceiverStateContext context, global::Payjoin.ReceiverPendingFallback pendingFallback, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task ProcessUncheckedProposalAsync(PayjoinReceiverStateContext context, UncheckedOriginalPayload proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task ProcessMaybeInputsOwnedAsync(PayjoinReceiverStateContext context, MaybeInputsOwned proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task ProcessMaybeInputsSeenAsync(PayjoinReceiverStateContext context, MaybeInputsSeen proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task ProcessOutputsUnknownAsync(PayjoinReceiverStateContext context, OutputsUnknown proposal, Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync, CancellationToken cancellationToken) => throw new NotSupportedException();
-    }
 
-    private sealed class UnusedOutputBuilder : IPayjoinReceiverOutputBuilder
-    {
-        public Task<PayjoinReceiverOutputBuilder.OutputBuildResult> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken) => throw new NotSupportedException();
-    }
 
-    private sealed class UnusedInputSelector : IPayjoinReceiverInputSelector
-    {
-        public Task<ReceiverInputContributionResult> TryContributeInputsAsync(WantsInputs proposal, string storeId, string invoiceId, DateTimeOffset reservationExpiresAt, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<ReceivedCoin[]?> TryGetPersistedContributedCoinsAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken) => throw new NotSupportedException();
-    }
 
-    private sealed class UnusedPaymentService : IPayjoinAccountingPaymentService
-    {
-        public Task<PaymentEntity?> ReconcileWithFinalTransactionAsync(PayjoinAccountingBridgeState bridge, CancellationToken cancellationToken) => throw new NotSupportedException();
-    }
 
-    private sealed class UnusedInvoiceLookup : IPayjoinInvoiceLookup
-    {
-        public Task<InvoiceEntity?> GetInvoiceAsync(string invoiceId) => throw new NotSupportedException();
-    }
 
-    private sealed class UnusedProposalFinalizer : IPayjoinReceiverProposalFinalizer
-    {
-        public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, WantsFeeRange proposal, ReceivedCoin[] receiverCoins, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, ProvisionalProposal proposal, ReceivedCoin[] receiverCoins, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task EnsureExpectedFinalTransactionAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken) => throw new NotSupportedException();
-    }
+
+
+
+
+
 }

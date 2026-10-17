@@ -117,7 +117,7 @@ public class PayjoinAccountingUpgradeIntegrationTests : UnitTestBase
             }
 
             var detector = new PostgresPayjoinUniqueConstraintViolationDetector();
-            var bridgeService = new PayjoinAccountingBridgeService(pluginFactory, detector, new PayjoinSessionBuildLock());
+            var bridgeService = new PayjoinAccountingBridgeService(pluginFactory, new PayjoinSessionBuildLock());
             var reader = new ObservedTransactionReader(finalTransaction);
             var accounting = new PayjoinAccountingPaymentService(
                 new PayjoinInvoiceLookup(invoiceRepository),

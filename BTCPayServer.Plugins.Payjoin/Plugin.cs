@@ -33,7 +33,8 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
             provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>(),
             provider.GetRequiredService<PayjoinMailroomManager>(),
-            provider.GetService<ILogger<PayjoinReceiverSessionStore>>()));
+            provider.GetService<ILogger<PayjoinReceiverSessionStore>>(),
+            provider.GetRequiredService<IPayjoinInvoiceEventPublisher>()));
         applicationBuilder.AddSingleton(provider => new PayjoinSeenInputStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>()));
         applicationBuilder.AddSingleton<IPayjoinWalletOwnershipService, PayjoinWalletOwnershipService>();
@@ -48,7 +49,6 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinReceiverInputSelector, PayjoinReceiverInputSelector>();
         applicationBuilder.AddSingleton<IPayjoinAccountingBridgeService>(provider => new PayjoinAccountingBridgeService(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
-            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>(),
             provider.GetRequiredService<PayjoinSessionBuildLock>(),
             provider.GetRequiredService<IPayjoinInvoiceEventPublisher>()));
         applicationBuilder.AddSingleton<IPayjoinAttentionRecordSeeder, PayjoinAttentionRecordSeeder>();

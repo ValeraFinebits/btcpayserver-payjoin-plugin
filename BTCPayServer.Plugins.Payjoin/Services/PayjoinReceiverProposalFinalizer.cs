@@ -17,22 +17,19 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly BTCPayNetworkProvider _networkProvider;
-    private readonly IPayjoinInvoiceEventPublisher? _invoiceEvents;
 
     public PayjoinReceiverProposalFinalizer(
         IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinReceiverProposalSigner proposalSigner,
         IPayjoinAccountingBridgeService accountingBridgeService,
         PayjoinReceiverSessionStore sessionStore,
-        BTCPayNetworkProvider networkProvider,
-        IPayjoinInvoiceEventPublisher? invoiceEvents = null)
+        BTCPayNetworkProvider networkProvider)
     {
         _relayRequestSender = relayRequestSender;
         _proposalSigner = proposalSigner;
         _accountingBridgeService = accountingBridgeService;
         _sessionStore = sessionStore;
         _networkProvider = networkProvider;
-        _invoiceEvents = invoiceEvents;
     }
 
     public async Task FinalizeAsync(
@@ -55,7 +52,11 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         ReceivedCoin[] receiverCoins,
         CancellationToken cancellationToken)
     {
+        RequireCurrentContext(context);
+        if (await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false) is null)
+            throw new PayjoinAccountingReconciliationDataException("Receiver accounting bridge is missing; manual recovery required.");
         var signer = await _proposalSigner.CreateContributedInputSignerAsync(context.StoreId, receiverCoins, cancellationToken).ConfigureAwait(false);
+        RequireCurrentContext(context);
         using var transition = proposal.FinalizeProposal(signer);
         await FinalizeCoreAsync(context, transition.Save, cancellationToken).ConfigureAwait(false);
     }
@@ -71,43 +72,24 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         // transaction: once the session can hand the proposal to the sender, the accounting side
         // already knows which transaction to reconcile against. The replay path below stays as a
         // defensive backfill.
+        RequireCurrentContext(context);
+        var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false)
+            ?? throw new PayjoinAccountingReconciliationDataException("Receiver accounting bridge is missing; manual recovery required.");
+        RequireCurrentContext(context);
         var capturingPersister = new CapturingReceiverSessionPersister();
         var payjoinProposal = saveTransition(capturingPersister);
-        string? preparedTransactionId = null;
         try
         {
-            var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false);
-            if (bridge is null)
-            {
-                _sessionStore.AppendEventsWithAccountingUpdate(context.InvoiceId, capturingPersister.Events, updateBridge: null);
-            }
-            else
-            {
-                var btcPayNetwork = _networkProvider.GetNetwork<BTCPayNetwork>(context.CryptoCode)
-                    ?? throw new InvalidOperationException($"Network '{context.CryptoCode}' is not available.");
-                var finalTransaction = PSBT.Parse(payjoinProposal.Psbt(), btcPayNetwork.NBitcoinNetwork).GetGlobalTransaction();
-                var finalTransactionId = finalTransaction.GetHash().ToString();
-                var expectedFinalOutput = TryGetSettlementOutput(bridge, finalTransaction);
-                // TODO: Remove the sender-PSBT fallback and require the invoice-pinned settlement amount.
-                var expectedFinalValueSats = expectedFinalOutput?.ValueSats ?? bridge.EffectiveInvoiceValueSats ?? bridge.FallbackValueSats;
-                _sessionStore.AppendEventsWithAccountingUpdate(
-                    context.InvoiceId,
-                    capturingPersister.Events,
-                    bridgeData =>
-                    {
-                        bridgeData.ExpectedFinalTransactionId = finalTransactionId;
-                        bridgeData.ExpectedFinalOutputIndex = expectedFinalOutput?.Index;
-                        bridgeData.ExpectedFinalValueSats = expectedFinalValueSats;
-                        if (bridgeData.Status == PayjoinAccountingBridgeStatus.PendingFallback)
-                        {
-                            bridgeData.Status = PayjoinAccountingBridgeStatus.PendingFinalTransaction;
-                        }
-                    });
-                if (!string.Equals(bridge.ExpectedFinalTransactionId, finalTransactionId, StringComparison.OrdinalIgnoreCase))
-                {
-                    preparedTransactionId = finalTransactionId;
-                }
-            }
+            var btcPayNetwork = _networkProvider.GetNetwork<BTCPayNetwork>(context.CryptoCode)
+                ?? throw new InvalidOperationException($"Network '{context.CryptoCode}' is not available.");
+            var finalTransaction = PSBT.Parse(payjoinProposal.Psbt(), btcPayNetwork.NBitcoinNetwork).GetGlobalTransaction();
+            var finalTransactionId = finalTransaction.GetHash().ToString();
+            var expectedFinalOutput = TryGetSettlementOutput(bridge, finalTransaction);
+            if (expectedFinalOutput is null || bridge.ExpectedFinalTransactionId is { } expected &&
+                !string.Equals(expected, finalTransactionId, StringComparison.OrdinalIgnoreCase))
+                throw new PayjoinAccountingReconciliationDataException("Proposal contradicts the saved settlement; manual recovery required.");
+            _sessionStore.CommitProposal(context.Persister, capturingPersister.Events,
+                new PayjoinReceiverSessionStore.ProposalSettlement(finalTransactionId, expectedFinalOutput.Index, expectedFinalOutput.ValueSats));
         }
         catch
         {
@@ -118,10 +100,6 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
 
         try
         {
-            if (preparedTransactionId is not null)
-            {
-                _invoiceEvents?.Publish(PayjoinInvoiceEventKind.ProposalPrepared, context.InvoiceId, preparedTransactionId);
-            }
             await PostAsync(context, payjoinProposal, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -135,37 +113,35 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         IPayjoinProposal payjoinProposal,
         CancellationToken cancellationToken)
     {
-        // The signed PSBT only exists after finalize_proposal runs the signing callback, so the expected
-        // settlement transaction is recorded here (after Save) from the resulting proposal rather than before.
-        // The event-log save and this bridge write are separate transactions, so the proposal replay path
-        // also calls this to bring the bridge up to date whenever the earlier attempt did not complete.
+        RequireCurrentContext(context);
+        // Normal finalization commits the proposal, expectation and history protection together.
+        // Backfill older event logs before reposting; this write also protects the retained session
+        // against deletion and fails if the session has already disappeared.
         var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false);
         if (bridge is null)
         {
-            return;
+            throw new PayjoinAccountingReconciliationDataException("Receiver accounting bridge is missing; manual recovery required.");
         }
 
         var btcPayNetwork = _networkProvider.GetNetwork<BTCPayNetwork>(context.CryptoCode)
             ?? throw new InvalidOperationException($"Network '{context.CryptoCode}' is not available.");
         var finalTransaction = PSBT.Parse(payjoinProposal.Psbt(), btcPayNetwork.NBitcoinNetwork).GetGlobalTransaction();
         var finalTransactionId = finalTransaction.GetHash().ToString();
-        if (string.Equals(bridge.ExpectedFinalTransactionId, finalTransactionId, StringComparison.OrdinalIgnoreCase))
+        var actualOutput = TryGetSettlementOutput(bridge, finalTransaction);
+        if (actualOutput is null || bridge.ExpectedFinalOutputIndex.HasValue && bridge.ExpectedFinalOutputIndex != actualOutput.Index ||
+            bridge.ExpectedFinalValueSats.HasValue && bridge.ExpectedFinalValueSats != actualOutput.ValueSats)
+            throw new PayjoinAccountingReconciliationDataException("Saved settlement contradicts this proposal.");
+        var expectedIdMatches = string.Equals(bridge.ExpectedFinalTransactionId, finalTransactionId, StringComparison.OrdinalIgnoreCase);
+        if (expectedIdMatches && bridge.ExpectedFinalOutputIndex.HasValue && bridge.ExpectedFinalValueSats.HasValue)
         {
             return;
         }
 
-        var expectedFinalOutput = TryGetSettlementOutput(bridge, finalTransaction);
-        // TODO: Remove the sender-PSBT fallback and require the invoice-pinned settlement amount.
-        var updatedBridge = await _accountingBridgeService.SetExpectedFinalTransactionAsync(
-            context.InvoiceId,
-            finalTransactionId,
-            expectedFinalOutput?.Index,
-            expectedFinalOutput?.ValueSats ?? bridge.EffectiveInvoiceValueSats ?? bridge.FallbackValueSats,
-            cancellationToken).ConfigureAwait(false);
-        if (updatedBridge is not null && string.Equals(updatedBridge.ExpectedFinalTransactionId, finalTransactionId, StringComparison.OrdinalIgnoreCase))
-        {
-            _invoiceEvents?.Publish(PayjoinInvoiceEventKind.ProposalPrepared, context.InvoiceId, finalTransactionId);
-        }
+        if (bridge.ExpectedFinalTransactionId is not null && !expectedIdMatches)
+            throw new PayjoinAccountingReconciliationDataException("Saved expected transaction contradicts this proposal; manual recovery required.");
+
+        _sessionStore.BackfillProposalExpectation(context.Persister,
+            new PayjoinReceiverSessionStore.ProposalSettlement(finalTransactionId, actualOutput.Index, actualOutput.ValueSats));
     }
 
     public async Task PostAsync(
@@ -173,6 +149,10 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         IPayjoinProposal proposal,
         CancellationToken cancellationToken)
     {
+        RequireCurrentContext(context);
+        var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false);
+        if (bridge is null) throw new PayjoinAccountingReconciliationDataException("Receiver accounting bridge is missing; manual recovery required.");
+        RequireCurrentContext(context);
         var relayResponse = await _relayRequestSender.SendAsync(
             context.StoreId,
             context.InvoiceId,
@@ -182,11 +162,17 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         var responseBody = relayResponse.ResponseBody;
         var requestResponse = relayResponse.RequestContext;
         using var relayRequestContext = requestResponse;
+        RequireCurrentContext(context);
 
         // TODO: Preserve POST error types in FFI and retry transient failures from the persisted proposal.
         // https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/198
         using var transition = proposal.ProcessResponse(responseBody, requestResponse.ClientResponse);
         using var _ = transition.Save(context.Persister);
+    }
+
+    private void RequireCurrentContext(PayjoinReceiverProposalFinalizationContext context)
+    {
+        _sessionStore.RequireNegotiationAllowed(context.Persister);
     }
 
     private static ExpectedFinalOutput? TryGetSettlementOutput(PayjoinAccountingBridgeState bridge, Transaction finalTransaction)
@@ -203,9 +189,10 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         }
 
         var settlementScript = Script.FromBytesUnsafe(settlementScriptBytes);
-        return finalTransaction.Outputs
+        var matches = finalTransaction.Outputs
             .Select((output, index) => new ExpectedFinalOutput(index, output.Value.Satoshi, output.ScriptPubKey))
-            .FirstOrDefault(output => output.ScriptPubKey == settlementScript);
+            .Where(output => output.ScriptPubKey == settlementScript).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
     }
 
     private sealed record ExpectedFinalOutput(int Index, long ValueSats, Script ScriptPubKey);

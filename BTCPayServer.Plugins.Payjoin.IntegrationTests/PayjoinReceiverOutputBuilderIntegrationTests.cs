@@ -157,7 +157,7 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
             invoiceContext.InvoiceId,
             invoiceContext.InvoiceScript.ToBytes(),
             preserveReceiverScript: true,
-            pinnedSettlementAmountSats: null,
+            pinnedSettlementAmountSats: SettlementAmountSats,
             cancellationToken: cts.Token).ConfigureAwait(true);
 
         if (destination == "matching")
@@ -172,7 +172,7 @@ public class PayjoinReceiverOutputBuilderIntegrationTests : UnitTestBase
                 Assert.Equal<uint>(0, result.SettlementKeyPath.Indexes[0]);
             }
             Assert.Equal(
-                checked((ulong)Money.Coins(invoiceContext.ExpectedDue).Satoshi),
+                checked((ulong)SettlementAmountSats),
                 result.SettlementAmountSats);
         }
         else
