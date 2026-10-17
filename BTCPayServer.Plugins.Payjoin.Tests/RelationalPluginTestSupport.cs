@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using System.Diagnostics.CodeAnalysis;
+using System.Data.Common;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
 
@@ -28,9 +30,11 @@ internal sealed class RelationalPluginTestContext : IDisposable
     public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
 
     public PayjoinAccountingBridgeService CreateBridgeService(IPayjoinInvoiceEventPublisher? invoiceEvents = null) =>
-        new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock, invoiceEvents);
+        new(_dbContextFactory, SessionBuildLock, invoiceEvents);
 
     public PayjoinAttentionRecordSeeder CreateAttentionRecordSeeder() => new(_dbContextFactory, _uniqueConstraintViolationDetector, SessionBuildLock);
+
+    public Task<PayjoinAccountingBridgeState> SeedBridgeAsync(CreatePayjoinAccountingBridgeRequest request, CancellationToken token) => _dbContextFactory.SeedBridgeAsync(request, token);
 
     public PayjoinPluginDbContext CreateDbContext() => _dbContextFactory.CreateContext();
 
@@ -100,6 +104,8 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
 
     public bool FailSaveChanges { get; set; }
 
+    public Action<string>? OnReaderExecuting { get; set; }
+
     public Action? BeforeNextSaveChanges { get; set; }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The created SQLite connection is owned and disposed by SqliteOwnedPayjoinPluginDbContext.")]
@@ -111,6 +117,7 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
             connection.Open();
             var dbContextOptions = new DbContextOptionsBuilder<PayjoinPluginDbContext>()
                 .UseSqlite(connection, sqliteOptions => sqliteOptions.CommandTimeout(30))
+                .AddInterceptors(new RecordingQueryInterceptor(this))
                 .Options;
 
             return new SqliteOwnedPayjoinPluginDbContext(dbContextOptions, connection, this);
@@ -125,6 +132,15 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
     public void Dispose()
     {
         _keeperConnection.Dispose();
+    }
+
+    private sealed class RecordingQueryInterceptor(SqliteTestPayjoinPluginDbContextFactory factory) : DbCommandInterceptor
+    {
+        public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            factory.OnReaderExecuting?.Invoke(command.CommandText);
+            return result;
+        }
     }
 
     private sealed class SqliteOwnedPayjoinPluginDbContext : PayjoinPluginDbContext
@@ -195,5 +211,55 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
             await base.DisposeAsync().ConfigureAwait(false);
             await _connection.DisposeAsync().ConfigureAwait(false);
         }
+    }
+}
+
+internal static class AccountingBridgeTestData
+{
+    internal static void SeedBridgeFields(this PayjoinPluginDbContextFactory factory, string invoiceId,
+        Action<BTCPayServer.Plugins.Payjoin.Data.PayjoinAccountingBridgeData> seed)
+    {
+        using var context = factory.CreateContext();
+        seed(context.AccountingBridges.Single(x => x.InvoiceId == invoiceId));
+        var session = context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == invoiceId);
+        if (session is not null) session.AttemptVersion = checked(session.AttemptVersion + 1);
+        context.SaveChanges();
+    }
+
+    internal static PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister Owner(this PayjoinReceiverSessionStore store, string invoiceId)
+    {
+        if (!store.TryGetSession(invoiceId, out var session)) throw new InvalidOperationException("Missing fixture attempt.");
+        return store.CreatePersister(session!);
+    }
+
+    internal static async Task<PayjoinAccountingBridgeState> SeedBridgeAsync(this PayjoinPluginDbContextFactory factory,
+        CreatePayjoinAccountingBridgeRequest request, CancellationToken token)
+    {
+        using var context = factory.CreateContext();
+        var now = DateTimeOffset.UtcNow;
+        context.AccountingBridges.Add(new BTCPayServer.Plugins.Payjoin.Data.PayjoinAccountingBridgeData
+        {
+            InvoiceId = request.InvoiceId,
+            StoreId = request.StoreId,
+            CryptoCode = request.CryptoCode,
+            PaymentMethodId = request.PaymentMethodId,
+            ExpiresAt = request.ExpiresAt,
+            FallbackTransactionId = request.FallbackTransactionId,
+            FallbackOutputIndex = request.FallbackOutputIndex,
+            FallbackValueSats = request.FallbackValueSats,
+            EffectiveInvoiceValueSats = request.EffectiveInvoiceValueSats,
+            SettlementScript = request.SettlementScript,
+            SettlementKeyPath = request.SettlementKeyPath,
+            ExpectedFinalTransactionId = request.ExpectedFinalTransactionId,
+            ExpectedFinalOutputIndex = request.ExpectedFinalOutputIndex,
+            ExpectedFinalValueSats = request.ExpectedFinalValueSats,
+            Status = request.ExpectedFinalTransactionId is null
+                ? BTCPayServer.Plugins.Payjoin.Data.PayjoinAccountingBridgeStatus.PendingFallback
+                : BTCPayServer.Plugins.Payjoin.Data.PayjoinAccountingBridgeStatus.PendingFinalTransaction,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await context.SaveChangesAsync(token).ConfigureAwait(false);
+        return (await new PayjoinAccountingBridgeService(factory, new PayjoinSessionBuildLock()).TryGetByInvoiceIdAsync(request.InvoiceId, token).ConfigureAwait(false))!;
     }
 }

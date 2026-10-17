@@ -80,7 +80,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
             }
         }
 
-        var bridges = await _accountingBridgeService.GetPendingAsync(now, cancellationToken).ConfigureAwait(false);
+        var bridges = await _accountingBridgeService.GetPendingReconciliationAsync(now, cancellationToken).ConfigureAwait(false);
         foreach (var bridge in bridges)
         {
             if (string.IsNullOrWhiteSpace(bridge.ExpectedFinalTransactionId))
@@ -112,7 +112,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
                     bridge.ExpectedFinalOutputIndex,
                     bridge.ExpectedFinalValueSats,
                     DateTimeOffset.UtcNow,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, expectedUpdatedAt: bridge.UpdatedAt).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -121,7 +121,7 @@ public sealed class PayjoinReceiverPoller : BackgroundService
             catch (PayjoinAccountingReconciliationDataException ex)
             {
                 LogPayjoinAccountingReconciliationFailed(_logger, bridge.InvoiceId, ex);
-                await _accountingBridgeService.MarkFailedAsync(bridge.InvoiceId, ex.Message, cancellationToken).ConfigureAwait(false);
+                await _accountingBridgeService.MarkFailedAsync(bridge.InvoiceId, ex.Message, cancellationToken, expectedUpdatedAt: bridge.UpdatedAt).ConfigureAwait(false);
             }
             catch (InvalidOperationException ex)
             {

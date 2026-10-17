@@ -159,7 +159,7 @@ public class UIPayjoinOverviewControllerTests
             _canModifyStoreSettings = canModifyStoreSettings;
             _payjoinV2Enabled = payjoinV2Enabled;
             _registerBitcoinNetwork = registerBitcoinNetwork;
-            BridgeService = new PayjoinAccountingBridgeService(_dbContextFactory, new PostgresPayjoinUniqueConstraintViolationDetector(), new PayjoinSessionBuildLock());
+            BridgeService = new PayjoinAccountingBridgeService(_dbContextFactory, new PayjoinSessionBuildLock());
         }
 
         public PayjoinAccountingBridgeService BridgeService { get; }
@@ -170,7 +170,7 @@ public class UIPayjoinOverviewControllerTests
             string? expectedFinalTransactionId = null,
             string storeId = StoreId)
         {
-            return BridgeService.CreateOrGetAsync(
+            return _dbContextFactory.SeedBridgeAsync(
                 new CreatePayjoinAccountingBridgeRequest(
                     invoiceId,
                     storeId,

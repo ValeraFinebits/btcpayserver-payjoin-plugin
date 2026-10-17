@@ -26,9 +26,13 @@ public sealed class PayjoinReceiverSessionState
         string? contributedInputTransactionId = null,
         long? contributedInputOutputIndex = null,
         IEnumerable<string>? events = null,
-        string? payjoinUri = null)
+        string? payjoinUri = null,
+        Guid sessionInstanceId = default,
+        int attemptVersion = 0)
     {
         InvoiceId = invoiceId;
+        SessionInstanceId = sessionInstanceId;
+        AttemptVersion = attemptVersion;
         StoreId = storeId;
         ReceiverAddress = receiverAddress;
         MonitoringExpiresAt = monitoringExpiresAt;
@@ -48,6 +52,10 @@ public sealed class PayjoinReceiverSessionState
     public string? PayjoinUri { get; }
 
     public string InvoiceId { get; }
+
+    public Guid SessionInstanceId { get; }
+
+    public int AttemptVersion { get; }
 
     public string StoreId { get; }
 

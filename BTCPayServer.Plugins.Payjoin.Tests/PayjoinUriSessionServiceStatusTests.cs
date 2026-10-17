@@ -1,6 +1,8 @@
 using BTCPayServer.Logging;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Plugins.Payjoin.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 using NBXplorer;
@@ -13,25 +15,26 @@ public class PayjoinUriSessionServiceStatusTests
     private const string Destination = "bcrt1qexampledestination";
     private static readonly Uri[] SampleUrls = [new("https://configured.example/endpoint")];
 
-    private static PayjoinUriSessionService CreateService()
+    private static PayjoinUriSessionService CreateService(IPayjoinAccountingBridgeService bridges, PayjoinReceiverSessionStore? store = null)
     {
         return new PayjoinUriSessionService(
             CreateNetworkProvider(),
+            store!,
             null!,
             null!,
             null!,
-            null!,
-            null!,
+            bridges,
             null!,
             NullLogger<PayjoinUriSessionService>.Instance);
     }
 
-    private static Task<PayjoinUriResult> BuildAsync(
+    private static async Task<PayjoinUriResult> BuildAsync(
         PayjoinStoreSettings? storeSettings,
         bool enablePayjoin = true,
         decimal due = 0.1m)
     {
-        return CreateService().BuildAsync(
+        using var fixture = new SessionStoreFixture();
+        return await CreateService(fixture.CreateBridgeService()).BuildAsync(
             PayjoinConstants.BitcoinCode,
             Destination,
             due,
@@ -40,7 +43,7 @@ public class PayjoinUriSessionServiceStatusTests
             "invoice-1",
             "store-1",
             DateTimeOffset.UtcNow.AddHours(1),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken).ConfigureAwait(false);
     }
 
     private static PayjoinStoreSettings CreateSettings(Uri[]? directoryUrls = null, Uri[]? ohttpRelayUrls = null)
@@ -101,6 +104,72 @@ public class PayjoinUriSessionServiceStatusTests
         var result = await BuildAsync(CreateSettings(), due: due);
 
         AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.InvoiceNotPayable, PayjoinUnavailableReasons.InvoiceAmountNotPositive);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedBridgeBlocksCheckoutAndCachedUriWithOrWithoutHeldSession(bool heldSession)
+    {
+        using var fixture = new RelationalPluginTestContext();
+        var store = fixture.CreateStore();
+        var bridges = fixture.CreateBridgeService();
+        await fixture.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest("invoice-1", "store-1", "BTC", "BTC-CHAIN",
+            DateTimeOffset.UtcNow.AddHours(1), EffectiveInvoiceValueSats: 10_000_000), CancellationToken.None);
+        const string cachedUri = "bitcoin:bcrt1qexampledestination?amount=0.1&pj=https://example.com/session";
+        if (heldSession)
+        {
+            store.GetOrCreateSession("invoice-1", Destination, "store-1", DateTimeOffset.UtcNow.AddHours(1), ["bootstrap", "original", "proposal"]);
+            store.StorePayjoinUri("invoice-1", Destination, cachedUri);
+        }
+        await bridges.MarkFailedAsync("invoice-1", "opaque reason without policy keywords", CancellationToken.None);
+        var before = await bridges.TryGetByInvoiceIdAsync("invoice-1", CancellationToken.None);
+        for (var restart = 0; restart < 2; restart++)
+        {
+            var reloadedStore = fixture.CreateStore();
+            var service = CreateService(fixture.CreateBridgeService(), reloadedStore);
+            var result = await service.BuildAsync("BTC", Destination, 0.1m, CreateSettings(), true, "invoice-1", "store-1",
+                DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+            AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUriSessionService.ManualRecoveryRequiredReason);
+            Assert.False(result.Retryable);
+            Assert.Null(reloadedStore.GetServablePayjoinUri("invoice-1", Destination));
+            Assert.Equal(heldSession, reloadedStore.TryGetSession("invoice-1", out var held));
+            if (heldSession)
+            {
+                Assert.Equal(cachedUri, held!.PayjoinUri);
+                Assert.Equal(new[] { "bootstrap", "original", "proposal" }, held.GetEvents());
+                Assert.False(reloadedStore.RemoveSession("invoice-1"));
+                Assert.False(reloadedStore.TryRemoveSessionUnlessNegotiating("invoice-1"));
+            }
+        }
+        Assert.Equal(before, await bridges.TryGetByInvoiceIdAsync("invoice-1", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreparedPendingAttemptReportsWaitingWithoutChangingUriOrRetryPolicy(bool finalTransactionPending)
+    {
+        using var fixture = new RelationalPluginTestContext();
+        var store = fixture.CreateStore();
+        await fixture.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest("invoice-1", "store-1", "BTC", "BTC-CHAIN",
+            DateTimeOffset.UtcNow.AddHours(1), EffectiveInvoiceValueSats: 10_000_000, SettlementScript: "51"), CancellationToken.None);
+        using (var db = fixture.CreateDbContext())
+        {
+            db.AccountingBridges.Single().Status = finalTransactionPending ? PayjoinAccountingBridgeStatus.PendingFinalTransaction : PayjoinAccountingBridgeStatus.PendingFallback;
+            db.SaveChanges();
+        }
+        var session = store.GetOrCreateSession("invoice-1", Destination, "store-1", DateTimeOffset.UtcNow.AddHours(1), ["retained history"]);
+        store.StorePayjoinUri("invoice-1", Destination, "bitcoin:cached-exact-uri", session.SessionInstanceId);
+        var service = CreateService(fixture.CreateBridgeService(), store);
+        var result = await service.BuildAsync("BTC", Destination, 0.1m, CreateSettings(), true, "invoice-1", "store-1",
+            DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+        AssertPlainBip21Fallback(result, PayjoinAvailabilityStatus.TemporarilyUnavailable,
+            "the current Payjoin attempt is being processed or awaiting settlement");
+        Assert.False(result.Retryable);
+        Assert.Null(store.GetServablePayjoinUri("invoice-1", Destination));
+        Assert.Equal(session.SessionInstanceId, store.Owner("invoice-1").SessionInstanceId);
+        Assert.Null(await fixture.CreateBridgeService().TryRetryAsync("invoice-1", "store-1", DateTimeOffset.UtcNow, CancellationToken.None));
     }
 
     private static BTCPayNetworkProvider CreateNetworkProvider()
