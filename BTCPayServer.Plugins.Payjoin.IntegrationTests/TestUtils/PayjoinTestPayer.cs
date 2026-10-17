@@ -33,6 +33,7 @@ internal sealed class PayjoinTestPayer
 
     public TaskCompletionSource OriginalPosted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Func<Transaction, CancellationToken, Task>? BeforeBroadcastAsync { get; set; }
+    public Func<PSBT, CancellationToken, Task>? BeforeOriginalPostAsync { get; set; }
 
     public PayjoinTestPayer(
         ServerTester tester,
@@ -106,6 +107,8 @@ internal sealed class PayjoinTestPayer
             throw new InvalidOperationException($"Original PSBT could not be finalized for payer store '{_payer.StoreId}'.");
         }
 
+        if (BeforeOriginalPostAsync is { } beforeOriginal)
+            await beforeOriginal(signedOriginal, cancellationToken).ConfigureAwait(false);
         senderPsbtResult = senderPsbtResult with { Psbt = signedOriginal };
         if (_beforeOriginalAsync is not null)
         {
