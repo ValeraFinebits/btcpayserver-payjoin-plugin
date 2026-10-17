@@ -94,7 +94,7 @@ public class PayjoinReceiverInputSelectorTests
             new TestReceiverWalletAdapter { Candidates = candidates },
             new TestProposalOperations());
 
-        var result = await selector.TryContributeInputsAsync(null!, "store-1", "invoice-1", DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+        var result = await selector.TryContributeInputsAsync(null!, "store-1", DateTimeOffset.UtcNow.AddHours(1), context.CreateStore().Owner("invoice-1"), CancellationToken.None);
 
         Assert.True(string.IsNullOrEmpty(result.FailureMessage));
         Assert.NotNull(result.ContributedCoins);
@@ -109,13 +109,13 @@ public class PayjoinReceiverInputSelectorTests
         CreatePersistedSession(store, "invoice-1");
         CreatePersistedSession(store, "other-invoice");
         var candidates = CreateCandidates(2);
-        Assert.True(store.TryReserveContributedInput("store-1", "other-invoice", candidates[0].Coin.OutPoint, DateTimeOffset.UtcNow.AddHours(1)));
+        Assert.True(store.TryReserveContributedInput(store.Owner("other-invoice"), "store-1", candidates[0].Coin.OutPoint, DateTimeOffset.UtcNow.AddHours(1)));
         var selector = CreateSelector(
             store,
             new TestReceiverWalletAdapter { Candidates = candidates },
             new TestProposalOperations());
 
-        var result = await selector.TryContributeInputsAsync(null!, "store-1", "invoice-1", DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+        var result = await selector.TryContributeInputsAsync(null!, "store-1", DateTimeOffset.UtcNow.AddHours(1), context.CreateStore().Owner("invoice-1"), CancellationToken.None);
 
         Assert.True(string.IsNullOrEmpty(result.FailureMessage));
         Assert.NotNull(result.ContributedCoins);
@@ -133,7 +133,7 @@ public class PayjoinReceiverInputSelectorTests
         {
             var otherInvoiceId = $"other-invoice-{i}";
             CreatePersistedSession(store, otherInvoiceId);
-            Assert.True(store.TryReserveContributedInput("store-1", otherInvoiceId, candidates[i].Coin.OutPoint, DateTimeOffset.UtcNow.AddHours(1)));
+            Assert.True(store.TryReserveContributedInput(store.Owner(otherInvoiceId), "store-1", candidates[i].Coin.OutPoint, DateTimeOffset.UtcNow.AddHours(1)));
         }
 
         var selector = CreateSelector(
@@ -141,7 +141,7 @@ public class PayjoinReceiverInputSelectorTests
             new TestReceiverWalletAdapter { Candidates = candidates },
             new TestProposalOperations());
 
-        var result = await selector.TryContributeInputsAsync(null!, "store-1", "invoice-1", DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+        var result = await selector.TryContributeInputsAsync(null!, "store-1", DateTimeOffset.UtcNow.AddHours(1), context.CreateStore().Owner("invoice-1"), CancellationToken.None);
 
         Assert.Null(result.ContributedCoins);
         Assert.Contains($"candidate '{candidates[0].Coin.OutPoint}' reservation conflict", result.FailureMessage, StringComparison.Ordinal);
@@ -164,7 +164,7 @@ public class PayjoinReceiverInputSelectorTests
             new TestReceiverWalletAdapter { Candidates = candidates },
             operations);
 
-        var result = await selector.TryContributeInputsAsync(null!, "store-1", "invoice-1", DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+        var result = await selector.TryContributeInputsAsync(null!, "store-1", DateTimeOffset.UtcNow.AddHours(1), context.CreateStore().Owner("invoice-1"), CancellationToken.None);
 
         Assert.True(string.IsNullOrEmpty(result.FailureMessage));
         Assert.NotNull(result.ContributedCoins);
@@ -175,13 +175,14 @@ public class PayjoinReceiverInputSelectorTests
     public async Task TryContributeInputsAsyncFailsWhenSelectionCannotBeMappedBackToACoin()
     {
         using var context = new SessionStoreFixture();
+        CreatePersistedSession(context.CreateStore(), "invoice-1");
         var candidates = CreateCandidates(1);
         var selector = CreateSelector(
             context.CreateStore(),
             new TestReceiverWalletAdapter { Candidates = candidates, ResolveToNull = true },
             new TestProposalOperations());
 
-        var result = await selector.TryContributeInputsAsync(null!, "store-1", "invoice-1", DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+        var result = await selector.TryContributeInputsAsync(null!, "store-1", DateTimeOffset.UtcNow.AddHours(1), context.CreateStore().Owner("invoice-1"), CancellationToken.None);
 
         Assert.Null(result.ContributedCoins);
         Assert.Contains("selected receiver input could not be mapped back to a wallet coin", result.FailureMessage, StringComparison.Ordinal);
@@ -191,13 +192,14 @@ public class PayjoinReceiverInputSelectorTests
     public async Task TryContributeInputsAsyncFailsWhenTheLibraryCannotSelect()
     {
         using var context = new SessionStoreFixture();
+        CreatePersistedSession(context.CreateStore(), "invoice-1");
         var candidates = CreateCandidates(1);
         var selector = CreateSelector(
             context.CreateStore(),
             new TestReceiverWalletAdapter { Candidates = candidates },
             new TestProposalOperations { SelectionFailureMessage = "no viable input" });
 
-        var result = await selector.TryContributeInputsAsync(null!, "store-1", "invoice-1", DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+        var result = await selector.TryContributeInputsAsync(null!, "store-1", DateTimeOffset.UtcNow.AddHours(1), context.CreateStore().Owner("invoice-1"), CancellationToken.None);
 
         Assert.Null(result.ContributedCoins);
         Assert.Contains("receiver input selection failed: no viable input", result.FailureMessage, StringComparison.Ordinal);

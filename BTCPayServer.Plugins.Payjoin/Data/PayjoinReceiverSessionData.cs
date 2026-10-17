@@ -8,6 +8,8 @@ internal class PayjoinReceiverSessionData
 {
     public string InvoiceId { get; set; } = null!;
 
+    public Guid SessionInstanceId { get; init; } = Guid.NewGuid();
+
     public string StoreId { get; set; } = null!;
 
     public string ReceiverAddress { get; set; } = null!;
@@ -32,16 +34,14 @@ internal class PayjoinReceiverSessionData
 
     public string? PayjoinUri { get; set; }
 
-    // Concurrency token, deliberately PARTIAL. Only destructive writes bump it:
-    // - RemoveAllSessionEvents (event-log wipe, which also clears PayjoinUri),
-    // - ReserveContributedInputCore (claiming the contributed input).
-    // It guards the discard-vs-reserve and wipe-vs-cache races. All other session writes
-    // (close/consume flags, the cached URI, cleanup, event appends) intentionally do NOT bump
-    // it: they are idempotent last-write-wins updates, and event-log ordering is enforced by
-    // the unique (InvoiceId, Sequence) index instead. Do not use this value to detect
-    // event-log changes. The contract is pinned by
-    // PayjoinReceiverSessionStoreRelationalTests.OnlyDestructiveWritesAdvanceTheDestructiveWriteStamp.
-    public int DestructiveWriteStamp { get; set; }
+    // Version within one immutable SessionInstanceId. Every event append, input reservation and
+    // bridge write advances it, atomically with the related data. Early rejection must invalidate
+    // its checked snapshot if another writer advances negotiation or prepares a proposal.
+    // The instance token also fences stale entities/persisters after delete-and-recreate (ABA).
+    // Close/consume/cache writes still compare both tokens but need not advance this version.
+    // The unique (InvoiceId, Sequence) index additionally orders events. Contract:
+    // PayjoinReceiverSessionStoreRelationalTests.DestructiveAndProtectingWritesAdvanceTheAttemptVersion.
+    public int AttemptVersion { get; set; }
 
     public ICollection<PayjoinReceiverSessionEventData> Events { get; } = [];
 

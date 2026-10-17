@@ -31,16 +31,16 @@ public sealed class PayjoinSeenInputStore
     }
 
     internal T ExecuteSeenInputTransition<T>(
-        string invoiceId,
+        PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister owner,
         Func<IsOutputKnown, JsonReceiverSessionPersister, T> executeTransition)
         where T : class, IDisposable
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(invoiceId);
+        ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(executeTransition);
 
         using var context = _pluginDbContextFactory.CreateContext();
         var callback = new StagedInputsSeenCallback(context);
-        var persister = new SeenInputTransitionPersister(context, invoiceId);
+        var persister = new SeenInputTransitionPersister(context, owner);
         var nextState = executeTransition(callback, persister);
         ArgumentNullException.ThrowIfNull(nextState);
         if (persister.HasCommitted)
@@ -93,11 +93,13 @@ public sealed class PayjoinSeenInputStore
     {
         private readonly PayjoinPluginDbContext _context;
         private readonly string _invoiceId;
+        private readonly PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister _owner;
 
-        public SeenInputTransitionPersister(PayjoinPluginDbContext context, string invoiceId)
+        public SeenInputTransitionPersister(PayjoinPluginDbContext context, PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister owner)
         {
             _context = context;
-            _invoiceId = invoiceId;
+            _invoiceId = owner.InvoiceId;
+            _owner = owner;
         }
 
         public bool HasCommitted { get; private set; }
@@ -111,6 +113,9 @@ public sealed class PayjoinSeenInputStore
 
             var session = _context.ReceiverSessions.SingleOrDefault(x => x.InvoiceId == _invoiceId)
                 ?? throw new InvalidOperationException($"Payjoin receiver session {_invoiceId} is no longer active.");
+            try { PayjoinReceiverSessionStore.CheckOwner(_owner, session); }
+            catch (PayjoinSessionStaleException ex) { throw new ForeignException.InternalException(ex.Message); }
+            session.AttemptVersion = checked(session.AttemptVersion + 1);
             var createdAt = DateTimeOffset.UtcNow;
             var lastSequence = _context.ReceiverSessionEvents
                 .Where(x => x.InvoiceId == _invoiceId)
@@ -127,6 +132,7 @@ public sealed class PayjoinSeenInputStore
             });
 
             _context.SaveChanges();
+            PayjoinReceiverSessionStore.ConfirmWrite(_owner, session);
             HasCommitted = true;
         }
 

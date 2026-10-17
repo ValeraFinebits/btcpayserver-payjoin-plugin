@@ -1,3 +1,4 @@
+using ReceiverAttemptOwner = BTCPayServer.Plugins.Payjoin.Services.PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister;
 using Payjoin;
 using System;
 using System.Threading;
@@ -19,7 +20,7 @@ internal sealed class PayjoinReceiverSessionGuardResult : IDisposable
 
     public PayjoinReceiverSessionGuardResult(
         PayjoinReceiverSessionState session,
-        JsonReceiverSessionPersister persister,
+        ReceiverAttemptOwner persister,
         byte[] receiverScript,
         ReplayResult replay,
         ReceiveSession state,
@@ -41,7 +42,7 @@ internal sealed class PayjoinReceiverSessionGuardResult : IDisposable
 
     internal PayjoinReceiverSessionState Session { get; }
 
-    internal JsonReceiverSessionPersister Persister { get; }
+    internal ReceiverAttemptOwner Persister { get; }
 
     internal byte[] ReceiverScript { get; }
 

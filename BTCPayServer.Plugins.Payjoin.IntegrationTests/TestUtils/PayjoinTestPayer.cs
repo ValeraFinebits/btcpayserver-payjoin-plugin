@@ -27,13 +27,19 @@ internal sealed class PayjoinTestPayer
     private readonly BTCPayWalletProvider _walletProvider;
     private readonly bool _useReservedSenderChangeAddress;
     private readonly bool _mineBlockAfterBroadcast;
+    private readonly bool _disableOutputSubstitution;
+
+    public TaskCompletionSource OriginalPosted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Func<Transaction, CancellationToken, Task>? BeforeBroadcastAsync { get; set; }
+    public Func<PSBT, CancellationToken, Task>? BeforeOriginalPostAsync { get; set; }
 
     public PayjoinTestPayer(
         ServerTester tester,
         TestAccount payer,
         BTCPayNetwork network,
         bool useReservedSenderChangeAddress = false,
-        bool mineBlockAfterBroadcast = true)
+        bool mineBlockAfterBroadcast = true,
+        bool disableOutputSubstitution = false)
     {
         ArgumentNullException.ThrowIfNull(tester);
         ArgumentNullException.ThrowIfNull(payer);
@@ -47,6 +53,7 @@ internal sealed class PayjoinTestPayer
         _walletProvider = tester.PayTester.GetService<BTCPayWalletProvider>();
         _useReservedSenderChangeAddress = useReservedSenderChangeAddress;
         _mineBlockAfterBroadcast = mineBlockAfterBroadcast;
+        _disableOutputSubstitution = disableOutputSubstitution;
     }
 
     public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, CancellationToken cancellationToken)
@@ -66,6 +73,17 @@ internal sealed class PayjoinTestPayer
 
     public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, IReadOnlyList<SystemUri> ohttpRelayUrls, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
     {
+        return await PayAsync(paymentUrl, ohttpRelayUrls, preProposalPollDelay, amountOverride: null, onOriginalPrepared: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PayjoinTestPaymentResult> PayAsync(
+        SystemUri paymentUrl,
+        IReadOnlyList<SystemUri> ohttpRelayUrls,
+        TimeSpan? preProposalPollDelay,
+        Money? amountOverride,
+        Action<Transaction>? onOriginalPrepared,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(paymentUrl);
         ArgumentNullException.ThrowIfNull(ohttpRelayUrls);
         if (ohttpRelayUrls.Count == 0)
@@ -73,7 +91,7 @@ internal sealed class PayjoinTestPayer
             throw new InvalidOperationException($"No OHTTP relays configured for payer store '{_payer.StoreId}'.");
         }
 
-        var senderPsbtResult = await CreateSenderPsbtAsync(paymentUrl, cancellationToken).ConfigureAwait(false);
+        var senderPsbtResult = await CreateSenderPsbtAsync(paymentUrl, amountOverride, cancellationToken).ConfigureAwait(false);
         // BIP 78 requires the original PSBT to be a fully signed, broadcastable transaction: it is
         // the fallback the receiver can put on-chain if the payjoin never completes. Sign it before
         // it is handed to the payjoin sender.
@@ -83,8 +101,11 @@ internal sealed class PayjoinTestPayer
             throw new InvalidOperationException($"Original PSBT could not be finalized for payer store '{_payer.StoreId}'.");
         }
 
+        if (BeforeOriginalPostAsync is { } beforeOriginal)
+            await beforeOriginal(signedOriginal, cancellationToken).ConfigureAwait(false);
         senderPsbtResult = senderPsbtResult with { Psbt = signedOriginal };
-        var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrls, senderPsbtResult.Psbt, preProposalPollDelay, cancellationToken).ConfigureAwait(false);
+        onOriginalPrepared?.Invoke(signedOriginal.ExtractTransaction());
+        var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrls, senderPsbtResult.Psbt, preProposalPollDelay, amountOverride, cancellationToken).ConfigureAwait(false);
 
         return await FinalizeAndBroadcastAsync(senderPsbtResult, proposalPsbt, cancellationToken).ConfigureAwait(false);
     }
@@ -99,6 +120,10 @@ internal sealed class PayjoinTestPayer
         }
 
         var transaction = signedProposal.ExtractTransaction();
+        if (BeforeBroadcastAsync is { } beforeBroadcast)
+        {
+            await beforeBroadcast(transaction, cancellationToken).ConfigureAwait(false);
+        }
         await BroadcastTransactionAsync(transaction, cancellationToken).ConfigureAwait(false);
         if (_mineBlockAfterBroadcast)
         {
@@ -121,7 +146,7 @@ internal sealed class PayjoinTestPayer
         }
     }
 
-    private async Task<CreateSenderPsbtResult> CreateSenderPsbtAsync(SystemUri paymentUrl, CancellationToken cancellationToken)
+    private async Task<CreateSenderPsbtResult> CreateSenderPsbtAsync(SystemUri paymentUrl, Money? amountOverride, CancellationToken cancellationToken)
     {
         string paymentAddress;
         decimal paymentAmount;
@@ -135,7 +160,7 @@ internal sealed class PayjoinTestPayer
                 throw new InvalidOperationException("payment amount missing in paymentUrl");
             }
 
-            paymentAmount = Money.Satoshis(checked((long)amountSats.Value)).ToDecimal(MoneyUnit.BTC);
+            paymentAmount = (amountOverride ?? Money.Satoshis(checked((long)amountSats.Value))).ToDecimal(MoneyUnit.BTC);
             using var _ = parsedUri.CheckPjSupported();
         }
         catch (UriParseException ex)
@@ -206,14 +231,18 @@ internal sealed class PayjoinTestPayer
         return new CreateSenderPsbtResult(createResult.PSBT, Money.Coins(paymentAmount));
     }
 
-    private async Task<PSBT> RequestProposalAsync(SystemUri paymentUrl, IReadOnlyList<SystemUri> ohttpRelayUrls, PSBT senderPsbt, TimeSpan? preProposalPollDelay, CancellationToken cancellationToken)
+    private async Task<PSBT> RequestProposalAsync(SystemUri paymentUrl, IReadOnlyList<SystemUri> ohttpRelayUrls, PSBT senderPsbt, TimeSpan? preProposalPollDelay, Money? amountOverride, CancellationToken cancellationToken)
     {
         string? proposalPsbtBase64 = null;
         var senderPersister = new InMemorySenderPersister();
         using var parsedUri = PayjoinUri.Parse(paymentUrl.ToString());
         using var pjUri = parsedUri.CheckPjSupported();
-        using var senderBuilder = new SenderBuilder(senderPsbt.ToBase64(), pjUri);
-        using var initial = senderBuilder.BuildRecommended(RecommendedFeeContributionRate);
+        using var senderUri = amountOverride is { } amount
+            ? pjUri.SetAmountSats(checked((ulong)amount.Satoshi))
+            : null;
+        using var senderBuilder = new SenderBuilder(senderPsbt.ToBase64(), senderUri ?? pjUri);
+        using var configuredBuilder = _disableOutputSubstitution ? senderBuilder.AlwaysDisableOutputSubstitution() : null;
+        using var initial = (configuredBuilder ?? senderBuilder).BuildRecommended(RecommendedFeeContributionRate);
         using var withReplyKey = initial.Save(senderPersister);
 
         var (postResponse, postContext) = await SendViaRelaysAsync(
@@ -227,6 +256,7 @@ internal sealed class PayjoinTestPayer
         try
         {
             var current = withReplyTransition.Save(senderPersister);
+            OriginalPosted.TrySetResult();
             if (preProposalPollDelay is { } delay && delay > TimeSpan.Zero)
             {
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);

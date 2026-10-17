@@ -18,43 +18,49 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 public class PayjoinReceiverProposalFinalizerTests
 {
     [Fact]
-    public async Task EnsureExpectedFinalTransactionAsyncReturnsWithoutReadingTheProposalWhenNoBridgeExists()
+    public async Task EnsureExpectedFinalTransactionAsyncStopsWithoutReadingTheProposalWhenNoBridgeExists()
     {
         var bridgeService = new RecordingBridgeService(bridge: null);
-        var finalizer = CreateFinalizer(bridgeService);
+        using var database = new RelationalPluginTestContext();
+        var finalizer = CreateFinalizer(bridgeService, CreateStore(database, bridgeService.Bridge));
 
-        await finalizer.EnsureExpectedFinalTransactionAsync(CreateContext(), new ThrowingProposal(), CancellationToken.None);
+        await Assert.ThrowsAsync<PayjoinSessionStaleException>(() => finalizer.EnsureExpectedFinalTransactionAsync(CreateContext(database.CreateStore()), new ThrowingProposal(), CancellationToken.None));
 
-        Assert.Empty(bridgeService.SetExpectedFinalTransactionCalls);
     }
 
     [Fact]
     public async Task EnsureExpectedFinalTransactionAsyncSkipsTheWriteWhenTheExpectedFinalTransactionIdAlreadyMatches()
     {
-        var proposal = CreateProposal(out var finalTransaction, out _);
-        var bridge = CreateBridge(expectedFinalTransactionId: finalTransaction.GetHash().ToString().ToUpperInvariant());
+        var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
+        var bridge = CreateBridge(expectedFinalTransactionId: finalTransaction.GetHash().ToString().ToUpperInvariant(), settlementScript: Convert.ToHexString(settlementScript.ToBytes()))
+            with
+        { ExpectedFinalOutputIndex = 1, ExpectedFinalValueSats = 20_000 };
         var bridgeService = new RecordingBridgeService(bridge);
-        var finalizer = CreateFinalizer(bridgeService);
+        using var database = new RelationalPluginTestContext();
+        var finalizer = CreateFinalizer(bridgeService, CreateStore(database, bridge));
 
-        await finalizer.EnsureExpectedFinalTransactionAsync(CreateContext(), proposal, CancellationToken.None);
+        await finalizer.EnsureExpectedFinalTransactionAsync(CreateContext(database.CreateStore()), proposal, CancellationToken.None);
 
-        Assert.Empty(bridgeService.SetExpectedFinalTransactionCalls);
     }
 
-    [Fact]
-    public async Task EnsureExpectedFinalTransactionAsyncRecordsTheExpectedFinalTransactionWhenTheBridgeHasNone()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EnsureExpectedFinalTransactionAsyncBackfillsMissingSettlementMetadata(bool transactionIdAlreadyKnown)
     {
         var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
         var bridge = CreateBridge(
-            expectedFinalTransactionId: null,
+            expectedFinalTransactionId: transactionIdAlreadyKnown ? finalTransaction.GetHash().ToString() : null,
             settlementScript: Convert.ToHexString(settlementScript.ToBytes()),
             effectiveInvoiceValueSats: 1234);
         var bridgeService = new RecordingBridgeService(bridge);
-        var finalizer = CreateFinalizer(bridgeService);
+        using var database = new RelationalPluginTestContext();
+        var finalizer = CreateFinalizer(bridgeService, CreateStore(database, bridge));
 
-        await finalizer.EnsureExpectedFinalTransactionAsync(CreateContext(), proposal, CancellationToken.None);
+        await finalizer.EnsureExpectedFinalTransactionAsync(CreateContext(database.CreateStore()), proposal, CancellationToken.None);
 
-        var call = Assert.Single(bridgeService.SetExpectedFinalTransactionCalls);
+        using var db = database.CreateDbContext();
+        var call = Assert.Single(db.AccountingBridges);
         Assert.Equal("invoice-1", call.InvoiceId);
         Assert.Equal(finalTransaction.GetHash().ToString(), call.ExpectedFinalTransactionId);
         Assert.Equal(1, call.ExpectedFinalOutputIndex);
@@ -64,7 +70,7 @@ public class PayjoinReceiverProposalFinalizerTests
     }
 
     [Fact]
-    public async Task EnsureExpectedFinalTransactionAsyncReplacesAStaleExpectedFinalTransactionId()
+    public async Task EnsureExpectedFinalTransactionAsyncRetainsAConflictingExpectedFinalTransactionId()
     {
         var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
         var bridge = CreateBridge(
@@ -72,33 +78,54 @@ public class PayjoinReceiverProposalFinalizerTests
             settlementScript: Convert.ToHexString(settlementScript.ToBytes()),
             effectiveInvoiceValueSats: null);
         var bridgeService = new RecordingBridgeService(bridge);
-        var finalizer = CreateFinalizer(bridgeService);
+        using var database = new RelationalPluginTestContext();
+        var finalizer = CreateFinalizer(bridgeService, CreateStore(database, bridge));
 
-        await finalizer.EnsureExpectedFinalTransactionAsync(CreateContext(), proposal, CancellationToken.None);
+        await Assert.ThrowsAsync<PayjoinAccountingReconciliationDataException>(() => finalizer.EnsureExpectedFinalTransactionAsync(CreateContext(database.CreateStore()), proposal, CancellationToken.None));
 
-        var call = Assert.Single(bridgeService.SetExpectedFinalTransactionCalls);
-        Assert.Equal(finalTransaction.GetHash().ToString(), call.ExpectedFinalTransactionId);
-        Assert.Equal(1, call.ExpectedFinalOutputIndex);
-        // Without a pinned effective invoice value, the settlement output's value is recorded.
-        Assert.Equal(20_000, call.ExpectedFinalValueSats);
+        using var db = database.CreateDbContext();
+        Assert.Equal(bridge.ExpectedFinalTransactionId, db.AccountingBridges.Single().ExpectedFinalTransactionId);
     }
 
-    private static PayjoinReceiverProposalFinalizer CreateFinalizer(IPayjoinAccountingBridgeService bridgeService)
+    private static PayjoinReceiverProposalFinalizer CreateFinalizer(IPayjoinAccountingBridgeService bridgeService, PayjoinReceiverSessionStore store)
     {
         return new PayjoinReceiverProposalFinalizer(
             new UnusedRelayRequestSender(),
             new UnusedProposalSigner(),
             bridgeService,
-            // EnsureExpectedFinalTransactionAsync records through the bridge service only; the
-            // session store participates in the finalize paths, which these tests do not drive.
-            sessionStore: null!,
+            sessionStore: store,
             CreateNetworkProvider());
     }
 
-    private static PayjoinReceiverProposalFinalizationContext CreateContext()
+    private static PayjoinReceiverSessionStore CreateStore(RelationalPluginTestContext database, PayjoinAccountingBridgeState? bridge)
+    {
+        var store = database.CreateStore();
+        store.GetOrCreateSession("invoice-1", "receiver", "store-1", DateTimeOffset.UtcNow.AddHours(1), ["bootstrap"]);
+        if (bridge is not null)
+        {
+            using var db = database.CreateDbContext();
+            db.AccountingBridges.Add(new PayjoinAccountingBridgeData
+            {
+                InvoiceId = bridge.InvoiceId,
+                StoreId = bridge.StoreId,
+                CryptoCode = bridge.CryptoCode,
+                PaymentMethodId = bridge.PaymentMethodId,
+                SettlementScript = bridge.SettlementScript,
+                EffectiveInvoiceValueSats = bridge.EffectiveInvoiceValueSats,
+                ExpectedFinalTransactionId = bridge.ExpectedFinalTransactionId,
+                Status = bridge.Status,
+                CreatedAt = bridge.CreatedAt,
+                UpdatedAt = bridge.UpdatedAt
+            });
+            db.SaveChanges();
+        }
+        return store;
+    }
+
+    private static PayjoinReceiverProposalFinalizationContext CreateContext(PayjoinReceiverSessionStore store)
     {
         return new PayjoinReceiverProposalFinalizationContext(
-            persister: null!,
+            store.Owner("invoice-1"),
             "store-1",
             "invoice-1",
             PayjoinConstants.BitcoinCode);
@@ -200,25 +227,16 @@ public class PayjoinReceiverProposalFinalizerTests
 
     private sealed class RecordingBridgeService(PayjoinAccountingBridgeState? bridge) : IPayjoinAccountingBridgeService
     {
-        public List<(string InvoiceId, string ExpectedFinalTransactionId, long? ExpectedFinalOutputIndex, long? ExpectedFinalValueSats)> SetExpectedFinalTransactionCalls { get; } = [];
+        public PayjoinAccountingBridgeState? Bridge => bridge;
 
         public Task<PayjoinAccountingBridgeState?> TryGetByInvoiceIdAsync(string invoiceId, CancellationToken cancellationToken) => Task.FromResult(bridge);
 
-        public Task<PayjoinAccountingBridgeState?> SetExpectedFinalTransactionAsync(string invoiceId, string expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, CancellationToken cancellationToken)
-        {
-            SetExpectedFinalTransactionCalls.Add((invoiceId, expectedFinalTransactionId, expectedFinalOutputIndex, expectedFinalValueSats));
-            return Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        }
-
-        public Task<PayjoinAccountingBridgeState> CreateOrGetAsync(CreatePayjoinAccountingBridgeRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<PayjoinAccountingBridgeState?> AttachFallbackAsync(string invoiceId, string fallbackTransactionId, long fallbackOutputIndex, long fallbackValueSats, long effectiveInvoiceValueSats, string? settlementScript, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingReconciliationAsync(DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<PayjoinAccountingBridgeState?> SetSettlementScriptAsync(string invoiceId, string settlementScript, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken, DateTimeOffset? expectedUpdatedAt = null) => throw new NotSupportedException();
+        public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken, Guid? sessionInstanceId = null, DateTimeOffset? expectedUpdatedAt = null) => throw new NotSupportedException();
         public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

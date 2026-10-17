@@ -137,7 +137,7 @@ public class PayjoinReceiverStateProcessorTests
             new GarbageResponseRelaySender(rejectedRelay.AbsoluteUri),
             walletOwnershipService: null!,
             seenInputStore: null!,
-            mailroomManager);
+            mailroomManager, originalValidator: null!, sessionGuard: null!);
 
         using var ohttpKeys = OhttpKeys.Decode(Convert.FromHexString(
             "01001604ba48c49c3d4a92a3ad00ecc63a024da10ced02180c73ec12d8a7ad2cc91bb483824fe2bee8d28bfe2eb2fc6453bc4d31cd851e8a6540e86c5382af588d370957000400010003"));
@@ -148,9 +148,12 @@ public class PayjoinReceiverStateProcessorTests
             ohttpKeys);
         using var bootstrap = builder.Build();
         using var initialized = bootstrap.Save(persister);
+        using var fixture = new SessionStoreFixture();
+        var store = fixture.CreateStore();
+        var savedSession = store.GetOrCreateSession("invoice-1", "receiver", "store-1", DateTimeOffset.UtcNow.AddHours(1), persister.Events);
         var context = new PayjoinReceiverStateContext(
-            CreateSession(),
-            persister,
+            savedSession,
+            store.CreatePersister(savedSession),
             receiverScript,
             "store-1",
             "invoice-1",

@@ -1,3 +1,4 @@
+using ReceiverAttemptOwner = BTCPayServer.Plugins.Payjoin.Services.PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister;
 using BTCPayServer.Services.Wallets;
 using Payjoin;
 using System.Threading;
@@ -35,7 +36,7 @@ internal interface IPayjoinReceiverProposalFinalizer
 internal sealed class PayjoinReceiverProposalFinalizationContext
 {
     public PayjoinReceiverProposalFinalizationContext(
-        JsonReceiverSessionPersister persister,
+        ReceiverAttemptOwner persister,
         string storeId,
         string invoiceId,
         string cryptoCode)
@@ -46,7 +47,7 @@ internal sealed class PayjoinReceiverProposalFinalizationContext
         CryptoCode = cryptoCode;
     }
 
-    internal JsonReceiverSessionPersister Persister { get; }
+    internal ReceiverAttemptOwner Persister { get; }
 
     internal string StoreId { get; }
 
