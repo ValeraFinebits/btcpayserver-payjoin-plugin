@@ -399,7 +399,7 @@ public class PayjoinReceiverSessionProcessorTests
             bridgeService ?? new NoOpAccountingBridgeService(),
             proposalFinalizer ?? new NoOpProposalFinalizer(),
             networkProvider,
-            NullLogger<PayjoinReceiverSessionProcessor>.Instance);
+            NullLogger<PayjoinReceiverSessionProcessor>.Instance, new RecordingOriginalValidator());
     }
 
     private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, string invoiceId)
