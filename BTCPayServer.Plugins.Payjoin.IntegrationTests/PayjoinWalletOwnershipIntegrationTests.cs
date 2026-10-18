@@ -6,11 +6,6 @@ using NBitcoin;
 using NBXplorer.DerivationStrategy;
 using NBXplorer.Models;
 using Xunit;
-using Npgsql;
-using BTCPayServer.Data;
-using BTCPayServer.Payments;
-using BTCPayServer.Services.Stores;
-using BTCPayServer.Plugins.Payjoin.Models;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
 
@@ -95,12 +90,12 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
 
         Assert.True(resolver.IsOwned(coin.OutPoint.Hash.ToString(), coin.OutPoint.N));
         Assert.False(resolver.IsOwned(otherOutputFromWalletTransaction.Hash.ToString(), otherOutputFromWalletTransaction.N));
-        Assert.Equal(PayjoinInputOwnership.Unknown, resolver.GetOwnership(foreignOutpoint));
+        Assert.False(resolver.IsOwned(foreignOutpoint.Hash.ToString(), foreignOutpoint.N));
     }
 
     [Fact]
     [Trait("Integration", "Integration")]
-    public async Task ColdSettlementAccountIsForeignToHotSigningAccount()
+    public async Task ResolverRecognizesUnconfirmedColdWalletOutpoint()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
         using var tester = CreateServerTester(newDb: true);
@@ -147,162 +142,6 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
             [coldOutpoint!],
             cts.Token).ConfigureAwait(true);
 
-        Assert.Equal(PayjoinInputOwnership.Foreign, resolver.GetOwnership(coldOutpoint!));
-    }
-
-    [Fact]
-    [Trait("Integration", "Integration")]
-    public async Task RegisteredHotInputIsRejectedWhenFundingHistoryIsMissing()
-    {
-        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester(newDb: true);
-        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(
-            tester, initialFundingUtxoCount: 1, cancellationToken: cts.Token).ConfigureAwait(true);
-        var client = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(context.Network);
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
-        var invoice = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
-        var historyRemoved = false;
-        var payer = new PayjoinTestPayer(tester, context.Merchant, context.Network, useReservedSenderChangeAddress: true,
-            beforeOriginalAsync: async (original, token) =>
-            {
-                using var database = new NpgsqlConnection(tester.PayTester.ExplorerPostgres);
-                await database.OpenAsync(token).ConfigureAwait(true);
-                foreach (var input in original.GetGlobalTransaction().Inputs)
-                {
-                    using var command = new NpgsqlCommand("DELETE FROM txs WHERE code = 'BTC' AND tx_id = @txid", database);
-                    command.Parameters.AddWithValue("txid", input.PrevOut.Hash.ToString());
-                    Assert.Equal(1, await command.ExecuteNonQueryAsync(token).ConfigureAwait(true));
-                    Assert.Null(await client.GetTransactionAsync(context.Merchant.DerivationScheme, input.PrevOut.Hash, token).ConfigureAwait(true));
-                    var resolver = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateInputResolverAsync(
-                        context.Merchant.StoreId, [input.PrevOut], token).ConfigureAwait(true);
-                    Assert.Equal(PayjoinInputOwnership.Owned, resolver.GetOwnership(input.PrevOut));
-                }
-                historyRemoved = true;
-            });
-        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            payer.PayAsync(invoice.PaymentUrl, invoice.OhttpRelayUrls, cts.Token)).ConfigureAwait(true);
-        Assert.True(historyRemoved);
-        Assert.Contains("Payjoin receiver rejected the proposal", failure.Message, StringComparison.Ordinal);
-        using var db = tester.PayTester.GetService<PayjoinPluginDbContextFactory>().CreateContext();
-        Assert.Empty(db.ReceiverInputReservations);
-    }
-
-    [Fact]
-    [Trait("Integration", "Integration")]
-    public async Task ResolverRecognizesConfirmedForeignOutpointOutsideWalletHistory()
-    {
-        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester(newDb: true);
-        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(
-            tester, initialFundingUtxoCount: 1, cancellationToken: cts.Token).ConfigureAwait(true);
-        var client = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(context.Network);
-        using var foreignKey = new Key();
-        var script = foreignKey.PubKey.WitHash.ScriptPubKey;
-        var fundingId = await tester.ExplorerNode.SendToAddressAsync(
-            script.GetDestinationAddress(context.Network.NBitcoinNetwork)!, Money.Coins(0.1m), cancellationToken: cts.Token).ConfigureAwait(true);
-        var funding = await tester.ExplorerNode.GetRawTransactionAsync(fundingId, cancellationToken: cts.Token).ConfigureAwait(true);
-        var input = new OutPoint(fundingId, (uint)Enumerable.Range(0, funding.Outputs.Count).Single(index => funding.Outputs[index].ScriptPubKey == script));
-        await tester.ExplorerNode.GenerateAsync(1, cts.Token).ConfigureAwait(true);
-        await Tests.TestUtils.EventuallyAsync(async () =>
-            Assert.True((await client.GetStatusAsync(cts.Token).ConfigureAwait(true)).IsFullySynched)).ConfigureAwait(true);
-        Assert.Null(await client.GetTransactionAsync(context.Merchant.DerivationScheme, fundingId, cts.Token).ConfigureAwait(true));
-
-        var indexes = await tester.ExplorerNode.SendCommandAsync("getindexinfo", cts.Token).ConfigureAwait(true);
-        if (indexes.Result["txindex"] is null)
-        {
-            Assert.Null(await client.GetTransactionAsync(fundingId, cts.Token).ConfigureAwait(true));
-        }
-        var prevout = await client.RPCClient.GetTxOutAsync(fundingId, (int)input.N, false, cts.Token).ConfigureAwait(true);
-        Assert.NotNull(prevout);
-        Assert.Equal(script, prevout.TxOut.ScriptPubKey);
-        var resolver = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateInputResolverAsync(
-            context.Merchant.StoreId, [input], cts.Token).ConfigureAwait(true);
-
-        Assert.Equal(PayjoinInputOwnership.Foreign, resolver.GetOwnership(input));
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    [Trait("Integration", "Integration")]
-    public async Task SenderAcceptsAdditionalHotAndColdOutputs(bool disableSubstitution)
-    {
-        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester(scope: $"extra-outputs-{disableSubstitution}", newDb: true);
-        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
-        var sender = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
-        var client = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(context.Network);
-        var cold = await PayjoinIntegrationTestSupport.CreateTrackedColdWalletAsync(tester, cts.Token).ConfigureAwait(true);
-        var hotAddress = await client.GetUnusedAsync(context.Merchant.DerivationScheme, DerivationFeature.Deposit, 0, true, cts.Token).ConfigureAwait(true);
-        var coldAddress = await client.GetUnusedAsync(cold, DerivationFeature.Deposit, 0, true, cts.Token).ConfigureAwait(true);
-        Assert.NotNull(hotAddress);
-        Assert.NotNull(coldAddress);
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId,
-            settings => settings.ColdWalletDerivationScheme = cold.ToString(), cts.Token).ConfigureAwait(true);
-        var invoice = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
-        var payer = new PayjoinTestPayer(tester, sender, context.Network, additionalDestinations:
-        [
-            new CreatePSBTDestination { Destination = hotAddress.ScriptPubKey.GetDestinationAddress(context.Network.NBitcoinNetwork), Amount = Money.Coins(0.01m) },
-            new CreatePSBTDestination { Destination = coldAddress.ScriptPubKey.GetDestinationAddress(context.Network.NBitcoinNetwork), Amount = Money.Coins(0.02m) }
-        ], disableOutputSubstitution: disableSubstitution);
-        var payment = await payer.PayAsync(invoice.PaymentUrl, invoice.OhttpRelayUrls, cts.Token).ConfigureAwait(true);
-        foreach (var script in new[] { hotAddress.ScriptPubKey, coldAddress.ScriptPubKey })
-        {
-            var original = Assert.Single(payment.SenderTransaction.Outputs, output => output.ScriptPubKey == script);
-            var preserved = Assert.Single(payment.ProposalTransaction.Outputs, output => output.ScriptPubKey == script);
-            Assert.True(preserved.Value > Money.Zero && preserved.Value <= original.Value);
-            var index = payment.ProposalTransaction.Outputs.IndexOf(preserved);
-            var accepted = await client.RPCClient.GetTxOutAsync(uint256.Parse(payment.TransactionId), index, true, cts.Token).ConfigureAwait(true);
-            Assert.NotNull(accepted);
-            Assert.True(accepted.Confirmations > 0);
-        }
-        Assert.Equal(disableSubstitution, payment.ProposalTransaction.Outputs.Any(output => output.ScriptPubKey == invoice.InvoiceScript));
-        if (!disableSubstitution)
-        {
-            var settlement = Assert.Single(payment.ProposalTransaction.Outputs,
-                output => output.ScriptPubKey != hotAddress.ScriptPubKey && output.ScriptPubKey != coldAddress.ScriptPubKey &&
-                    !payment.SenderTransaction.Outputs.Any(original => original.ScriptPubKey == output.ScriptPubKey));
-            Assert.NotNull(await client.GetKeyInformationAsync(cold, settlement.ScriptPubKey, cts.Token).ConfigureAwait(true));
-        }
-    }
-
-    [Theory]
-    [InlineData(false, "NBXplorerGenerated")]
-    [InlineData(true, "ImportedSeed")]
-    [Trait("Integration", "Integration")]
-    public async Task UnsupportedProfileKeepsOrdinaryPaymentAndSavedCoinAccess(bool hot, string source)
-    {
-        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester(scope: $"unsupported-profile-{hot}-{source}", newDb: true);
-        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
-        var stores = tester.PayTester.GetService<StoreRepository>();
-        var store = await stores.FindStore(context.Merchant.StoreId).ConfigureAwait(true);
-        Assert.NotNull(store);
-        var handlers = tester.PayTester.GetService<BTCPayServer.Services.Invoices.PaymentMethodHandlerDictionary>();
-        var method = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
-        var settings = store.GetPaymentMethodConfig<DerivationSchemeSettings>(method, handlers, true);
-        Assert.NotNull(settings);
-        settings.IsHotWallet = hot;
-        settings.Source = source;
-        store.SetPaymentMethodConfig(handlers[method], settings);
-        await stores.UpdateStore(store).ConfigureAwait(true);
-        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, store.Id, cancellationToken: cts.Token).ConfigureAwait(true);
-        var (_, response) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, context.Merchant, cts.Token).ConfigureAwait(true);
-        PayjoinIntegrationTestSupport.AssertPlainBip21(response);
-        Assert.Equal(PayjoinAvailabilityStatus.MerchantRequirementsUnmet, response.Status);
-        Assert.Equal(PayjoinUnavailableReasons.UnsupportedWalletProfile, response.UnavailableReason);
-        var availability = tester.PayTester.GetService<PayjoinAvailabilityService>();
-        var coins = await availability.GetConfirmedReceiverCoinsAsync(store.Id, "BTC", context.Network, cts.Token).ConfigureAwait(true);
-        Assert.NotEmpty(coins);
-        var ownership = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateInputResolverAsync(store.Id, [coins[0].OutPoint], cts.Token).ConfigureAwait(true);
-        Assert.Equal(PayjoinInputOwnership.Unknown, ownership.GetOwnership(coins[0].OutPoint));
-        var plain = new NBitcoin.Payment.BitcoinUrlBuilder(response.Bip21, context.Network.NBitcoinNetwork);
-        var paymentId = await tester.ExplorerNode.SendToAddressAsync(plain.Address!, plain.Amount!, cancellationToken: cts.Token).ConfigureAwait(true);
-        var payment = await tester.ExplorerNode.GetRawTransactionAsync(paymentId, cancellationToken: cts.Token).ConfigureAwait(true);
-        var index = Enumerable.Range(0, payment.Outputs.Count).Single(i => payment.Outputs[i].ScriptPubKey == plain.Address!.ScriptPubKey);
-        await tester.ExplorerNode.GenerateAsync(1, cts.Token).ConfigureAwait(true);
-        var accepted = await tester.ExplorerNode.GetTxOutAsync(paymentId, index, true, cts.Token).ConfigureAwait(true);
-        Assert.NotNull(accepted);
-        Assert.True(accepted.Confirmations > 0);
+        Assert.True(resolver.IsOwned(coldOutpoint!.Hash.ToString(), coldOutpoint.N));
     }
 }

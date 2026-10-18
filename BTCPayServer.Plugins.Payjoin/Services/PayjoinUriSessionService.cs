@@ -118,10 +118,9 @@ public sealed class PayjoinUriSessionService
             return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.InvoiceNotPayable, PayjoinUnavailableReasons.InvoiceAmountNotPositive);
         }
 
-        var availability = await _availabilityService.GetNewSessionAvailabilityAsync(storeId, cryptoCode, network, cancellationToken).ConfigureAwait(false);
-        if (availability.Status != PayjoinAvailabilityStatus.Active)
+        if (!await _availabilityService.HasConfirmedReceiverInputsAsync(storeId, cryptoCode, network, cancellationToken).ConfigureAwait(false))
         {
-            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, availability.Status, availability.Reason!);
+            return LogExpectedFallbackAndReturnBip21(bip21, invoiceId, PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinUnavailableReasons.NoConfirmedReceiverInputs);
         }
 
         try
