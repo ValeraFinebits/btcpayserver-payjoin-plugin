@@ -88,14 +88,19 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         var otherOutputFromWalletTransaction = new OutPoint(coin.OutPoint.Hash, otherOutputIndexes[0]);
         var foreignOutpoint = new OutPoint(uint256.One, 0);
         var ownershipService = tester.PayTester.GetService<IPayjoinWalletOwnershipService>();
-        var resolver = await ownershipService.CreateInputResolverAsync(
-            context.Merchant.StoreId,
-            [coin.OutPoint, otherOutputFromWalletTransaction, foreignOutpoint],
+        var session = await CreateSessionAsync(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        var result = await ownershipService.CreateResolverAsync(session,
+            new PayjoinOriginalTransactionFacts(uint256.One, [coin.OutPoint, otherOutputFromWalletTransaction]),
             cts.Token).ConfigureAwait(true);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Ready, result.Status);
+        var resolver = Assert.IsType<PayjoinInputOwnershipResolver>(result.Resolver);
 
         Assert.True(resolver.IsOwned(coin.OutPoint.Hash.ToString(), coin.OutPoint.N));
         Assert.False(resolver.IsOwned(otherOutputFromWalletTransaction.Hash.ToString(), otherOutputFromWalletTransaction.N));
-        Assert.Equal(PayjoinInputOwnership.Unknown, resolver.GetOwnership(foreignOutpoint));
+        var unavailable = await ownershipService.CreateResolverAsync(session,
+            new PayjoinOriginalTransactionFacts(uint256.Zero, [foreignOutpoint]), cts.Token).ConfigureAwait(true);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, unavailable.Status);
+        Assert.Null(unavailable.Resolver);
     }
 
     [Fact]
@@ -142,10 +147,11 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         }).ConfigureAwait(true);
 
         var ownershipService = tester.PayTester.GetService<IPayjoinWalletOwnershipService>();
-        var resolver = await ownershipService.CreateInputResolverAsync(
-            context.Merchant.StoreId,
-            [coldOutpoint!],
-            cts.Token).ConfigureAwait(true);
+        var session = await CreateSessionAsync(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        var result = await ownershipService.CreateResolverAsync(session,
+            new PayjoinOriginalTransactionFacts(uint256.One, [coldOutpoint!]), cts.Token).ConfigureAwait(true);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Ready, result.Status);
+        var resolver = Assert.IsType<PayjoinInputOwnershipResolver>(result.Resolver);
 
         Assert.Equal(PayjoinInputOwnership.Foreign, resolver.GetOwnership(coldOutpoint!));
     }
@@ -173,8 +179,11 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
                     command.Parameters.AddWithValue("txid", input.PrevOut.Hash.ToString());
                     Assert.Equal(1, await command.ExecuteNonQueryAsync(token).ConfigureAwait(true));
                     Assert.Null(await client.GetTransactionAsync(context.Merchant.DerivationScheme, input.PrevOut.Hash, token).ConfigureAwait(true));
-                    var resolver = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateInputResolverAsync(
-                        context.Merchant.StoreId, [input.PrevOut], token).ConfigureAwait(true);
+                    var session = await CreateSessionAsync(tester, context.Merchant, token).ConfigureAwait(true);
+                    var result = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateResolverAsync(
+                        session, new PayjoinOriginalTransactionFacts(original.GetGlobalTransaction().GetHash(), [input.PrevOut]), token).ConfigureAwait(true);
+                    Assert.Equal(PayjoinOwnershipLookupStatus.Ready, result.Status);
+                    var resolver = Assert.IsType<PayjoinInputOwnershipResolver>(result.Resolver);
                     Assert.Equal(PayjoinInputOwnership.Owned, resolver.GetOwnership(input.PrevOut));
                 }
                 historyRemoved = true;
@@ -215,8 +224,11 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         var prevout = await client.RPCClient.GetTxOutAsync(fundingId, (int)input.N, false, cts.Token).ConfigureAwait(true);
         Assert.NotNull(prevout);
         Assert.Equal(script, prevout.TxOut.ScriptPubKey);
-        var resolver = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateInputResolverAsync(
-            context.Merchant.StoreId, [input], cts.Token).ConfigureAwait(true);
+        var session = await CreateSessionAsync(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        var result = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateResolverAsync(
+            session, new PayjoinOriginalTransactionFacts(uint256.One, [input]), cts.Token).ConfigureAwait(true);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Ready, result.Status);
+        var resolver = Assert.IsType<PayjoinInputOwnershipResolver>(result.Resolver);
 
         Assert.Equal(PayjoinInputOwnership.Foreign, resolver.GetOwnership(input));
     }
@@ -275,6 +287,7 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
         using var tester = CreateServerTester(scope: $"unsupported-profile-{hot}-{source}", newDb: true);
         var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(tester, cancellationToken: cts.Token).ConfigureAwait(true);
+        var ownershipSession = await CreateSessionAsync(tester, context.Merchant, cts.Token).ConfigureAwait(true);
         var stores = tester.PayTester.GetService<StoreRepository>();
         var store = await stores.FindStore(context.Merchant.StoreId).ConfigureAwait(true);
         Assert.NotNull(store);
@@ -294,8 +307,10 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         var availability = tester.PayTester.GetService<PayjoinAvailabilityService>();
         var coins = await availability.GetConfirmedReceiverCoinsAsync(store.Id, "BTC", context.Network, cts.Token).ConfigureAwait(true);
         Assert.NotEmpty(coins);
-        var ownership = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateInputResolverAsync(store.Id, [coins[0].OutPoint], cts.Token).ConfigureAwait(true);
-        Assert.Equal(PayjoinInputOwnership.Unknown, ownership.GetOwnership(coins[0].OutPoint));
+        var ownership = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateResolverAsync(
+            ownershipSession, new PayjoinOriginalTransactionFacts(uint256.One, [coins[0].OutPoint]), cts.Token).ConfigureAwait(true);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, ownership.Status);
+        Assert.Null(ownership.Resolver);
         var plain = new NBitcoin.Payment.BitcoinUrlBuilder(response.Bip21, context.Network.NBitcoinNetwork);
         var paymentId = await tester.ExplorerNode.SendToAddressAsync(plain.Address!, plain.Amount!, cancellationToken: cts.Token).ConfigureAwait(true);
         var payment = await tester.ExplorerNode.GetRawTransactionAsync(paymentId, cancellationToken: cts.Token).ConfigureAwait(true);
@@ -304,5 +319,14 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         var accepted = await tester.ExplorerNode.GetTxOutAsync(paymentId, index, true, cts.Token).ConfigureAwait(true);
         Assert.NotNull(accepted);
         Assert.True(accepted.Confirmations > 0);
+    }
+
+    private static async Task<PayjoinReceiverSessionState> CreateSessionAsync(ServerTester tester, TestAccount merchant,
+        CancellationToken cancellationToken)
+    {
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, merchant.StoreId, cancellationToken: cancellationToken).ConfigureAwait(true);
+        var (invoiceId, bip21) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, merchant, cancellationToken).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21);
+        return PayjoinReceiverTestHelper.GetRequiredReceiverSession(tester, invoiceId);
     }
 }

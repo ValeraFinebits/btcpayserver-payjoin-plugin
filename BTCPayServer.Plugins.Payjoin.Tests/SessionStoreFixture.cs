@@ -12,7 +12,8 @@ internal sealed class SessionStoreFixture : IDisposable
     private readonly InMemoryPluginDbContextFactory _dbContextFactory = new();
     private readonly PostgresPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
-    public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+    public PayjoinReceiverSessionStore CreateStore(PayjoinOwnershipLookupStateStore? ownershipLookups = null)
+        => new(_dbContextFactory, _uniqueConstraintViolationDetector, ownershipLookups: ownershipLookups);
 
     public PayjoinSessionBuildLock SessionBuildLock { get; } = new();
 
