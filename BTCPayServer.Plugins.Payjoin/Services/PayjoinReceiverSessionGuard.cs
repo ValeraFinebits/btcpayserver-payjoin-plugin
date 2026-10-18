@@ -83,6 +83,8 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
                 return null;
             }
 
+            _sessionStore.CompleteOwnershipLookupIfFinished(session, replayState);
+
             // Give the ownership checks the original transaction's output scripts when the replayed
             // history already carries the sender's payload, so ownership is resolved before the
             // synchronous callbacks run even when a replay lands mid-chain.
@@ -102,9 +104,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
             if (fallbackBytes is { Length: > 0 })
             {
-                var originalTransaction = PayjoinReceiverStateProcessor.ExtractTransactionFacts(fallbackBytes);
-                result.StateContext.OriginalInputOutpoints = originalTransaction.InputOutpoints;
-                result.StateContext.OriginalOutputScripts = originalTransaction.OutputScripts;
+                result.StateContext.OriginalTransaction = PayjoinReceiverStateProcessor.ExtractTransactionFacts(fallbackBytes);
             }
 
             replay = null;

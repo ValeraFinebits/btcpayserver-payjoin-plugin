@@ -50,6 +50,7 @@ internal interface IPayjoinReceiverStateProcessor
 }
 
 internal sealed record PayjoinOriginalTransactionFacts(
+    NBitcoin.uint256 TransactionId,
     IReadOnlyList<NBitcoin.OutPoint> InputOutpoints,
     IReadOnlyList<byte[]> OutputScripts);
 
@@ -83,11 +84,7 @@ internal sealed class PayjoinReceiverStateContext
 
     internal Func<PayjoinReceiverSessionState, bool> RemoveCloseRequestedSession { get; }
 
-    internal IReadOnlyList<NBitcoin.OutPoint> OriginalInputOutpoints { get; set; } = Array.Empty<NBitcoin.OutPoint>();
+    internal PayjoinOriginalTransactionFacts? OriginalTransaction { get; set; }
 
-    internal IReadOnlyList<byte[]> OriginalOutputScripts { get; set; } = Array.Empty<byte[]>();
-
-    internal PayjoinInputOwnershipResolver? InputOwnershipResolver { get; set; }
-
-    internal PayjoinScriptOwnershipResolver? OutputOwnershipResolver { get; set; }
+    internal PayjoinOwnershipResolver? OwnershipResolver { get; set; }
 }

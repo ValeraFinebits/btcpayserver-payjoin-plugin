@@ -15,6 +15,147 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinReceiverRelayFlowTests
 {
+    [Theory]
+    [InlineData(0, "MaybeInputsOwned")]
+    [InlineData(1, "MaybeInputsSeen")]
+    [InlineData(2, "OutputsUnknown")]
+    public async Task OwnershipReplayRecoversAfterOnePersistenceFailure(int successfulSaves, string expectedState)
+    {
+        using var lookups = new PayjoinWalletOwnershipServiceTests.LookupFixture(coldWallet: true);
+        using var fixture = new ReceiverFixture(ownershipService: lookups.Service, ownershipLookups: lookups.States);
+        await fixture.PostOriginalAsync(additionalOutputs: 29);
+        void FailSelectedSave()
+        {
+            if (successfulSaves-- == 0) fixture.Factory.FailSaveChanges = true;
+            else fixture.Factory.BeforeNextSaveChanges = FailSelectedSave;
+        }
+        lookups.Handler.RespondAsync = (_, _) =>
+        {
+            if (lookups.Handler.Calls.Count == 62) fixture.Factory.BeforeNextSaveChanges = FailSelectedSave;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        };
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(62, lookups.Handler.Calls.Count);
+        using (var replay = fixture.Replay())
+        using (var state = replay.State()) Assert.Equal(expectedState, state.GetType().Name);
+        fixture.Factory.FailSaveChanges = false;
+        fixture.Factory.BeforeNextSaveChanges = null;
+        var continued = false;
+        var context = fixture.Context();
+        using (var replay = fixture.Replay())
+        using (var state = replay.State())
+        {
+            Task Continue(WantsOutputs proposal, PayjoinReceiverStateContext stateContext, CancellationToken token) { continued = true; return Task.CompletedTask; }
+            switch (state)
+            {
+                case ReceiveSession.MaybeInputsOwned owned:
+                    await fixture.StateProcessor.ProcessMaybeInputsOwnedAsync(context, owned.Inner, Continue, CancellationToken.None);
+                    break;
+                case ReceiveSession.MaybeInputsSeen seen:
+                    await fixture.StateProcessor.ProcessMaybeInputsSeenAsync(context, seen.Inner, Continue, CancellationToken.None);
+                    break;
+                case ReceiveSession.OutputsUnknown outputs:
+                    await fixture.StateProcessor.ProcessOutputsUnknownAsync(context, outputs.Inner, Continue, CancellationToken.None);
+                    break;
+            }
+        }
+        Assert.True(continued);
+        Assert.Equal(124, lookups.Handler.Calls.Count);
+        using var resumed = fixture.Replay();
+        using var resumedState = resumed.State();
+        Assert.IsType<ReceiveSession.WantsOutputs>(resumedState);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        for (var pass = 0; pass < PayjoinOwnershipLookupStateStore.MaxPasses; pass++)
+            Assert.Equal(PayjoinOwnershipLookupStatus.Ready, (await lookups.Service.CreateResolverAsync(context.Session,
+                context.OriginalTransaction!, context.ReceiverScript, TestContext.Current.CancellationToken)).Status);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await lookups.Service.CreateResolverAsync(context.Session,
+            context.OriginalTransaction!, context.ReceiverScript, TestContext.Current.CancellationToken)).Status);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedSessionDeletionRetainsTheOwnershipBudget(bool discard)
+    {
+        using var lookups = new PayjoinWalletOwnershipServiceTests.LookupFixture();
+        using var fixture = new ReceiverFixture(ownershipService: lookups.Service, ownershipLookups: lookups.States);
+        var session = fixture.Session();
+        var original = new PayjoinOriginalTransactionFacts(uint256.One, [], []);
+        for (var pass = 0; pass < PayjoinOwnershipLookupStateStore.MaxPasses; pass++)
+            Assert.NotNull(await lookups.ResolveAsync(original, session));
+        fixture.Factory.FailSaveChanges = true;
+        Assert.Throws<Microsoft.EntityFrameworkCore.DbUpdateException>(() =>
+        {
+            if (discard) fixture.Store.TryRemoveSessionUnlessNegotiating(session.InvoiceId);
+            else fixture.Store.RemoveSession(session.InvoiceId);
+        });
+        fixture.Factory.FailSaveChanges = false;
+        Assert.True(fixture.Store.TryGetSession(session.InvoiceId, out _));
+        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await lookups.LookupAsync(original, session)).Status);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReplayedCompletedAndReplyableErrorStatesReleaseTheOwnershipBudget(bool replyableError)
+    {
+        using var lookups = new PayjoinWalletOwnershipServiceTests.LookupFixture();
+        using var fixture = new ReceiverFixture(ownershipService: lookups.Service, ownershipLookups: lookups.States);
+        if (replyableError) await fixture.PrepareReplyableErrorAsync();
+        else { using var proposal = await fixture.PrepareProposalAsync(); }
+        var session = fixture.Session();
+        var original = new PayjoinOriginalTransactionFacts(uint256.One, [], []);
+        for (var pass = 0; pass < PayjoinOwnershipLookupStateStore.MaxPasses; pass++)
+            Assert.NotNull(await lookups.ResolveAsync(original, session));
+        using var replay = fixture.Replay();
+        using var state = replay.State();
+        if (replyableError) Assert.IsType<ReceiveSession.HasReplyableError>(state);
+        else Assert.IsType<ReceiveSession.PayjoinProposal>(state);
+        fixture.Store.CompleteOwnershipLookupIfFinished(session, state);
+        fixture.Store.CompleteOwnershipLookupIfFinished(session, state);
+        Assert.NotNull(await lookups.ResolveAsync(original, session));
+    }
+
+    [Fact]
+    public async Task DeferredOwnershipLookupRetainsNativeStateAndResumesWithoutRecordingInputsEarly()
+    {
+        using var lookups = new PayjoinWalletOwnershipServiceTests.LookupFixture(lookupTimeout: TimeSpan.FromMilliseconds(100));
+        using var fixture = new ReceiverFixture(ownershipService: lookups.Service, ownershipLookups: lookups.States);
+        await fixture.PostOriginalAsync();
+        lookups.Handler.RespondAsync = async (request, token) =>
+        {
+            if (!request.RequestUri!.AbsolutePath.Contains("/transactions/", StringComparison.Ordinal))
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        };
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var deferredEvents = fixture.Events();
+        var deferredRequests = lookups.Handler.Calls.Count;
+        using (var replay = fixture.Replay())
+        using (var state = replay.State())
+            Assert.IsType<ReceiveSession.MaybeInputsOwned>(state);
+
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+
+        Assert.Equal(deferredEvents, fixture.Events());
+        Assert.Equal(deferredRequests, lookups.Handler.Calls.Count);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        lookups.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+        lookups.Handler.RespondAsync = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        var continued = false;
+        using (var replay = fixture.Replay())
+        using (var state = replay.State())
+        {
+            var owned = Assert.IsType<ReceiveSession.MaybeInputsOwned>(state);
+            await fixture.StateProcessor.ProcessMaybeInputsOwnedAsync(fixture.Context(), owned.Inner,
+                (_, _, _) => { continued = true; return Task.CompletedTask; }, CancellationToken.None);
+        }
+        Assert.True(continued);
+        using var resumed = fixture.Replay();
+        using var resumedState = resumed.State();
+        Assert.IsType<ReceiveSession.WantsOutputs>(resumedState);
+    }
+
     [Fact]
     public async Task SameInstanceRejectionPreservesSessionAndUriUntilAnotherRelayIsAvailable()
     {
@@ -256,14 +397,15 @@ public class PayjoinReceiverRelayFlowTests
         private PassthroughSigner Signer { get; } = new();
         private BitcoinAddress Address => _key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
 
-        public ReceiverFixture(TimeSpan? quarantineDuration = null, TimeProvider? timeProvider = null)
+        public ReceiverFixture(TimeSpan? quarantineDuration = null, TimeProvider? timeProvider = null,
+            IPayjoinWalletOwnershipService? ownershipService = null, PayjoinOwnershipLookupStateStore? ownershipLookups = null)
         {
             Services.WaitForServicesReady();
             Transport = new LocalMailroomHandler(Services);
             _http = new HttpClient(Transport);
             Manager = new PayjoinMailroomManager(NullLogger<PayjoinMailroomManager>.Instance,
                 quarantineDuration ?? TimeSpan.FromMinutes(10), (_, _, _, _) => throw new NotSupportedException(), timeProvider);
-            Store = new PayjoinReceiverSessionStore(Factory, new SqliteUniqueConstraintViolationDetector(), Manager);
+            Store = new PayjoinReceiverSessionStore(Factory, new SqliteUniqueConstraintViolationDetector(), Manager, ownershipLookups: ownershipLookups);
             using var keys = Services.FetchOhttpKeys();
             using var builder = new ReceiverBuilder(Address.ToString(), Services.DirectoryUrl(), keys);
             using var bootstrap = builder.Build();
@@ -274,7 +416,7 @@ public class PayjoinReceiverRelayFlowTests
             var httpFactory = Substitute.For<IHttpClientFactory>();
             httpFactory.CreateClient(Arg.Any<string>()).Returns(_http);
             var sender = new PayjoinReceiverRelayRequestSender(_settings, Manager, new PayjoinReceiverRelayClient(httpFactory));
-            StateProcessor = new PayjoinReceiverStateProcessor(Store, sender, Wallet,
+            StateProcessor = new PayjoinReceiverStateProcessor(Store, sender, ownershipService ?? Wallet,
                 new PayjoinSeenInputStore(Factory), Manager);
             var bridge = new PayjoinAccountingBridgeService(Factory, new SqliteUniqueConstraintViolationDetector(), new PayjoinSessionBuildLock());
             ProposalSigner = new RecordingProposalSigner(Signer);
@@ -291,7 +433,15 @@ public class PayjoinReceiverRelayFlowTests
             return Assert.IsType<PayjoinReceiverSessionState>(session);
         }
 
-        public PayjoinReceiverStateContext Context() => new(Session(), Store.CreatePersister(Session()), Address.ScriptPubKey.ToBytes(), "store", "invoice", _ => false);
+        public PayjoinReceiverStateContext Context()
+        {
+            var context = new PayjoinReceiverStateContext(Session(), Store.CreatePersister(Session()), Address.ScriptPubKey.ToBytes(), "store", "invoice", _ => false);
+            using var replay = Replay();
+            using var history = replay.SessionHistory();
+            if (history.FallbackTx() is { Length: > 0 } bytes)
+                context.OriginalTransaction = PayjoinReceiverStateProcessor.ExtractTransactionFacts(bytes);
+            return context;
+        }
         public ReplayResult Replay() => PayjoinMethods.ReplayReceiverEventLog(Store.CreatePersister(Session()));
 
         public string[] Events()
@@ -301,14 +451,20 @@ public class PayjoinReceiverRelayFlowTests
                 .OrderBy(e => e.Sequence).Select(e => e.Event).ToArray();
         }
 
-        public async Task PostOriginalAsync()
+        public async Task PostOriginalAsync(int additionalOutputs = 0)
         {
             // Synthetic native SegWit coin: this exercises protocol state, not an on-chain payment.
             using var senderKey = new Key();
             var senderAddress = senderKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
-            var coin = new Coin(new OutPoint(uint256.Parse(new string('a', 64)), 0), new TxOut(Money.Satoshis(100_000), senderAddress));
-            var psbt = Network.RegTest.CreateTransactionBuilder().AddCoins(coin).AddKeys(senderKey)
-                .Send(Address, Money.Satoshis(50_000)).SetChange(senderAddress).SendFees(Money.Satoshis(1_000)).BuildPSBT(true).Finalize();
+            var coin = new Coin(new OutPoint(uint256.Parse(new string('a', 64)), 0), new TxOut(Money.Satoshis(1_000_000), senderAddress));
+            var transaction = Network.RegTest.CreateTransactionBuilder().AddCoins(coin).AddKeys(senderKey)
+                .Send(Address, Money.Satoshis(50_000)).SetChange(senderAddress).SendFees(Money.Satoshis(2_000));
+            for (var i = 0; i < additionalOutputs; i++)
+            {
+                using var outputKey = new Key();
+                transaction.Send(outputKey.PubKey.WitHash.ScriptPubKey, Money.Satoshis(1_000));
+            }
+            var psbt = transaction.BuildPSBT(true).Finalize();
             using var uri = Receiver.PjUri();
             using var builder = new SenderBuilder(psbt.ToBase64(), uri);
             using var transition = builder.BuildRecommended(1000);
@@ -385,7 +541,13 @@ public class PayjoinReceiverRelayFlowTests
         {
             var persister = store.CreatePersister(session);
             var replay = PayjoinMethods.ReplayReceiverEventLog(persister);
-            return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(session, persister, script, replay, replay.State(), _ => false));
+            var state = replay.State();
+            store.CompleteOwnershipLookupIfFinished(session, state);
+            var result = new PayjoinReceiverSessionGuardResult(session, persister, script, replay, state, _ => false);
+            using var history = replay.SessionHistory();
+            if (history.FallbackTx() is { Length: > 0 } bytes)
+                result.StateContext.OriginalTransaction = PayjoinReceiverStateProcessor.ExtractTransactionFacts(bytes);
+            return Task.FromResult<PayjoinReceiverSessionGuardResult?>(result);
         }
     }
 
@@ -393,15 +555,14 @@ public class PayjoinReceiverRelayFlowTests
     {
         public bool FailInputLookup { get; set; }
         public int InputLookupCalls { get; private set; }
-        public Task<PayjoinInputOwnershipResolver> CreateInputResolverAsync(string storeId, IReadOnlyCollection<OutPoint> candidateInputOutpoints, CancellationToken cancellationToken)
+        public Task<PayjoinOwnershipLookupResult> CreateResolverAsync(PayjoinReceiverSessionState session, PayjoinOriginalTransactionFacts originalTransaction, byte[] receiverScript, CancellationToken cancellationToken)
         {
             InputLookupCalls++;
             return FailInputLookup
-                ? Task.FromException<PayjoinInputOwnershipResolver>(new HttpRequestException("injected wallet lookup failure"))
-                : Task.FromResult(new PayjoinInputOwnershipResolver([]));
+                ? Task.FromException<PayjoinOwnershipLookupResult>(new HttpRequestException("injected wallet lookup failure"))
+                : Task.FromResult(PayjoinOwnershipLookupResult.Ready(new PayjoinOwnershipResolver(
+                    new PayjoinInputOwnershipResolver([]), new PayjoinScriptOwnershipResolver(receiverScript, []))));
         }
-        public Task<PayjoinScriptOwnershipResolver> CreateOutputResolverAsync(string storeId, byte[] receiverScript, IReadOnlyCollection<byte[]> candidateOutputScripts, CancellationToken cancellationToken)
-            => Task.FromResult(new PayjoinScriptOwnershipResolver(receiverScript, []));
     }
 
     private sealed class RejectBroadcast : CanBroadcast

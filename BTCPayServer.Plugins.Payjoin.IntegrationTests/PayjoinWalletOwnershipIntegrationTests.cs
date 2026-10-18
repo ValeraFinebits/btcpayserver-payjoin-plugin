@@ -83,14 +83,18 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         var otherOutputFromWalletTransaction = new OutPoint(coin.OutPoint.Hash, otherOutputIndexes[0]);
         var foreignOutpoint = new OutPoint(uint256.One, 0);
         var ownershipService = tester.PayTester.GetService<IPayjoinWalletOwnershipService>();
-        var resolver = await ownershipService.CreateInputResolverAsync(
-            context.Merchant.StoreId,
-            [coin.OutPoint, otherOutputFromWalletTransaction, foreignOutpoint],
+        var session = await CreateSessionAsync(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        var resolver = await ownershipService.CreateResolverAsync(
+            session,
+            new PayjoinOriginalTransactionFacts(uint256.One, [coin.OutPoint, otherOutputFromWalletTransaction, foreignOutpoint], []),
+            [],
             cts.Token).ConfigureAwait(true);
 
-        Assert.True(resolver.IsOwned(coin.OutPoint.Hash.ToString(), coin.OutPoint.N));
-        Assert.False(resolver.IsOwned(otherOutputFromWalletTransaction.Hash.ToString(), otherOutputFromWalletTransaction.N));
-        Assert.False(resolver.IsOwned(foreignOutpoint.Hash.ToString(), foreignOutpoint.N));
+        Assert.Equal(PayjoinOwnershipLookupStatus.Ready, resolver.Status);
+        Assert.NotNull(resolver.Resolver);
+        Assert.True(resolver.Resolver.Inputs.IsOwned(coin.OutPoint.Hash.ToString(), coin.OutPoint.N));
+        Assert.False(resolver.Resolver.Inputs.IsOwned(otherOutputFromWalletTransaction.Hash.ToString(), otherOutputFromWalletTransaction.N));
+        Assert.False(resolver.Resolver.Inputs.IsOwned(foreignOutpoint.Hash.ToString(), foreignOutpoint.N));
     }
 
     [Fact]
@@ -137,11 +141,24 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         }).ConfigureAwait(true);
 
         var ownershipService = tester.PayTester.GetService<IPayjoinWalletOwnershipService>();
-        var resolver = await ownershipService.CreateInputResolverAsync(
-            context.Merchant.StoreId,
-            [coldOutpoint!],
+        var session = await CreateSessionAsync(tester, context.Merchant, cts.Token).ConfigureAwait(true);
+        var resolver = await ownershipService.CreateResolverAsync(
+            session,
+            new PayjoinOriginalTransactionFacts(uint256.One, [coldOutpoint!], []),
+            [],
             cts.Token).ConfigureAwait(true);
 
-        Assert.True(resolver.IsOwned(coldOutpoint!.Hash.ToString(), coldOutpoint.N));
+        Assert.Equal(PayjoinOwnershipLookupStatus.Ready, resolver.Status);
+        Assert.NotNull(resolver.Resolver);
+        Assert.True(resolver.Resolver.Inputs.IsOwned(coldOutpoint!.Hash.ToString(), coldOutpoint.N));
+    }
+
+    private static async Task<PayjoinReceiverSessionState> CreateSessionAsync(ServerTester tester, TestAccount merchant,
+        CancellationToken cancellationToken)
+    {
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, merchant.StoreId, cancellationToken: cancellationToken).ConfigureAwait(true);
+        var (invoiceId, bip21) = await PayjoinIntegrationTestSupport.CreateInvoiceAndGetBip21Async(tester, merchant, cancellationToken).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertPayjoinBip21(bip21);
+        return PayjoinReceiverTestHelper.GetRequiredReceiverSession(tester, invoiceId);
     }
 }
