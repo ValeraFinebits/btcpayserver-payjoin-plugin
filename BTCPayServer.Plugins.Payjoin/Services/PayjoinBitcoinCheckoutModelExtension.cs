@@ -1,10 +1,13 @@
 using BTCPayServer.Client.Models;
+using BTCPayServer.Data;
+using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Models.InvoicingModels;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Services;
 using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -95,16 +98,33 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
         });
 
         var payjoinV2Enabled = storeSettings?.PayjoinV2Enabled == true;
-        var prompt = payjoinV2Enabled ? context.Prompt : null;
+        var profileStatus = PayjoinAvailabilityStatus.TemporarilyUnavailable;
+        try
+        {
+            var walletConfig = payjoinV2Enabled ? context.Store.GetPaymentMethodConfig(PaymentMethodId, onlyEnabled: true) : null;
+            var walletSettings = walletConfig is null ? null : context.Handler.ParsePaymentMethodConfig(walletConfig) as DerivationSchemeSettings;
+            profileStatus = PayjoinWalletContext.GetProfileStatus(walletSettings);
+        }
+        catch (Exception e) when (e is JsonException or FormatException)
+        {
+            if (_logger is not null)
+            {
+                LogCheckoutModelFailure(_logger, context.InvoiceEntity.Id, e);
+            }
+        }
+        var allowBootstrap = payjoinV2Enabled && profileStatus != PayjoinAvailabilityStatus.MerchantRequirementsUnmet;
+        var publishSavedUri = payjoinV2Enabled && profileStatus == PayjoinAvailabilityStatus.Active;
+        var prompt = publishSavedUri ? context.Prompt : null;
 
         ApplyPayjoinCheckoutModel(
             context.Model,
-            payjoinV2Enabled,
+            allowBootstrap,
             paymentUrlEndpoint,
             context.InvoiceEntity.Id,
             prompt?.Destination,
             prompt?.Calculate().Due,
-            _payjoinSessionUriReader);
+            _payjoinSessionUriReader,
+            publishSavedUri);
     }
 
     internal static void ApplyPayjoinCheckoutModel(
@@ -114,7 +134,8 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
         string invoiceId,
         string? destination,
         decimal? due,
-        PayjoinSessionUriReader payjoinSessionUriReader)
+        PayjoinSessionUriReader payjoinSessionUriReader,
+        bool publishSavedUri = true)
     {
         ArgumentNullException.ThrowIfNull(payjoinSessionUriReader);
 
@@ -123,7 +144,7 @@ public sealed class PayjoinBitcoinCheckoutModelExtension : ICheckoutModelExtensi
             return;
         }
 
-        if (!payjoinV2Enabled)
+        if (!payjoinV2Enabled || !publishSavedUri)
         {
             return;
         }

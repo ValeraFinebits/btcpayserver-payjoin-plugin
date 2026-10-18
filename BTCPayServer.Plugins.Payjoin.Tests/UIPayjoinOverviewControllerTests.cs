@@ -3,6 +3,13 @@ using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
 using BTCPayServer.Data;
 using BTCPayServer.Logging;
+using BTCPayServer.HostedServices;
+using NBXplorer.Models;
+using BTCPayServer.Payments;
+using BTCPayServer.Services.Invoices;
+using NBXplorer.DerivationStrategy;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Plugins.Payjoin.Services;
@@ -88,6 +95,143 @@ public class UIPayjoinOverviewControllerTests
         Assert.Null(store.HasConfirmedReceiverInputs);
     }
 
+    [Theory]
+    [InlineData(false, "NBXplorerGenerated", true, "danger", "Needs configuration")]
+    [InlineData(true, "ImportedSeed", true, "danger", "Needs configuration")]
+    [InlineData(true, "NBXplorerGenerated", false, "warning", "Unavailable")]
+    public async Task IndexExplainsProfileBeforeAnyUnavailableCoinLookup(
+        bool hot, string source, bool accountAvailable, string severity, string title)
+    {
+        using var context = new TestContext(registerBitcoinNetwork: true);
+        var bitcoin = new NBXplorerNetworkProvider(ChainName.Regtest).GetFromCryptoCode("BTC");
+        var serializer = JsonSerializer.Create(bitcoin.Serializer.Settings);
+        var handler = Substitute.For<IPaymentMethodHandler>();
+        var paymentMethod = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
+        handler.PaymentMethodId.Returns(paymentMethod);
+        ((IHandler<PaymentMethodId>)handler).Id.Returns(paymentMethod);
+        handler.Serializer.Returns(serializer);
+        handler.ParsePaymentMethodConfig(Arg.Any<JToken>()).Returns(call => ((JToken)call[0]).ToObject<DerivationSchemeSettings>(serializer)!);
+        using var controller = context.CreateController(new PaymentMethodHandlerDictionary([handler]));
+        var store = controller.HttpContext.GetNavStoreData()!;
+        store.SetPaymentMethodConfig(handler, new DerivationSchemeSettings
+        {
+            IsHotWallet = hot, Source = source,
+            AccountDerivation = accountAvailable ? bitcoin.DerivationStrategyFactory.CreateDirectDerivationStrategy(
+                new ExtKey().Neuter(), new DerivationStrategyOptions()) : null!
+        });
+
+        var view = Assert.IsType<ViewResult>(await controller.Index());
+        var model = Assert.IsType<PayjoinOverviewViewModel>(view.Model).CurrentStore!;
+        Assert.Null(model.HasConfirmedReceiverInputs);
+        Assert.Equal(severity, model.Status.Severity);
+        Assert.Equal(title, model.Status.Title);
+        Assert.Contains("not checked", model.Status.Message, StringComparison.Ordinal);
+        Assert.Contains("standard Bitcoin payment", model.Status.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("no confirmed receiver inputs", model.Status.Message, StringComparison.Ordinal);
+        if (accountAvailable)
+        {
+            Assert.Contains("BTCPay-generated hot wallet", model.Status.Message, StringComparison.Ordinal);
+            Assert.Equal(PayjoinCheckoutMode.StandardBitcoin, model.DefaultCheckoutMode);
+        }
+        else
+        {
+            Assert.Contains("could not be confirmed", model.Status.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("json", true, true, false)]
+    [InlineData("format", true, true, false)]
+    [InlineData("json", false, true, false)]
+    [InlineData("format", false, true, false)]
+    [InlineData("json", true, false, false)]
+    [InlineData("format", true, false, false)]
+    [InlineData("json", true, true, true)]
+    [InlineData("format", true, true, true)]
+    [InlineData("cancel", true, true, false)]
+    [InlineData("cancel", false, true, false)]
+    [InlineData("cancel", true, false, false)]
+    [InlineData("cancel", true, true, true)]
+    [InlineData(null, true, true, false)]
+    [InlineData(null, false, true, false)]
+    public async Task IndexHandlesProfileReadErrorsIncludingTheV1Fallback(
+        string? failure, bool enabled, bool settingsAvailable, bool failSecondRead)
+    {
+        using var context = new TestContext(payjoinV2Enabled: enabled, registerBitcoinNetwork: true, settingsAvailable: settingsAvailable);
+        var bitcoin = new NBXplorerNetworkProvider(ChainName.Regtest).GetFromCryptoCode("BTC");
+        var serializer = JsonSerializer.Create(bitcoin.Serializer.Settings);
+        var method = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
+        var handler = Substitute.For<IPaymentMethodHandler>();
+        handler.PaymentMethodId.Returns(method);
+        ((IHandler<PaymentMethodId>)handler).Id.Returns(method);
+        handler.Serializer.Returns(serializer);
+        var reads = 0;
+        StoreData? store = null;
+        handler.ParsePaymentMethodConfig(Arg.Any<JToken>()).Returns(call =>
+        {
+            reads++;
+            if (failure is not null && (!failSecondRead || reads == 2))
+            {
+                throw failure switch
+                {
+                    "json" => new JsonSerializationException("Invalid wallet profile"),
+                    "format" => new FormatException("Invalid wallet derivation"),
+                    _ => new OperationCanceledException()
+                };
+            }
+            if (failure == "json" && failSecondRead)
+            {
+                store!.DerivationStrategies = "{";
+            }
+            return ((JToken)call[0]).ToObject<DerivationSchemeSettings>(serializer)!;
+        });
+        var dashboard = new NBXplorerDashboard();
+        dashboard.Publish(new BTCPayNetwork { CryptoCode = "BTC" }, NBXplorerState.Ready,
+            new StatusResult { BitcoinStatus = new() { Capabilities = new() { CanSupportTransactionCheck = true } } }, null!, null!);
+        using var controller = context.CreateController(new PaymentMethodHandlerDictionary([handler]), dashboard);
+        store = controller.HttpContext.GetNavStoreData()!;
+        store.SetStoreBlob(new StoreBlob { PayJoinEnabled = true });
+        store.SetPaymentMethodConfig(handler, new DerivationSchemeSettings
+        {
+            IsHotWallet = true, Source = "ImportedSeed",
+            AccountDerivation = bitcoin.DerivationStrategyFactory.CreateDirectDerivationStrategy(
+                new ExtKey().Neuter(), new DerivationStrategyOptions { ScriptPubKeyType = ScriptPubKeyType.Segwit })
+        });
+        if (failure == "json" && !failSecondRead)
+        {
+            store.DerivationStrategies = "{";
+        }
+
+        if (failure == "cancel")
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(() => controller.Index());
+            return;
+        }
+
+        var view = Assert.IsType<ViewResult>(await controller.Index());
+        var model = Assert.IsType<PayjoinOverviewViewModel>(view.Model).CurrentStore!;
+        Assert.Equal(failure is null, model.V1FallbackEffective);
+        Assert.Equal(enabled && settingsAvailable && failure is not null && !failSecondRead
+            ? PayjoinCheckoutMode.AsyncPayjoin
+            : failure is null ? PayjoinCheckoutMode.PayjoinV1 : PayjoinCheckoutMode.StandardBitcoin, model.DefaultCheckoutMode);
+        if (!settingsAvailable)
+        {
+            Assert.Equal("danger", model.Status.Severity);
+            Assert.Equal("Unavailable", model.Status.Title);
+        }
+        else
+        {
+            Assert.Null(model.HasConfirmedReceiverInputs);
+            Assert.Equal(!enabled ? "Disabled" : failSecondRead || failure is null ? "Needs configuration" : "Unavailable", model.Status.Title);
+            Assert.Equal(!enabled ? "secondary" : failSecondRead || failure is null ? "danger" : "warning", model.Status.Severity);
+            Assert.Contains(failure is null ? "built-in Payjoin v1" : "standard Bitcoin payment", model.Status.Message, StringComparison.Ordinal);
+        }
+        if (failure != "json")
+        {
+            Assert.Equal(enabled && settingsAvailable ? 2 : 1, reads);
+        }
+    }
+
     [Fact]
     public async Task RetryBridgeRetriesAnEligibleBridgeAndRedirectsToTheOverview()
     {
@@ -150,15 +294,18 @@ public class UIPayjoinOverviewControllerTests
         private readonly bool _canModifyStoreSettings;
         private readonly bool _payjoinV2Enabled;
         private readonly bool _registerBitcoinNetwork;
+        private readonly bool _settingsAvailable;
 
         public TestContext(
             bool canModifyStoreSettings = true,
             bool payjoinV2Enabled = true,
-            bool registerBitcoinNetwork = false)
+            bool registerBitcoinNetwork = false,
+            bool settingsAvailable = true)
         {
             _canModifyStoreSettings = canModifyStoreSettings;
             _payjoinV2Enabled = payjoinV2Enabled;
             _registerBitcoinNetwork = registerBitcoinNetwork;
+            _settingsAvailable = settingsAvailable;
             BridgeService = new PayjoinAccountingBridgeService(_dbContextFactory, new PayjoinSessionBuildLock());
         }
 
@@ -182,13 +329,13 @@ public class UIPayjoinOverviewControllerTests
                 CancellationToken.None);
         }
 
-        public UIPayjoinOverviewController CreateController()
+        public UIPayjoinOverviewController CreateController(PaymentMethodHandlerDictionary? handlers = null, NBXplorerDashboard? dashboard = null)
         {
             var storeSettingsRepository = Substitute.For<IPayjoinStoreSettingsRepository>();
-            storeSettingsRepository.GetAsync(StoreId).Returns(Task.FromResult<PayjoinStoreSettings?>(new PayjoinStoreSettings
+            storeSettingsRepository.GetAsync(StoreId).Returns(Task.FromResult<PayjoinStoreSettings?>(_settingsAvailable ? new PayjoinStoreSettings
             {
                 PayjoinV2Enabled = _payjoinV2Enabled
-            }));
+            } : null));
 
             var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
             var networks = _registerBitcoinNetwork
@@ -196,7 +343,7 @@ public class UIPayjoinOverviewControllerTests
                 : [];
             var networkProvider = new BTCPayNetworkProvider(networks, nbxplorerNetworkProvider, new Logs());
 
-            var availabilityService = new PayjoinAvailabilityService(null!, null!, null!);
+            var availabilityService = new PayjoinAvailabilityService(null!, null!, null!, null!);
 
             var authorizationService = Substitute.For<IAuthorizationService>();
             authorizationService.AuthorizeAsync(Arg.Any<ClaimsPrincipal>(), Arg.Any<object?>(), Policies.CanViewStoreSettings)
@@ -214,8 +361,8 @@ public class UIPayjoinOverviewControllerTests
             var controller = new UIPayjoinOverviewController(
                 storeSettingsRepository,
                 availabilityService,
-                null!,
-                null!,
+                handlers!,
+                dashboard!,
                 networkProvider,
                 authorizationService,
                 new PayjoinBridgeAttentionService(BridgeService),

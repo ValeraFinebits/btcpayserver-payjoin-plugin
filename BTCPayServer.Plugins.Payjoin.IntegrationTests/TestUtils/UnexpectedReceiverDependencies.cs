@@ -22,10 +22,6 @@ internal sealed class UnexpectedReceiverDependencies : IPayjoinReceiverRelayRequ
         IReadOnlyCollection<NBitcoin.OutPoint> candidateInputOutpoints, CancellationToken cancellationToken)
         => Unexpected<Task<PayjoinInputOwnershipResolver>>(nameof(CreateInputResolverAsync));
 
-    public Task<PayjoinScriptOwnershipResolver> CreateOutputResolverAsync(string storeId, byte[] receiverScript,
-        IReadOnlyCollection<byte[]> candidateOutputScripts, CancellationToken cancellationToken)
-        => Unexpected<Task<PayjoinScriptOwnershipResolver>>(nameof(CreateOutputResolverAsync));
-
     public Task<PayjoinReceiverOutputBuilder.OutputBuildResult> TryCreateSettlementOutputsAsync(string storeId,
         string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats,
         CancellationToken cancellationToken)
