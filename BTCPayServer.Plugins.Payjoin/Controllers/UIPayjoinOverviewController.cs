@@ -6,10 +6,12 @@ using BTCPayServer.Data;
 using BTCPayServer.HostedServices;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Plugins.Payjoin.Models;
 using BTCPayServer.Services.Invoices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Localization;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -137,15 +139,33 @@ public class UIPayjoinOverviewController : Controller
         var directoryConfigured = directoryUrls.Count > 0;
         var relayConfigured = ohttpRelayUrls.Count > 0;
         var hasColdWallet = !string.IsNullOrWhiteSpace(settings.ColdWalletDerivationScheme);
-        bool? hasConfirmedReceiverInputs = settings.PayjoinV2Enabled && network is not null
-            ? await _availabilityService.HasConfirmedReceiverInputsAsync(currentStore.Id, BitcoinCode, network, HttpContext.RequestAborted).ConfigureAwait(false)
-            : null;
+        var profileStatus = PayjoinAvailabilityStatus.TemporarilyUnavailable;
+        bool? hasConfirmedReceiverInputs = null;
+        if (settings.PayjoinV2Enabled && network is not null && directoryConfigured && relayConfigured)
+        {
+            try
+            {
+                var walletSettings = currentStore.GetPaymentMethodConfig<DerivationSchemeSettings>(
+                    PaymentTypes.CHAIN.GetPaymentMethodId(BitcoinCode), _handlers, true);
+                profileStatus = PayjoinWalletContext.GetProfileStatus(walletSettings);
+            }
+            catch (Exception e) when (e is JsonException or FormatException)
+            {
+                profileStatus = PayjoinAvailabilityStatus.TemporarilyUnavailable;
+            }
+            if (profileStatus == PayjoinAvailabilityStatus.Active)
+            {
+                hasConfirmedReceiverInputs = await _availabilityService.HasConfirmedReceiverInputsAsync(
+                    currentStore.Id, BitcoinCode, network, HttpContext.RequestAborted).ConfigureAwait(false);
+            }
+        }
 
         var v1FallbackEffective = network is not null && IsPayjoinV1Effective(currentStore, network);
-        var defaultCheckoutMode = ResolveDefaultCheckoutMode(settings.PayjoinV2Enabled, v1FallbackEffective);
-        var fallbackTarget = ResolveFallbackTarget(settings.PayjoinV2Enabled, v1FallbackEffective);
+        var allowPayjoinV2 = settings.PayjoinV2Enabled && profileStatus != PayjoinAvailabilityStatus.MerchantRequirementsUnmet;
+        var defaultCheckoutMode = ResolveDefaultCheckoutMode(allowPayjoinV2, v1FallbackEffective);
+        var fallbackTarget = ResolveFallbackTarget(allowPayjoinV2, v1FallbackEffective);
 
-        var status = ResolveStatus(settings.PayjoinV2Enabled, directoryConfigured, relayConfigured, network is not null, hasConfirmedReceiverInputs is true, v1FallbackEffective);
+        var status = ResolveStatus(settings.PayjoinV2Enabled, directoryConfigured, relayConfigured, network is not null, hasConfirmedReceiverInputs is true, v1FallbackEffective, profileStatus);
         return new CurrentStorePayjoinStatusViewModel(
             currentStore.Id,
             currentStore.StoreName,
@@ -165,7 +185,8 @@ public class UIPayjoinOverviewController : Controller
         bool relayConfigured,
         bool networkAvailable,
         bool hasConfirmedReceiverInputs,
-        bool v1FallbackEffective)
+        bool v1FallbackEffective,
+        PayjoinAvailabilityStatus profileStatus = PayjoinAvailabilityStatus.Active)
     {
         if (!payjoinV2Enabled)
         {
@@ -194,6 +215,22 @@ public class UIPayjoinOverviewController : Controller
                 "danger",
                 StringLocalizer["Needs configuration"].Value,
                 StringLocalizer["The selected store is missing the directory URL or OHTTP relay URL required for the basic Async Payjoin (Payjoin V2, BIP 77) prerequisites."].Value);
+        }
+
+        if (profileStatus == PayjoinAvailabilityStatus.MerchantRequirementsUnmet)
+        {
+            var message = v1FallbackEffective
+                ? StringLocalizer["Async Payjoin requires a BTCPay-generated hot wallet used exclusively through this BTCPay/NBXplorer installation. Receiver inputs were not checked. Checkout falls back to built-in Payjoin v1 (BIP 78)."].Value
+                : StringLocalizer["Async Payjoin requires a BTCPay-generated hot wallet used exclusively through this BTCPay/NBXplorer installation. Receiver inputs were not checked. Checkout falls back to a standard Bitcoin payment."].Value;
+            return new PayjoinCurrentStoreStatus("danger", StringLocalizer["Needs configuration"].Value, message);
+        }
+
+        if (profileStatus != PayjoinAvailabilityStatus.Active)
+        {
+            var message = v1FallbackEffective
+                ? StringLocalizer["The wallet profile could not be confirmed right now. Receiver inputs were not checked. Checkout falls back to built-in Payjoin v1 (BIP 78) until the profile is available."].Value
+                : StringLocalizer["The wallet profile could not be confirmed right now. Receiver inputs were not checked. Checkout falls back to a standard Bitcoin payment until the profile is available."].Value;
+            return new PayjoinCurrentStoreStatus("warning", StringLocalizer["Unavailable"].Value, message);
         }
 
         if (!hasConfirmedReceiverInputs)
@@ -230,7 +267,15 @@ public class UIPayjoinOverviewController : Controller
             return false;
         }
 
-        var derivation = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, _handlers, false);
+        DerivationSchemeSettings? derivation;
+        try
+        {
+            derivation = store.GetPaymentMethodConfig<DerivationSchemeSettings>(paymentMethodId, _handlers, false);
+        }
+        catch (Exception e) when (e is JsonException or FormatException)
+        {
+            return false;
+        }
         if (derivation?.AccountDerivation is not { } accountDerivation)
         {
             return false;

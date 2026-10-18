@@ -49,10 +49,6 @@ internal interface IPayjoinReceiverStateProcessor
         CancellationToken cancellationToken);
 }
 
-internal sealed record PayjoinOriginalTransactionFacts(
-    IReadOnlyList<NBitcoin.OutPoint> InputOutpoints,
-    IReadOnlyList<byte[]> OutputScripts);
-
 internal sealed class PayjoinReceiverStateContext
 {
     public PayjoinReceiverStateContext(
@@ -85,9 +81,5 @@ internal sealed class PayjoinReceiverStateContext
 
     internal IReadOnlyList<NBitcoin.OutPoint> OriginalInputOutpoints { get; set; } = Array.Empty<NBitcoin.OutPoint>();
 
-    internal IReadOnlyList<byte[]> OriginalOutputScripts { get; set; } = Array.Empty<byte[]>();
-
     internal PayjoinInputOwnershipResolver? InputOwnershipResolver { get; set; }
-
-    internal PayjoinScriptOwnershipResolver? OutputOwnershipResolver { get; set; }
 }

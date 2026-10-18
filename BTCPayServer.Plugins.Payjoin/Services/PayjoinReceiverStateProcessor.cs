@@ -1,6 +1,7 @@
 using Payjoin;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Runtime.ExceptionServices;
 using System.Threading;
@@ -126,7 +127,6 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         }
 
         // TODO: Validate this untrusted PSBT with Bitcoin Core testmempoolaccept before contributing receiver inputs.
-        // TODO: Reject or suspend proposals while cold-wallet ownership readiness is unverified.
         using var transition = proposal.AssumeInteractiveReceiver();
         using var maybeInputsOwned = transition.Save(context.Persister);
         await ProcessMaybeInputsOwnedAsync(context, maybeInputsOwned, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
@@ -139,16 +139,21 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         CancellationToken cancellationToken)
     {
         // A payload that arrived within this tick is not in the replayed history yet, so parse the
-        // fallback transaction once and share its authoritative input outpoints and output scripts
+        // fallback transaction once and share its authoritative input outpoints
         // with the rest of the chain through the context.
         if (context.OriginalInputOutpoints.Count == 0)
         {
-            var originalTransaction = ExtractTransactionFacts(proposal.ExtractTxToScheduleBroadcast());
-            context.OriginalInputOutpoints = originalTransaction.InputOutpoints;
-            context.OriginalOutputScripts = originalTransaction.OutputScripts;
+            context.OriginalInputOutpoints = ExtractOriginalInputOutpoints(proposal.ExtractTxToScheduleBroadcast());
         }
 
         var ownershipResolver = await GetOrCreateInputOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
+        if (context.OriginalInputOutpoints.Any(input => ownershipResolver.GetOwnership(input) == PayjoinInputOwnership.Unknown))
+        {
+            // Retain MaybeInputsOwned and retry with fresh wallet evidence on the next tick.
+            // Unknown must never reach the boolean native callback or its persisted transition.
+            return;
+        }
+
         using var transition = proposal.CheckInputsNotOwned(new WalletInputOwnedCallback(ownershipResolver));
         using var maybeInputsSeen = transition.Save(context.Persister);
         await ProcessMaybeInputsSeenAsync(context, maybeInputsSeen, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
@@ -176,8 +181,9 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken)
     {
-        var ownershipResolver = await GetOrCreateOutputOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
-        using var transition = proposal.IdentifyReceiverOutputs(new WalletScriptOwnedCallback(ownershipResolver));
+        cancellationToken.ThrowIfCancellationRequested();
+        var matcher = new PayjoinInvoiceOutputMatcher(context.ReceiverScript);
+        using var transition = proposal.IdentifyReceiverOutputs(new InvoiceOutputCallback(matcher));
         using var wantsOutputs = transition.Save(context.Persister);
         await continueWithOutputsAsync(wantsOutputs, context, cancellationToken).ConfigureAwait(false);
     }
@@ -193,19 +199,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         return context.InputOwnershipResolver;
     }
 
-    private async Task<PayjoinScriptOwnershipResolver> GetOrCreateOutputOwnershipResolverAsync(
-        PayjoinReceiverStateContext context,
-        CancellationToken cancellationToken)
-    {
-        context.OutputOwnershipResolver ??= await _walletOwnershipService.CreateOutputResolverAsync(
-            context.StoreId,
-            context.ReceiverScript,
-            context.OriginalOutputScripts,
-            cancellationToken).ConfigureAwait(false);
-        return context.OutputOwnershipResolver;
-    }
-
-    internal static PayjoinOriginalTransactionFacts ExtractTransactionFacts(byte[] transactionBytes)
+    internal static IReadOnlyList<NBitcoin.OutPoint> ExtractOriginalInputOutpoints(byte[] transactionBytes)
     {
         if (transactionBytes.Length == 0)
         {
@@ -219,13 +213,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             inputOutpoints.Add(input.PrevOut);
         }
 
-        var scripts = new List<byte[]>(transaction.Outputs.Count);
-        foreach (var output in transaction.Outputs)
-        {
-            scripts.Add(output.ScriptPubKey.ToBytes());
-        }
-
-        return new PayjoinOriginalTransactionFacts(inputOutpoints, scripts);
+        return inputOutpoints;
     }
 
     private PayjoinReceiverStateContext RefreshCloseRequestedContext(PayjoinReceiverStateContext context)
@@ -317,17 +305,17 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         public bool Callback(OutPoint outpoint) => _resolver.IsOwned(outpoint.Txid, outpoint.Vout);
     }
 
-    // Output ownership remains script-based because the transaction output script is authoritative.
-    internal sealed class WalletScriptOwnedCallback : IsScriptOwned
+    // Only the invoice output is selected for replacement.
+    internal sealed class InvoiceOutputCallback : IsScriptOwned
     {
-        private readonly PayjoinScriptOwnershipResolver _resolver;
+        private readonly PayjoinInvoiceOutputMatcher _matcher;
 
-        public WalletScriptOwnedCallback(PayjoinScriptOwnershipResolver resolver)
+        public InvoiceOutputCallback(PayjoinInvoiceOutputMatcher matcher)
         {
-            _resolver = resolver;
+            _matcher = matcher;
         }
 
-        public bool Callback(byte[] script) => _resolver.IsOwned(script);
+        public bool Callback(byte[] script) => _matcher.Matches(script);
     }
 
     internal sealed class CloseRequestedBroadcastGuard : CanBroadcast
