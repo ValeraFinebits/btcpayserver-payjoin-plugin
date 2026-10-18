@@ -15,7 +15,7 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 
 internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionProcessor
 {
-    internal const int MaxConcurrentReceiverSessions = 8;
+    internal const int MaxConcurrentReceiverSessions = 16;
 
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverPollingFailedForInvoice =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(2, nameof(LogPayjoinReceiverPollingFailedForInvoice)),
