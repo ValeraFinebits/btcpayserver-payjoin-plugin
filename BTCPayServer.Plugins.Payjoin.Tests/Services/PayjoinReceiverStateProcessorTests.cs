@@ -15,48 +15,58 @@ public class PayjoinReceiverStateProcessorTests
     public void OwnershipResolverTreatsInvoiceReceiverScriptAsOwned()
     {
         var receiverScript = new byte[] { 0x01, 0x02, 0x03 };
-        var resolver = new PayjoinScriptOwnershipResolver(receiverScript, []);
+        var resolver = new PayjoinInvoiceOutputMatcher(receiverScript);
 
-        Assert.True(resolver.IsOwned(new byte[] { 0x01, 0x02, 0x03 }));
+        Assert.True(resolver.Matches(new byte[] { 0x01, 0x02, 0x03 }));
     }
 
     [Fact]
-    public void OwnershipResolverRecognizesNonInvoiceWalletScriptsAsOwned()
+    public void OutputMatcherPreservesNonInvoiceWalletScripts()
     {
-        // The core claim of the widened check: a wallet script that is NOT the invoice's receiving
-        // address must still be recognized as receiver-owned, both when it holds a coin and when it
-        // was resolved from the original transaction's outputs.
         using var receiverKey = new Key();
         using var otherWalletKey = new Key();
         var receiverScript = receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes();
         var otherWalletScript = otherWalletKey.PubKey.WitHash.ScriptPubKey;
-        var resolver = new PayjoinScriptOwnershipResolver(receiverScript, [otherWalletScript]);
+        var resolver = new PayjoinInvoiceOutputMatcher(receiverScript);
 
-        Assert.True(resolver.IsOwned(otherWalletScript.ToBytes()));
+        Assert.False(resolver.Matches(otherWalletScript.ToBytes()));
     }
 
     [Fact]
     public void OwnershipResolverDoesNotClaimForeignScripts()
     {
         using var receiverKey = new Key();
-        using var walletKey = new Key();
         using var foreignKey = new Key();
-        var resolver = new PayjoinScriptOwnershipResolver(
-            receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes(),
-            [walletKey.PubKey.WitHash.ScriptPubKey]);
+        var resolver = new PayjoinInvoiceOutputMatcher(
+            receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes());
 
-        Assert.False(resolver.IsOwned(foreignKey.PubKey.WitHash.ScriptPubKey.ToBytes()));
+        Assert.False(resolver.Matches(foreignKey.PubKey.WitHash.ScriptPubKey.ToBytes()));
     }
 
     [Fact]
     public void WalletInputOwnedCallbackRejectsProposalInputsSpendingWalletCoins()
     {
         var walletOutPoint = new OutPoint(uint256.One, 7);
-        var resolver = new PayjoinInputOwnershipResolver([walletOutPoint]);
+        var foreignOutPoint = new OutPoint(walletOutPoint.Hash, walletOutPoint.N + 1);
+        var resolver = new PayjoinInputOwnershipResolver(new Dictionary<OutPoint, PayjoinInputOwnership>
+        {
+            [walletOutPoint] = PayjoinInputOwnership.Owned,
+            [foreignOutPoint] = PayjoinInputOwnership.Foreign
+        });
         var callback = new PayjoinReceiverStateProcessor.WalletInputOwnedCallback(resolver);
 
         Assert.True(callback.Callback(new global::Payjoin.OutPoint(walletOutPoint.Hash.ToString(), walletOutPoint.N)));
         Assert.False(callback.Callback(new global::Payjoin.OutPoint(walletOutPoint.Hash.ToString(), walletOutPoint.N + 1)));
+    }
+
+    [Fact]
+    public void InputOwnershipResolverNeverConvertsUnknownToFalse()
+    {
+        var input = new OutPoint(uint256.One, 0);
+        var resolver = new PayjoinInputOwnershipResolver([]);
+
+        Assert.Equal(PayjoinInputOwnership.Unknown, resolver.GetOwnership(input));
+        Assert.Throws<InvalidOperationException>(() => resolver.IsOwned(input.Hash.ToString(), input.N));
     }
 
     [Fact]
@@ -68,18 +78,18 @@ public class PayjoinReceiverStateProcessorTests
     }
 
     [Fact]
-    public void WalletScriptOwnedCallbackReportsReceiverOutputs()
+    public void InvoiceOutputCallbackReportsReceiverOutputs()
     {
         var receiverScript = new byte[] { 0x01, 0x02, 0x03 };
-        var resolver = new PayjoinScriptOwnershipResolver(receiverScript, []);
-        var callback = new PayjoinReceiverStateProcessor.WalletScriptOwnedCallback(resolver);
+        var resolver = new PayjoinInvoiceOutputMatcher(receiverScript);
+        var callback = new PayjoinReceiverStateProcessor.InvoiceOutputCallback(resolver);
 
         Assert.True(callback.Callback(receiverScript));
         Assert.False(callback.Callback(new byte[] { 0x04, 0x05, 0x06 }));
     }
 
     [Fact]
-    public void ExtractTransactionFactsReturnsEveryInputAndOutputScript()
+    public void ExtractOriginalInputOutpointsReturnsEveryInput()
     {
         using var firstKey = new Key();
         using var secondKey = new Key();
@@ -91,19 +101,16 @@ public class PayjoinReceiverStateProcessorTests
         tx.Outputs.Add(Money.Satoshis(1000), firstKey.PubKey.WitHash.ScriptPubKey);
         tx.Outputs.Add(Money.Satoshis(2000), secondKey.PubKey.WitHash.ScriptPubKey);
 
-        var facts = PayjoinReceiverStateProcessor.ExtractTransactionFacts(tx.ToBytes());
+        var facts = PayjoinReceiverStateProcessor.ExtractOriginalInputOutpoints(tx.ToBytes());
 
-        Assert.Equal(new[] { firstInput, secondInput }, facts.InputOutpoints);
-        Assert.Equal(2, facts.OutputScripts.Count);
-        Assert.Equal(firstKey.PubKey.WitHash.ScriptPubKey.ToBytes(), facts.OutputScripts[0]);
-        Assert.Equal(secondKey.PubKey.WitHash.ScriptPubKey.ToBytes(), facts.OutputScripts[1]);
+        Assert.Equal(new[] { firstInput, secondInput }, facts);
     }
 
     [Fact]
-    public void ExtractTransactionFactsRejectsEmptyPayloadFailClosed()
+    public void ExtractOriginalInputOutpointsRejectsEmptyPayloadFailClosed()
     {
         Assert.Throws<InvalidOperationException>(() =>
-            PayjoinReceiverStateProcessor.ExtractTransactionFacts(Array.Empty<byte>()));
+            PayjoinReceiverStateProcessor.ExtractOriginalInputOutpoints(Array.Empty<byte>()));
     }
 
     [Fact]

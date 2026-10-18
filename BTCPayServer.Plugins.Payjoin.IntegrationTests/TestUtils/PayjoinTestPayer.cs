@@ -28,6 +28,8 @@ internal sealed class PayjoinTestPayer
     private readonly bool _useReservedSenderChangeAddress;
     private readonly bool _mineBlockAfterBroadcast;
     private readonly bool _disableOutputSubstitution;
+    private readonly Func<PSBT, CancellationToken, Task>? _beforeOriginalAsync;
+    private readonly IReadOnlyList<CreatePSBTDestination> _additionalDestinations;
 
     public TaskCompletionSource OriginalPosted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Func<Transaction, CancellationToken, Task>? BeforeBroadcastAsync { get; set; }
@@ -39,7 +41,9 @@ internal sealed class PayjoinTestPayer
         BTCPayNetwork network,
         bool useReservedSenderChangeAddress = false,
         bool mineBlockAfterBroadcast = true,
-        bool disableOutputSubstitution = false)
+        bool disableOutputSubstitution = false,
+        Func<PSBT, CancellationToken, Task>? beforeOriginalAsync = null,
+        IReadOnlyList<CreatePSBTDestination>? additionalDestinations = null)
     {
         ArgumentNullException.ThrowIfNull(tester);
         ArgumentNullException.ThrowIfNull(payer);
@@ -54,6 +58,8 @@ internal sealed class PayjoinTestPayer
         _useReservedSenderChangeAddress = useReservedSenderChangeAddress;
         _mineBlockAfterBroadcast = mineBlockAfterBroadcast;
         _disableOutputSubstitution = disableOutputSubstitution;
+        _beforeOriginalAsync = beforeOriginalAsync;
+        _additionalDestinations = additionalDestinations ?? [];
     }
 
     public async Task<PayjoinTestPaymentResult> PayAsync(SystemUri paymentUrl, SystemUri ohttpRelayUrl, CancellationToken cancellationToken)
@@ -104,6 +110,10 @@ internal sealed class PayjoinTestPayer
         if (BeforeOriginalPostAsync is { } beforeOriginal)
             await beforeOriginal(signedOriginal, cancellationToken).ConfigureAwait(false);
         senderPsbtResult = senderPsbtResult with { Psbt = signedOriginal };
+        if (_beforeOriginalAsync is not null)
+        {
+            await _beforeOriginalAsync(signedOriginal, cancellationToken).ConfigureAwait(false);
+        }
         onOriginalPrepared?.Invoke(signedOriginal.ExtractTransaction());
         var proposalPsbt = await RequestProposalAsync(paymentUrl, ohttpRelayUrls, senderPsbtResult.Psbt, preProposalPollDelay, amountOverride, cancellationToken).ConfigureAwait(false);
 
@@ -207,6 +217,11 @@ internal sealed class PayjoinTestPayer
             Destination = BitcoinAddress.Create(paymentAddress, _network.NBitcoinNetwork),
             Amount = Money.Coins(paymentAmount)
         });
+
+        foreach (var destination in _additionalDestinations)
+        {
+            psbtRequest.Destinations.Add(destination);
+        }
 
         if (confirmedTotal < paymentAmount && allTotal >= paymentAmount && allCoins.Length > 0)
         {
@@ -486,7 +501,7 @@ internal sealed class PayjoinTestPayer
 
     private async Task MineBlockAsync(CancellationToken cancellationToken)
     {
-        var rpc = _explorerClient.RPCClient ?? _tester.ExplorerNode;
+        var rpc = _tester.ExplorerNode;
         var rewardAddress = await rpc.GetNewAddressAsync(cancellationToken).ConfigureAwait(false);
         await rpc.GenerateToAddressAsync(1, rewardAddress, cancellationToken).ConfigureAwait(false);
     }

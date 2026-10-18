@@ -73,9 +73,8 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
             var replayState = replayScope.State();
             state = replayState;
 
-            // Give the ownership checks the original transaction's output scripts when the replayed
-            // history already carries the sender's payload, so ownership is resolved before the
-            // synchronous callbacks run even when a replay lands mid-chain.
+            // Resolve the original input outpoints before the synchronous ownership callback,
+            // including when replay resumes mid-chain.
             byte[]? fallbackBytes;
             using (var history = replayScope.SessionHistory())
             {
@@ -100,9 +99,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
             if (fallbackBytes is { Length: > 0 })
             {
-                var originalTransaction = PayjoinReceiverStateProcessor.ExtractTransactionFacts(fallbackBytes);
-                result.StateContext.OriginalInputOutpoints = originalTransaction.InputOutpoints;
-                result.StateContext.OriginalOutputScripts = originalTransaction.OutputScripts;
+                result.StateContext.OriginalInputOutpoints = PayjoinReceiverStateProcessor.ExtractOriginalInputOutpoints(fallbackBytes);
             }
 
             replay = null;
@@ -152,9 +149,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
             context.StoreId, context.InvoiceId, prepared.StateContext.RemoveCloseRequestedSession)
         {
             OriginalInputOutpoints = context.OriginalInputOutpoints,
-            OriginalOutputScripts = context.OriginalOutputScripts,
-            InputOwnershipResolver = context.InputOwnershipResolver,
-            OutputOwnershipResolver = context.OutputOwnershipResolver
+            InputOwnershipResolver = context.InputOwnershipResolver
         };
     }
 
