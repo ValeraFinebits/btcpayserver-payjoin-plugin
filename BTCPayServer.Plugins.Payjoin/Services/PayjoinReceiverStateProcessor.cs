@@ -78,6 +78,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         HasReplyableError replyableError,
         CancellationToken cancellationToken)
     {
+        _sessionStore.CompleteOwnershipLookup(context.Session);
         var (responseBody, requestResponse) = await _relayRequestSender.SendAsync(
             context.StoreId,
             context.InvoiceId,
@@ -138,16 +139,11 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken)
     {
-        // A payload that arrived within this tick is not in the replayed history yet, so parse the
-        // fallback transaction once and share its authoritative input outpoints
-        // with the rest of the chain through the context.
-        if (context.OriginalInputOutpoints.Count == 0)
-        {
-            context.OriginalInputOutpoints = ExtractOriginalInputOutpoints(proposal.ExtractTxToScheduleBroadcast());
-        }
+        // A payload received in this tick is not in the replayed history yet.
+        context.OriginalTransaction ??= ExtractTransactionFacts(proposal.ExtractTxToScheduleBroadcast());
 
         var ownershipResolver = await GetOrCreateInputOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
-        if (context.OriginalInputOutpoints.Any(input => ownershipResolver.GetOwnership(input) == PayjoinInputOwnership.Unknown))
+        if (ownershipResolver is null || context.OriginalInputOutpoints.Any(input => ownershipResolver.GetOwnership(input) == PayjoinInputOwnership.Unknown))
         {
             // Retain MaybeInputsOwned and retry with fresh wallet evidence on the next tick.
             // Unknown must never reach the boolean native callback or its persisted transition.
@@ -156,6 +152,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
 
         using var transition = proposal.CheckInputsNotOwned(new WalletInputOwnedCallback(ownershipResolver));
         using var maybeInputsSeen = transition.Save(context.Persister);
+        _sessionStore.CompleteOwnershipLookup(context.Session);
         await ProcessMaybeInputsSeenAsync(context, maybeInputsSeen, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
     }
 
@@ -188,18 +185,25 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         await continueWithOutputsAsync(wantsOutputs, context, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<PayjoinInputOwnershipResolver> GetOrCreateInputOwnershipResolverAsync(
+    private async Task<PayjoinInputOwnershipResolver?> GetOrCreateInputOwnershipResolverAsync(
         PayjoinReceiverStateContext context,
         CancellationToken cancellationToken)
     {
-        context.InputOwnershipResolver ??= await _walletOwnershipService.CreateInputResolverAsync(
-            context.StoreId,
-            context.OriginalInputOutpoints,
+        cancellationToken.ThrowIfCancellationRequested();
+        if (context.InputOwnershipResolver is not null) return context.InputOwnershipResolver;
+        var result = await _walletOwnershipService.CreateResolverAsync(
+            context.Session,
+            context.OriginalTransaction ?? throw new InvalidOperationException("The Original transaction is unavailable for ownership checks."),
             cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (result.Status == PayjoinOwnershipLookupStatus.Ready) context.InputOwnershipResolver = result.Resolver;
         return context.InputOwnershipResolver;
     }
 
     internal static IReadOnlyList<NBitcoin.OutPoint> ExtractOriginalInputOutpoints(byte[] transactionBytes)
+        => ExtractTransactionFacts(transactionBytes).InputOutpoints;
+
+    internal static PayjoinOriginalTransactionFacts ExtractTransactionFacts(byte[] transactionBytes)
     {
         if (transactionBytes.Length == 0)
         {
@@ -213,7 +217,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             inputOutpoints.Add(input.PrevOut);
         }
 
-        return inputOutpoints;
+        return new PayjoinOriginalTransactionFacts(transaction.GetHash(), inputOutpoints);
     }
 
     private PayjoinReceiverStateContext RefreshCloseRequestedContext(PayjoinReceiverStateContext context)
