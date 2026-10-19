@@ -50,7 +50,7 @@ internal sealed record PayjoinSenderStartResult(
 /// </summary>
 public sealed class PayjoinSenderService
 {
-    // Relay floor for the payjoin round, expressed the way the library wants it:
+    // Default for legacy sessions without a recorded fee rate, in the library's units:
     // 250 sat/kWU equals 1 sat/vB.
     internal const ulong MinFeeRateSatPerKwu = 250;
 
@@ -59,10 +59,12 @@ public sealed class PayjoinSenderService
     /// the receiver's proposal must clear, and it sizes the fee this sender contributes for the
     /// receiver's extra input. Both must reflect the rate the operator chose, or the receiver can
     /// hand back a proposal that confirms far slower than the operator asked for. Sessions from
-    /// before this was recorded fall back to the relay floor.
+    /// before this was recorded fall back to the default above.
     /// </summary>
+    // TODO: https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/228
+    // Keep the original rate and the negotiated fee contribution consistent in both signing paths.
     internal static ulong ResolveMinFeeRate(long feeRateSatPerKwu) =>
-        feeRateSatPerKwu <= 0 ? MinFeeRateSatPerKwu : Math.Max(MinFeeRateSatPerKwu, (ulong)feeRateSatPerKwu);
+        feeRateSatPerKwu <= 0 ? MinFeeRateSatPerKwu : (ulong)feeRateSatPerKwu;
 
     /// <summary>
     /// NBitcoin counts fee rates in satoshi per virtual byte; rust-payjoin counts them in
