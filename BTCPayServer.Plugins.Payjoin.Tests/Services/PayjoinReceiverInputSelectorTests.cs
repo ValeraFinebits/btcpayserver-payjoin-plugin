@@ -119,8 +119,8 @@ public class PayjoinReceiverInputSelectorTests
         var selector = CreateSelector(store,
             new TestReceiverWalletAdapter { Candidates = candidates.ToList() });
 
-        var result = await selector.TryContributeInputsAsync(null!, "store-1", "invoice-1",
-            DateTimeOffset.UtcNow.AddHours(1), CancellationToken.None);
+        var result = await selector.TryContributeInputsAsync(null!, "store-1",
+            DateTimeOffset.UtcNow.AddHours(1), store.Owner("invoice-1"), CancellationToken.None);
 
         Assert.Null(result.ProposalWithInputs);
         Assert.Null(result.ContributedCoins);

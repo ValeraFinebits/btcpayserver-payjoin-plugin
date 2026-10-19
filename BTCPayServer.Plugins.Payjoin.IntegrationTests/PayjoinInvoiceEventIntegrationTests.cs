@@ -51,7 +51,7 @@ public class PayjoinInvoiceEventIntegrationTests : UnitTestBase
         }
         var expectedFinal = scenario == "unresolved-final" ? ExpectedTransactionId : null;
         var bridges = tester.PayTester.GetService<IPayjoinAccountingBridgeService>();
-        await bridges.CreateOrGetAsync(CreateRequest(invoiceId, merchant.StoreId, DateTimeOffset.UtcNow.AddHours(-7), expectedFinal), cancellation.Token).ConfigureAwait(true);
+        await SeedBridgeAsync(tester, CreateRequest(invoiceId, merchant.StoreId, DateTimeOffset.UtcNow.AddHours(-7), expectedFinal), cancellation.Token).ConfigureAwait(true);
         await bridges.ExpirePendingAsync(DateTimeOffset.UtcNow, cancellation.Token).ConfigureAwait(true);
         await bridges.ExpirePendingAsync(DateTimeOffset.UtcNow, cancellation.Token).ConfigureAwait(true);
         var bridge = await bridges.TryGetByInvoiceIdAsync(invoiceId, cancellation.Token).ConfigureAwait(true);
@@ -112,7 +112,7 @@ public class PayjoinInvoiceEventIntegrationTests : UnitTestBase
 
         var invoiceId = await CreateInvoiceIdAsync(merchant, cancellation.Token).ConfigureAwait(true);
         var bridges = tester.PayTester.GetService<IPayjoinAccountingBridgeService>();
-        await bridges.CreateOrGetAsync(CreateRequest(invoiceId, merchant.StoreId, DateTimeOffset.UtcNow.AddHours(1), ExpectedTransactionId), cancellation.Token).ConfigureAwait(true);
+        await SeedBridgeAsync(tester, CreateRequest(invoiceId, merchant.StoreId, DateTimeOffset.UtcNow.AddHours(1), ExpectedTransactionId), cancellation.Token).ConfigureAwait(true);
         await bridges.MarkFailedAsync(invoiceId, "controlled settlement mismatch", cancellation.Token).ConfigureAwait(true);
         await bridges.MarkFailedAsync(invoiceId, "controlled settlement mismatch", cancellation.Token).ConfigureAwait(true);
         Assert.Null(await bridges.TryRetryAsync(invoiceId, "wrong-store", DateTimeOffset.UtcNow, cancellation.Token).ConfigureAwait(true));
@@ -169,6 +169,25 @@ public class PayjoinInvoiceEventIntegrationTests : UnitTestBase
             PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode).ToString(), expiresAt,
             ExpectedFinalTransactionId: expectedFinal, ExpectedFinalOutputIndex: expectedFinal is null ? null : 1,
             ExpectedFinalValueSats: expectedFinal is null ? null : 100000);
+
+    private static async Task SeedBridgeAsync(ServerTester tester, CreatePayjoinAccountingBridgeRequest request, CancellationToken token)
+    {
+        using var context = tester.PayTester.GetService<PayjoinPluginDbContextFactory>().CreateContext();
+        var now = DateTimeOffset.UtcNow;
+        context.AccountingBridges.Add(new PayjoinAccountingBridgeData
+        {
+            InvoiceId = request.InvoiceId, StoreId = request.StoreId,
+            CryptoCode = request.CryptoCode, PaymentMethodId = request.PaymentMethodId,
+            ExpiresAt = request.ExpiresAt, EffectiveInvoiceValueSats = request.EffectiveInvoiceValueSats,
+            ExpectedFinalTransactionId = request.ExpectedFinalTransactionId,
+            ExpectedFinalOutputIndex = request.ExpectedFinalOutputIndex,
+            ExpectedFinalValueSats = request.ExpectedFinalValueSats,
+            Status = request.ExpectedFinalTransactionId is null
+                ? PayjoinAccountingBridgeStatus.PendingFallback : PayjoinAccountingBridgeStatus.PendingFinalTransaction,
+            CreatedAt = now, UpdatedAt = now
+        });
+        await context.SaveChangesAsync(token).ConfigureAwait(false);
+    }
 
     private static async Task<InvoiceEventData[]> ReadJournalAsync(ServerTester tester, string invoiceId, CancellationToken cancellationToken) =>
         (await tester.PayTester.GetService<InvoiceRepository>().GetInvoiceLogs(invoiceId).WaitAsync(cancellationToken).ConfigureAwait(true))

@@ -35,11 +35,14 @@ internal sealed class NativeSeenInputTestSupport : IDisposable
         var receiverAddress = receiverKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
         using var keys = _services.FetchOhttpKeys();
         using var receiverBuilder = new ReceiverBuilder(receiverAddress.ToString(), _services.DirectoryUrl(), keys);
-        using var bootstrap = receiverBuilder.Build();
+        using var pinnedBuilder = receiverBuilder.WithAmount(50_000);
+        using var bootstrap = pinnedBuilder.Build();
         var capture = new CapturingReceiverSessionPersister();
         using var receiver = bootstrap.Save(capture);
         var session = _store.GetOrCreateSession(invoiceId, receiverAddress.ToString(), "store-native-seen-inputs",
-            DateTimeOffset.UtcNow.AddMinutes(20), capture.Events);
+            DateTimeOffset.UtcNow.AddMinutes(20), capture.Events,
+            new CreatePayjoinAccountingBridgeRequest(invoiceId, "store-native-seen-inputs", "BTC", "BTC-CHAIN",
+                DateTimeOffset.UtcNow.AddMinutes(20), EffectiveInvoiceValueSats: 50_000));
         var persister = _store.CreatePersister(session);
 
         var senderAddress = senderKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
@@ -75,7 +78,10 @@ internal sealed class NativeSeenInputTestSupport : IDisposable
         using var interactive = progress.Inner.AssumeInteractiveReceiver();
         using var maybeOwned = interactive.Save(persister);
         using var ownership = maybeOwned.CheckInputsNotOwned(new ForeignInput());
-        return ownership.Save(persister);
+        var seen = ownership.Save(persister);
+        _store.AttachOriginalPayment(persister,
+            new PayjoinReceiverPaymentValidation.OriginalPayment(50_000, transaction.GetHash().ToString(), 0));
+        return seen;
     }
 
     private async Task<byte[]> SendAsync(Request request, CancellationToken cancellationToken)

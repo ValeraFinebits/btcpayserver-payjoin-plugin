@@ -1093,6 +1093,7 @@ public class PayjoinReceiverRelayFlowTests
         var quarantineDuration = TimeSpan.FromMinutes(10);
         using var fixture = new ReceiverFixture(quarantineDuration, clock);
         using var proposal = await fixture.PrepareProposalAsync();
+        await SeedCommittedBridgeAsync(fixture);
         var expectedPsbt = proposal.Psbt();
         var eventsBeforePost = fixture.Events();
         var reservation = new PayjoinReceiverInputReservationData
@@ -1241,7 +1242,7 @@ public class PayjoinReceiverRelayFlowTests
         Assert.Null(bridge.FallbackTransactionId);
         using var replay = fixture.Replay();
         using var state = replay.State();
-        Assert.IsType<ReceiveSession.OutputsUnknown>(state);
+        Assert.IsType<ReceiveSession.MaybeInputsOwned>(state);
     }
 
     [Theory]
@@ -2097,18 +2098,20 @@ public class PayjoinReceiverRelayFlowTests
         using var lookups = new PayjoinOwnershipLookupBudgetTests.LookupFixture(alternateHotAccount: true);
         using var fixture = new ReceiverFixture(ownershipService: lookups.Service, ownershipLookups: lookups.States);
         await fixture.PostOriginalAsync(additionalOutputs: 29);
+        const int requestsPerPass = 4;
         void FailSelectedSave()
         {
             if (successfulSaves-- == 0) fixture.Factory.FailSaveChanges = true;
             else fixture.Factory.BeforeNextSaveChanges = FailSelectedSave;
         }
-        lookups.Handler.RespondAsync = (_, _) =>
+        lookups.Handler.RespondAsync = async (request, token) =>
         {
-            if (lookups.Handler.Calls.Count == 62) fixture.Factory.BeforeNextSaveChanges = FailSelectedSave;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            var response = await lookups.RespondNormallyAsync(request, token).ConfigureAwait(false);
+            if (lookups.Handler.Calls.Count == requestsPerPass) fixture.Factory.BeforeNextSaveChanges = FailSelectedSave;
+            return response;
         };
         await fixture.Processor.ProcessTickAsync(CancellationToken.None);
-        Assert.Equal(62, lookups.Handler.Calls.Count);
+        Assert.Equal(requestsPerPass, lookups.Handler.Calls.Count);
         using (var replay = fixture.Replay())
         using (var state = replay.State()) Assert.Equal(expectedState, state.GetType().Name);
         fixture.Factory.FailSaveChanges = false;
@@ -2118,6 +2121,8 @@ public class PayjoinReceiverRelayFlowTests
         using (var replay = fixture.Replay())
         using (var state = replay.State())
         {
+            using var history = replay.SessionHistory();
+            context.OriginalTransaction = PayjoinReceiverStateProcessor.ExtractTransactionFacts(history.FallbackTx()!);
             Task Continue(WantsOutputs proposal, PayjoinReceiverStateContext stateContext, CancellationToken token) { continued = true; return Task.CompletedTask; }
             switch (state)
             {
@@ -2133,7 +2138,7 @@ public class PayjoinReceiverRelayFlowTests
             }
         }
         Assert.True(continued);
-        Assert.Equal(124, lookups.Handler.Calls.Count);
+        Assert.Equal(requestsPerPass * (expectedState == "MaybeInputsOwned" ? 2 : 1), lookups.Handler.Calls.Count);
         using var resumed = fixture.Replay();
         using var resumedState = resumed.State();
         Assert.IsType<ReceiveSession.WantsOutputs>(resumedState);
@@ -2217,7 +2222,7 @@ public class PayjoinReceiverRelayFlowTests
         Assert.Equal(deferredRequests, lookups.Handler.Calls.Count);
         Assert.Equal(0, fixture.ProposalSigner.Calls);
         lookups.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
-        lookups.Handler.RespondAsync = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        lookups.Handler.RespondAsync = lookups.RespondNormallyAsync;
         var continued = false;
         using (var replay = fixture.Replay())
         using (var state = replay.State())

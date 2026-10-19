@@ -35,11 +35,21 @@ public class PayjoinAccountingBridgeInvoiceEventTests
         });
         var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
         var service = context.CreateBridgeService(publisher);
+        var store = context.CreateStore(publisher);
         var request = CreateRequest(DateTimeOffset.UtcNow.AddHours(1));
-        await service.CreateOrGetAsync(request, TestContext.Current.CancellationToken);
-        await service.CreateOrGetAsync(request, TestContext.Current.CancellationToken);
-        await service.SetExpectedFinalTransactionAsync(InvoiceId, TransactionId, 0, 1000, TestContext.Current.CancellationToken);
+        context.CreateTrackedSession(request, publisher);
+        context.CreateTrackedSession(request, publisher);
         Assert.Equal(PayjoinInvoiceEventKind.TrackingStarted, Assert.Single(captured).Kind);
+        Assert.True(store.RemoveSession(InvoiceId));
+        using (var seed = context.CreateDbContext())
+        {
+            var bridge = seed.AccountingBridges.Single();
+            bridge.ExpectedFinalTransactionId = TransactionId;
+            bridge.ExpectedFinalOutputIndex = 0;
+            bridge.ExpectedFinalValueSats = 1000;
+            bridge.Status = PayjoinAccountingBridgeStatus.PendingFinalTransaction;
+            seed.SaveChanges();
+        }
 
         await service.MarkFailedAsync(InvoiceId, "mismatched output", TestContext.Current.CancellationToken);
         await service.MarkFailedAsync(InvoiceId, "mismatched output", TestContext.Current.CancellationToken);
@@ -52,7 +62,7 @@ public class PayjoinAccountingBridgeInvoiceEventTests
         await service.MarkReconciledAsync(InvoiceId, TransactionId, 0, 1000, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken);
 
         var restarted = context.CreateBridgeService(publisher);
-        await restarted.CreateOrGetAsync(request, TestContext.Current.CancellationToken);
+        Assert.NotNull(await restarted.TryGetByInvoiceIdAsync(InvoiceId, TestContext.Current.CancellationToken));
         await restarted.MarkReconciledAsync(InvoiceId, TransactionId, 0, 1000, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken);
         Assert.Equal(new[]
         {
@@ -78,12 +88,14 @@ public class PayjoinAccountingBridgeInvoiceEventTests
         var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
         var service = context.CreateBridgeService(publisher);
         var now = DateTimeOffset.UtcNow;
-        await service.CreateOrGetAsync(CreateRequest(now.AddMinutes(-1)), TestContext.Current.CancellationToken);
-        await service.CreateOrGetAsync(CreateRequest(now.AddHours(-7)) with
+        context.CreateTrackedSession(CreateRequest(now.AddMinutes(-1)), publisher);
+        context.CreateTrackedSession(CreateRequest(now.AddHours(-7)) with
         {
             InvoiceId = "invoice-armed",
-            ExpectedFinalTransactionId = TransactionId
-        }, TestContext.Current.CancellationToken);
+        }, publisher);
+        var store = context.CreateStore(publisher);
+        store.BackfillProposalExpectation(store.Owner("invoice-armed"),
+            new PayjoinReceiverSessionStore.ProposalSettlement(TransactionId, 0, 1000));
 
         await service.ExpirePendingAsync(now, TestContext.Current.CancellationToken);
         await service.ExpirePendingAsync(now, TestContext.Current.CancellationToken);
@@ -104,27 +116,29 @@ public class PayjoinAccountingBridgeInvoiceEventTests
     }
 
     [Fact]
-    public async Task NewSessionResetPublishesOnlyWhenItActuallyResetsTracking()
+    public void ExistingSessionRetainsThePinnedAccountingAndPublishesNoSecondStart()
     {
         using var context = new RelationalPluginTestContext();
         using var events = new EventAggregator(new Logs());
         var captured = new List<PayjoinInvoiceEvent>();
         using var subscription = events.Subscribe<PayjoinInvoiceEvent>(captured.Add);
         var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
-        var service = context.CreateBridgeService(publisher);
-        await service.CreateOrGetAsync(CreateRequest(DateTimeOffset.UtcNow.AddHours(1)), TestContext.Current.CancellationToken);
-        await service.AttachFallbackAsync(InvoiceId, TransactionId, 0, 1000, 1000, "0014", TestContext.Current.CancellationToken);
+        var store = context.CreateStore(publisher);
+        var request = CreateRequest(DateTimeOffset.UtcNow.AddHours(1));
+        var original = context.CreateTrackedSession(request, publisher);
+        store.AttachOriginalPayment(store.Owner(InvoiceId),
+            new PayjoinReceiverPaymentValidation.OriginalPayment(1000, TransactionId, 0));
 
-        await service.ResetForNewSessionAsync(InvoiceId, 1200, DateTimeOffset.UtcNow.AddHours(2), TestContext.Current.CancellationToken);
-        await service.ResetForNewSessionAsync(InvoiceId, 1200, DateTimeOffset.UtcNow.AddHours(2), TestContext.Current.CancellationToken);
+        var retained = context.CreateTrackedSession(request with { EffectiveInvoiceValueSats = 1200 }, publisher);
+        context.CreateTrackedSession(request with { EffectiveInvoiceValueSats = 1200 }, publisher);
 
-        Assert.Equal(2, captured.Count);
-        Assert.All(captured, evt => Assert.Equal(PayjoinInvoiceEventKind.TrackingStarted, evt.Kind));
+        Assert.Equal(original.SessionInstanceId, retained.SessionInstanceId);
+        Assert.Equal(PayjoinInvoiceEventKind.TrackingStarted, Assert.Single(captured).Kind);
         using var persisted = context.CreateDbContext();
         var bridge = Assert.Single(persisted.AccountingBridges);
-        Assert.Null(bridge.FallbackTransactionId);
+        Assert.Equal(TransactionId, bridge.FallbackTransactionId);
         Assert.Null(bridge.ExpectedFinalTransactionId);
-        Assert.Equal(1200, bridge.EffectiveInvoiceValueSats);
+        Assert.Equal(1000, bridge.EffectiveInvoiceValueSats);
     }
 
     [Fact]
@@ -137,10 +151,10 @@ public class PayjoinAccountingBridgeInvoiceEventTests
         var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
         var service = context.CreateBridgeService(publisher);
         context.FailSaveChanges = true;
-        await Assert.ThrowsAsync<DbUpdateException>(() => service.CreateOrGetAsync(CreateRequest(DateTimeOffset.UtcNow.AddHours(1)), TestContext.Current.CancellationToken));
+        Assert.Throws<DbUpdateException>(() => context.CreateTrackedSession(CreateRequest(DateTimeOffset.UtcNow.AddHours(1)), publisher));
         Assert.Empty(captured);
         context.FailSaveChanges = false;
-        await service.CreateOrGetAsync(CreateRequest(DateTimeOffset.UtcNow.AddHours(1)), TestContext.Current.CancellationToken);
+        context.CreateTrackedSession(CreateRequest(DateTimeOffset.UtcNow.AddHours(1)), publisher);
         captured.Clear();
         context.FailSaveChanges = true;
         await Assert.ThrowsAsync<DbUpdateException>(() => service.MarkFailedAsync(InvoiceId, "injected", TestContext.Current.CancellationToken));

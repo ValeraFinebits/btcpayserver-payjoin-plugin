@@ -56,14 +56,15 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
 
         var guard = new ReplayingLosingSessionGuard(fixture.Sessions, losingInvoice);
         var dependencies = new UnexpectedReceiverDependencies();
-        var bridge = new PayjoinAccountingBridgeService(fixture.Factory,
-            new PostgresPayjoinUniqueConstraintViolationDetector(), new PayjoinSessionBuildLock());
+        var validator = new AcceptedOriginalValidator();
+        var bridge = new PayjoinAccountingBridgeService(fixture.Factory, new PayjoinSessionBuildLock());
         var mailroom = new PayjoinMailroomManager(NullLogger<PayjoinMailroomManager>.Instance, TimeSpan.FromMinutes(1),
             dependencies.FetchKeysAsync);
-        var stateProcessor = new PayjoinReceiverStateProcessor(fixture.Sessions, dependencies, dependencies, fixture.SeenInputs, mailroom);
+        var stateProcessor = new PayjoinReceiverStateProcessor(fixture.Sessions, dependencies, dependencies, fixture.SeenInputs, mailroom,
+            validator, guard);
         using var log = new ProcessorLog();
         var processor = new PayjoinReceiverSessionProcessor(fixture.Sessions, guard, stateProcessor, dependencies, dependencies,
-            bridge, dependencies, dependencies, dependencies, CreateNetworkProvider(ChainName.Regtest), log);
+            bridge, dependencies, CreateNetworkProvider(ChainName.Regtest), log, validator);
 
         fixture.Barrier.Arm();
         var losingTick = Task.Run(() => processor.ProcessTickAsync(cancellation.Token), cancellation.Token);
@@ -75,7 +76,8 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
             Assert.Equal(new[] { (freshInput.Hash.ToString(), (long)freshInput.N), (sharedInput.Hash.ToString(), (long)sharedInput.N) },
                 fixture.Barrier.StagedInputs);
             RecordingSeenInputCallback? winningCallback = null;
-            using var next = fixture.SeenInputs.ExecuteSeenInputTransition(winningInvoice, (callback, persister) =>
+            Assert.True(fixture.Sessions.TryGetSession(winningInvoice, out var winningSession));
+            using var next = fixture.SeenInputs.ExecuteSeenInputTransition(fixture.Sessions.CreatePersister(winningSession!), (callback, persister) =>
             {
                 winningCallback = new RecordingSeenInputCallback(callback);
                 using var transition = winningState.CheckNoInputsSeenBefore(winningCallback);
@@ -99,7 +101,8 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
         Assert.Equal("IX_ReceiverSeenInputs_TransactionId_OutputIndex", unique.ConstraintName);
         Assert.IsType<global::Payjoin.ReceiverPersistedException.Storage>(Assert.Single(log.Exceptions));
         Assert.Equal(1, fixture.Sql.SharedInsertAttempts);
-        Assert.Equal(1, guard.Replays);
+        Assert.Equal(2, guard.Replays);
+        Assert.Equal(1, validator.Calls);
         Assert.Empty(dependencies.Calls);
 
         var afterFailure = SnapshotInputs(fixture.Factory);
@@ -118,7 +121,8 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
         }
 
         await processor.ProcessTickAsync(cancellation.Token).WaitAsync(timeout, cancellation.Token);
-        Assert.Equal(2, guard.Replays);
+        Assert.Equal(4, guard.Replays);
+        Assert.Equal(2, validator.Calls);
         Assert.Single(fixture.Barrier.Failures);
         Assert.Equal(1, fixture.Sql.SharedInsertAttempts);
         Assert.Equal(2, log.Exceptions.Count);
@@ -185,6 +189,18 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
             var script = BitcoinAddress.Create(session.ReceiverAddress, Network.RegTest).ScriptPubKey.ToBytes();
             return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(
                 session, persister, script, replay, replay.State(), _ => throw new InvalidOperationException("Unexpected session removal.")));
+        }
+    }
+
+    private sealed class AcceptedOriginalValidator : IPayjoinOriginalTransactionValidator
+    {
+        public int Calls { get; private set; }
+        public Task<OriginalTransactionValidation> ValidateAsync(byte[] original, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
+            return Task.FromResult(new OriginalTransactionValidation(OriginalTransactionVerdict.Accepted,
+                "Synthetic prevouts isolate the seen-input persistence conflict."));
         }
     }
 

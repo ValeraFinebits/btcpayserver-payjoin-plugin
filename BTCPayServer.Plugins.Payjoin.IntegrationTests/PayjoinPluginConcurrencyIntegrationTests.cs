@@ -243,7 +243,10 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         if (actualSuccessCount != expectedSuccessCount)
         {
             var diagnostics = await DescribeReceiverDiagnosticsAsync(tester, invoiceContexts.Select(invoiceContext => invoiceContext.InvoiceId)).ConfigureAwait(true);
-            Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{diagnostics}");
+            var failures = string.Join(Environment.NewLine, paymentResults.Select((result, index) => (result, index))
+                .Where(item => !item.result.Succeeded)
+                .Select(item => $"{invoiceContexts[item.index].InvoiceId}: {item.result.Exception}"));
+            Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{failures}{Environment.NewLine}{diagnostics}");
         }
         Assert.Equal(paymentResults.Length - expectedSuccessCount, paymentResults.Count(result => !result.Succeeded));
 

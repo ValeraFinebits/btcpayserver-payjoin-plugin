@@ -22,9 +22,9 @@ internal sealed class UnexpectedReceiverDependencies : IPayjoinReceiverRelayRequ
         IReadOnlyCollection<NBitcoin.OutPoint> candidateInputOutpoints, CancellationToken cancellationToken)
         => Unexpected<Task<PayjoinInputOwnershipResolver>>(nameof(CreateInputResolverAsync));
 
-    public Task<PayjoinScriptOwnershipResolver> CreateOutputResolverAsync(string storeId, byte[] receiverScript,
-        IReadOnlyCollection<byte[]> candidateOutputScripts, CancellationToken cancellationToken)
-        => Unexpected<Task<PayjoinScriptOwnershipResolver>>(nameof(CreateOutputResolverAsync));
+    public Task<PayjoinOwnershipLookupResult> CreateResolverAsync(PayjoinReceiverSessionState session,
+        PayjoinOriginalTransactionFacts original, byte[] receiverScript, CancellationToken cancellationToken)
+        => Unexpected<Task<PayjoinOwnershipLookupResult>>(nameof(CreateResolverAsync));
 
     public Task<PayjoinReceiverOutputBuilder.OutputBuildResult> TryCreateSettlementOutputsAsync(string storeId,
         string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats,
@@ -32,7 +32,8 @@ internal sealed class UnexpectedReceiverDependencies : IPayjoinReceiverRelayRequ
         => Unexpected<Task<PayjoinReceiverOutputBuilder.OutputBuildResult>>(nameof(TryCreateSettlementOutputsAsync));
 
     public Task<ReceiverInputContributionResult> TryContributeInputsAsync(WantsInputs proposal, string storeId,
-        string invoiceId, DateTimeOffset reservationExpiresAt, CancellationToken cancellationToken)
+        DateTimeOffset reservationExpiresAt, PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister owner,
+        CancellationToken cancellationToken)
         => Unexpected<Task<ReceiverInputContributionResult>>(nameof(TryContributeInputsAsync));
 
     public Task<ReceivedCoin[]?> TryGetPersistedContributedCoinsAsync(PayjoinReceiverSessionState session,

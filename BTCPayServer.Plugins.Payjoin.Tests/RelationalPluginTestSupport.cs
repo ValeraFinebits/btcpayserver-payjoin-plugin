@@ -20,7 +20,23 @@ internal sealed class RelationalPluginTestContext : IDisposable
     private readonly SqliteTestPayjoinPluginDbContextFactory _dbContextFactory = new();
     private readonly SqliteUniqueConstraintViolationDetector _uniqueConstraintViolationDetector = new();
 
-    public PayjoinReceiverSessionStore CreateStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
+    public PayjoinReceiverSessionStore CreateStore(IPayjoinInvoiceEventPublisher? invoiceEvents = null) =>
+        new(_dbContextFactory, _uniqueConstraintViolationDetector, invoiceEvents: invoiceEvents);
+
+    public PayjoinReceiverSessionState CreateTrackedSession(CreatePayjoinAccountingBridgeRequest request,
+        IPayjoinInvoiceEventPublisher? invoiceEvents = null)
+    {
+        const string address = "2MuyMrZHkbHbfjudmKUy45dU4P17pjG2szK";
+        using var keys = global::Payjoin.OhttpKeys.Decode(Convert.FromHexString(
+            "01001604ba48c49c3d4a92a3ad00ecc63a024da10ced02180c73ec12d8a7ad2cc91bb483824fe2bee8d28bfe2eb2fc6453bc4d31cd851e8a6540e86c5382af588d370957000400010003"));
+        using var builder = new global::Payjoin.ReceiverBuilder(address, "https://example.com", keys);
+        using var pinned = builder.WithAmount(checked((ulong)request.EffectiveInvoiceValueSats!.Value));
+        using var transition = pinned.Build();
+        var capture = new CapturingReceiverSessionPersister();
+        using var initialized = transition.Save(capture);
+        return CreateStore(invoiceEvents).GetOrCreateSession(request.InvoiceId, address, request.StoreId,
+            request.ExpiresAt ?? DateTimeOffset.UtcNow.AddHours(1), capture.Events, request);
+    }
     public PayjoinSenderSessionStore CreateSenderStore() => new(_dbContextFactory, _uniqueConstraintViolationDetector);
 
     public PayjoinReceiverSessionStore CreateStore(ILogger<PayjoinReceiverSessionStore> logger) =>

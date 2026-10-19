@@ -89,7 +89,7 @@ public class PayjoinReceiverStateProcessorTests
     }
 
     [Fact]
-    public void ExtractOriginalInputOutpointsReturnsEveryInput()
+    public void ExtractTransactionFactsReturnsEveryInputAndOutput()
     {
         using var firstKey = new Key();
         using var secondKey = new Key();
@@ -101,16 +101,18 @@ public class PayjoinReceiverStateProcessorTests
         tx.Outputs.Add(Money.Satoshis(1000), firstKey.PubKey.WitHash.ScriptPubKey);
         tx.Outputs.Add(Money.Satoshis(2000), secondKey.PubKey.WitHash.ScriptPubKey);
 
-        var facts = PayjoinReceiverStateProcessor.ExtractOriginalInputOutpoints(tx.ToBytes());
+        var facts = PayjoinReceiverStateProcessor.ExtractTransactionFacts(tx.ToBytes());
 
-        Assert.Equal(new[] { firstInput, secondInput }, facts);
+        Assert.Equal(tx.GetHash(), facts.TransactionId);
+        Assert.Equal(new[] { firstInput, secondInput }, facts.InputOutpoints);
+        Assert.Equal(tx.Outputs.Select(output => output.ScriptPubKey.ToBytes()), facts.OutputScripts);
     }
 
     [Fact]
-    public void ExtractOriginalInputOutpointsRejectsEmptyPayloadFailClosed()
+    public void ExtractTransactionFactsRejectsEmptyPayloadFailClosed()
     {
         Assert.Throws<InvalidOperationException>(() =>
-            PayjoinReceiverStateProcessor.ExtractOriginalInputOutpoints(Array.Empty<byte>()));
+            PayjoinReceiverStateProcessor.ExtractTransactionFacts(Array.Empty<byte>()));
     }
 
     [Fact]

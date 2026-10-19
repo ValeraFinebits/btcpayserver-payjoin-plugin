@@ -15,7 +15,7 @@ namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
 public class PayjoinSenderDatabaseIntegrationTests
 {
     [Fact, Trait("Integration", "Integration")]
-    public async Task DispatchMigrationPreservesUncertaintyForExistingSignedSessions()
+    public async Task Rc2UpgradePreservesReceiverStateAndSenderExposure()
     {
         var database = new DatabaseFixture();
         await using var databaseLifetime = database.ConfigureAwait(false);
@@ -32,6 +32,21 @@ public class PayjoinSenderDatabaseIntegrationTests
                    ('events', 'store', 'bitcoin:events', 'test', 1000, 'original-events', 1000, ARRAY[]::text[], NULL, 0, NOW(), NOW());
             INSERT INTO "BTCPayServer.Plugins.Payjoin"."SenderSessionEvents" ("SenderSessionId", "Sequence", "Event", "CreatedAt")
             VALUES ('events', 1, 'legacy-event', NOW());
+            INSERT INTO "BTCPayServer.Plugins.Payjoin"."ReceiverSessions"
+                ("InvoiceId", "StoreId", "ReceiverAddress", "MonitoringExpiresAt", "CreatedAt", "UpdatedAt",
+                 "IsCloseRequested", "InitializedPollAfterCloseRequestConsumed", "PayjoinUri", "DestructiveWriteStamp")
+            VALUES ('receiver-a', 'store', 'legacy-address-a', NOW() + INTERVAL '1 hour', NOW(), NOW(),
+                    FALSE, FALSE, 'bitcoin:legacy-address-a?amount=0.00001000', 7),
+                   ('receiver-b', 'store', 'legacy-address-b', NOW() + INTERVAL '1 hour', NOW(), NOW(),
+                    FALSE, FALSE, 'bitcoin:legacy-address-b?amount=0.00002000', 11);
+            INSERT INTO "BTCPayServer.Plugins.Payjoin"."ReceiverSessionEvents" ("InvoiceId", "Sequence", "Event", "CreatedAt")
+            VALUES ('receiver-a', 1, 'legacy-receiver-event', NOW());
+            INSERT INTO "BTCPayServer.Plugins.Payjoin"."ReceiverInputReservations"
+                ("InvoiceId", "StoreId", "TransactionId", "OutputIndex", "ReservedAt", "ExpiresAt")
+            VALUES ('receiver-a', 'store', 'legacy-reserved-input', 2, NOW(), NOW() + INTERVAL '1 hour');
+            INSERT INTO "BTCPayServer.Plugins.Payjoin"."AccountingBridges"
+                ("InvoiceId", "StoreId", "CryptoCode", "PaymentMethodId", "EffectiveInvoiceValueSats", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ('receiver-a', 'store', 'BTC', 'BTC-CHAIN', 1000, 0, NOW(), NOW());
             """, TestContext.Current.CancellationToken).ConfigureAwait(true);
         await migrator.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken).ConfigureAwait(true);
         var store = database.CreateStore();
@@ -42,6 +57,22 @@ public class PayjoinSenderDatabaseIntegrationTests
         Assert.True(store.TryGetSession("events", out var events));
         Assert.True(events!.PaymentExposed);
         Assert.False(CreateSession(store, "new").PaymentExposed);
+        var receivers = await context.ReceiverSessions.OrderBy(session => session.InvoiceId)
+            .ToArrayAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        Assert.Equal(2, receivers.Length);
+        Assert.All(receivers, session => Assert.NotEqual(Guid.Empty, session.SessionInstanceId));
+        Assert.NotEqual(receivers[0].SessionInstanceId, receivers[1].SessionInstanceId);
+        Assert.Equal(7, receivers[0].AttemptVersion);
+        Assert.Equal(11, receivers[1].AttemptVersion);
+        Assert.Equal("bitcoin:legacy-address-a?amount=0.00001000", receivers[0].PayjoinUri);
+        Assert.Equal("legacy-receiver-event", (await context.ReceiverSessionEvents.SingleAsync(TestContext.Current.CancellationToken).ConfigureAwait(true)).Event);
+        var reservation = await context.ReceiverInputReservations.SingleAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        Assert.Equal("legacy-reserved-input", reservation.TransactionId);
+        Assert.Equal(2, reservation.OutputIndex);
+        var bridge = await context.AccountingBridges.SingleAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        Assert.Equal(1000, bridge.EffectiveInvoiceValueSats);
+        Assert.Null(bridge.SettlementKeyPath);
+        Assert.Empty(await context.Database.GetPendingMigrationsAsync(TestContext.Current.CancellationToken).ConfigureAwait(true));
         Assert.False(context.Database.HasPendingModelChanges());
     }
 

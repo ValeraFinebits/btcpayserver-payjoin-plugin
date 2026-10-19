@@ -54,7 +54,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
         while (remainingRelays.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relayUrl = _mailroomManager.ChooseRelayForRequest(remainingRelays, invoiceId);
+            var relayUrl = _mailroomManager.ChooseRelayForRequest(remainingRelays, sessionId);
             if (relayUrl is null)
             {
                 break;
@@ -79,7 +79,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
                 requestContext.Dispose();
                 if (ex.StatusCode is not null)
                 {
-                    _mailroomManager.MarkRelayFailedForSession(invoiceId, relayUrl);
+                    _mailroomManager.MarkRelayFailedForSession(sessionId, relayUrl);
                 }
                 else
                 {

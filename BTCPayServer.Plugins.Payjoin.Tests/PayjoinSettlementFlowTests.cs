@@ -212,19 +212,19 @@ public class PayjoinSettlementFlowTests
         var bridgeService = testContext.CreateBridgeService();
         CreateSession(store);
         var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
-        CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
-        store.AppendEventsWithAccountingUpdate(InvoiceId, ["finalize-event"], updateBridge: null);
+        CreateBridge(testContext, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
+        store.AppendEvents(store.Owner(InvoiceId), ["finalize-event"]);
         var publisher = CreateInvoiceEventPublisher(out var invoiceEvents, out var aggregator);
         using var aggregatorLifetime = aggregator;
         using var subscription = aggregator.Subscribe<PayjoinInvoiceEvent>(invoiceEvents.Add);
         var finalizer = CreateFinalizer(store, bridgeService, new PostAttemptRecordingRelaySender(), publisher);
 
         testContext.FailSaveChanges = true;
-        await Assert.ThrowsAsync<DbUpdateException>(() => finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(), proposal, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<DbUpdateException>(() => finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(store), proposal, TestContext.Current.CancellationToken));
         testContext.FailSaveChanges = false;
         Assert.Empty(invoiceEvents);
-        await finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(), proposal, TestContext.Current.CancellationToken);
-        await finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(), proposal, TestContext.Current.CancellationToken);
+        await finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(store), proposal, TestContext.Current.CancellationToken);
+        await finalizer.EnsureExpectedFinalTransactionAsync(CreateFinalizationContext(store), proposal, TestContext.Current.CancellationToken);
 
         var notification = Assert.Single(invoiceEvents);
         Assert.Equal(PayjoinInvoiceEventKind.ProposalPrepared, notification.Kind);
@@ -257,17 +257,23 @@ public class PayjoinSettlementFlowTests
         await eventService.StartAsync(TestContext.Current.CancellationToken);
         try
         {
-            var store = testContext.CreateStore();
+            var store = testContext.CreateStore(publisher);
             var bridgeService = testContext.CreateBridgeService(publisher);
-            CreateSession(store);
             var proposal = CreateProposal(out var finalTransaction, out var settlementScript);
-            CreateBridge(bridgeService, settlementScriptHex: Convert.ToHexString(settlementScript.ToBytes()));
+            testContext.CreateTrackedSession(new CreatePayjoinAccountingBridgeRequest(
+                InvoiceId, StoreId, PayjoinConstants.BitcoinCode, "BTC-BTC", DateTimeOffset.UtcNow.AddHours(1),
+                EffectiveInvoiceValueSats: 1234), publisher);
+            using (var seed = testContext.CreateDbContext())
+            {
+                seed.AccountingBridges.Single().SettlementScript = Convert.ToHexString(settlementScript.ToBytes());
+                seed.SaveChanges();
+            }
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             var relaySender = new PostAttemptRecordingRelaySender();
             var finalizer = CreateFinalizer(store, bridgeService, relaySender, publisher);
 
             await Assert.ThrowsAsync<PostAttemptedException>(() => finalizer.FinalizeCoreAsync(
-                CreateFinalizationContext(),
+                CreateFinalizationContext(store),
                 persister =>
                 {
                     persister.Save("finalize-event");

@@ -89,12 +89,14 @@ public class PluginRegistrationTests
     [Fact]
     public void PluginPreservesCheckoutExtensionsAndSharesItsFilterWithinEachRequest()
     {
+        using var fixture = new SessionStoreFixture();
         var services = CreateBitcoinPluginServices();
         var unrelatedPaymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId("LTC");
         var unrelatedExtension = new TestCheckoutModelExtension(unrelatedPaymentMethodId);
         services.AddSingleton<ICheckoutModelExtension>(unrelatedExtension);
 
         new Plugin().Execute(services);
+        services.AddSingleton(new PayjoinSessionUriReader(fixture.CreateStore()));
 
         using var provider = services.BuildServiceProvider();
         var paymentExtensions = provider.GetRequiredService<Dictionary<PaymentMethodId, ICheckoutModelExtension>>();
@@ -199,6 +201,7 @@ public class PluginRegistrationTests
         var serializer = JsonSerializer.Create(network.NBXplorerNetwork.Serializer.Settings);
         var handler = Substitute.For<IPaymentMethodHandler>();
         handler.PaymentMethodId.Returns(paymentMethodId);
+        ((IHandler<PaymentMethodId>)handler).Id.Returns(paymentMethodId);
         handler.Serializer.Returns(serializer);
         handler.ParsePaymentMethodConfig(Arg.Any<JToken>()).Returns(call => ((JToken)call[0]).ToObject<DerivationSchemeSettings>(serializer)!);
         services.AddSingleton(new PaymentMethodHandlerDictionary([handler]));

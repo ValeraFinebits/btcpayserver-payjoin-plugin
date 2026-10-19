@@ -226,7 +226,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
                 try
                 {
                     var prevout = transaction is null
-                        ? await TryGetUnspentOutputAsync(client, input, cancellationToken, pass).ConfigureAwait(false)
+                        ? await TryGetUnspentOutputAsync(client, input, pass, cancellationToken).ConfigureAwait(false)
                         : input.N < (uint)transaction.Outputs.Count ? transaction.Outputs[(int)input.N] : null;
                     if (prevout is null)
                     {
@@ -244,7 +244,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
                         try
                         {
                             ownership = await GetScriptOwnershipAsync(client, accountDerivation,
-                                prevout.ScriptPubKey, cancellationToken, pass).ConfigureAwait(false);
+                                prevout.ScriptPubKey, pass, cancellationToken).ConfigureAwait(false);
                         }
                         catch (Exception ex) when (PayjoinWalletContext.IsLookupUnavailable(ex, cancellationToken))
                         {
@@ -273,8 +273,8 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
     private static async Task<TxOut?> TryGetUnspentOutputAsync(
         ExplorerClient client,
         OutPoint input,
-        CancellationToken cancellationToken,
-        LookupPass? pass)
+        LookupPass? pass,
+        CancellationToken cancellationToken)
     {
         if (input.N > int.MaxValue)
         {
@@ -291,8 +291,8 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
     }
 
     private static async Task<PayjoinInputOwnership> GetScriptOwnershipAsync(
-        ExplorerClient client, DerivationStrategyBase accountDerivation, Script script, CancellationToken cancellationToken,
-        LookupPass? pass)
+        ExplorerClient client, DerivationStrategyBase accountDerivation, Script script, LookupPass? pass,
+        CancellationToken cancellationToken)
     {
         var records = await QueryAsync(pass, token => client.GetKeyInformationsAsync(script, token), cancellationToken).ConfigureAwait(false);
         if (records is null)

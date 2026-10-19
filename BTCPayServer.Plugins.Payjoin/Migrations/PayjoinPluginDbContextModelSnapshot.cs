@@ -202,6 +202,11 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Property<string>("InvoiceId")
                         .HasColumnType("text");
 
+                    b.Property<int>("AttemptVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("DestructiveWriteStamp");
+
                     b.Property<int?>("CloseInvoiceStatus")
                         .HasColumnType("integer");
 
@@ -217,11 +222,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<int>("AttemptVersion")
-                        .IsConcurrencyToken()
-                        .HasColumnType("integer")
-                        .HasColumnName("DestructiveWriteStamp");
 
                     b.Property<bool>("InitializedPollAfterCloseRequestConsumed")
                         .HasColumnType("boolean");
@@ -328,10 +328,6 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.Property<long>("FeeRateSatPerKwu")
                         .HasColumnType("bigint");
 
-                    b.Property<bool>("PaymentExposed")
-                        .IsConcurrencyToken()
-                        .HasColumnType("boolean");
-
                     b.Property<string>("OriginalTransactionHex")
                         .HasColumnType("text");
 
@@ -343,6 +339,10 @@ namespace BTCPayServer.Plugins.Payjoin.Migrations
                     b.PrimitiveCollection<string[]>("OutpointsUsed")
                         .IsRequired()
                         .HasColumnType("text[]");
+
+                    b.Property<bool>("PaymentExposed")
+                        .IsConcurrencyToken()
+                        .HasColumnType("boolean");
 
                     b.Property<string>("PendingTransactionId")
                         .IsConcurrencyToken()
