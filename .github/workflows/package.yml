@@ -25,6 +25,7 @@ jobs:
         uses: ./.github/actions/prepare-ci-build
         with:
           dotnet-version: 10.0.x
+          dotnet-target: BTCPayServer.Plugins.Payjoin/BTCPayServer.Plugins.AsyncPayjoin.csproj
           rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
           payjoin-ffi-features: ""
           payjoin-ffi-profile: release
