@@ -248,7 +248,13 @@ public sealed class PayjoinSenderService
                         Amount = Money.Satoshis(checked((long)amountSats.Value))
                     }
                 },
-                FeePreference = new FeePreference { ExplicitFeeRate = feeRate },
+                FeePreference = new FeePreference
+                {
+                    ExplicitFeeRate = feeRate,
+                    // TODO: Replace this +1 sat rounding workaround with proper sender validation.
+                    // https://github.com/ValeraFinebits/btcpayserver-payjoin-plugin/issues/227
+                    ExplicitFee = Money.Satoshis(1)
+                },
                 // Coin selection from BTCPay's send screen, when the operator opened it.
                 IncludeOnlyOutpoints = includeOnlyOutpoints,
                 // Coins already committed are not available: a pending transaction holds some,
