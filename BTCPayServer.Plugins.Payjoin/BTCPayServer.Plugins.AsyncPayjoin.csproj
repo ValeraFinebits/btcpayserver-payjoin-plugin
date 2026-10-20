@@ -11,7 +11,7 @@
   <PropertyGroup>
     <Product>Async Payjoin</Product>
     <Description>Async Payjoin (Payjoin V2, BIP 77) plugin for BTCPay Server.</Description>
-    <Version>0.4.2</Version>
+    <Version>0.4.3</Version>
   </PropertyGroup>
 
   <!-- Plugin development properties -->
@@ -72,7 +72,7 @@
     <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="5.9.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
     <PackageReference Include="NBXplorer.Client" Version="5.0.11" />
-	<Compile Include="..\rust-payjoin\payjoin-ffi\csharp\Payjoin.Http.cs" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\Payjoin.Http.cs')" />
+	<!--<Compile Include="..\rust-payjoin\payjoin-ffi\csharp\Payjoin.Http.cs" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\Payjoin.Http.cs')" />
     <Compile Include="..\rust-payjoin\payjoin-ffi\csharp\src\payjoin.cs" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\src\payjoin.cs')" />
     <None Include="..\rust-payjoin\payjoin-ffi\csharp\lib\libpayjoin_ffi.so" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\lib\libpayjoin_ffi.so')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -82,6 +82,7 @@
     </None>
     <None Include="..\rust-payjoin\payjoin-ffi\csharp\lib\payjoin_ffi.dll" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\lib\payjoin_ffi.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    </None>-->
+    <PackageReference Include="Payjoin" Version="0.25.0" />
   </ItemGroup>
 </Project>
