@@ -19,6 +19,19 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 /// </summary>
 internal static class PayjoinSenderSessionResourceReleaser
 {
+    internal static async Task<bool> CancelUnsharedAsync(
+        PendingTransactionService pendingTransactionService,
+        PayjoinSenderSessionStore senderSessionStore,
+        PayjoinSenderSessionState session)
+    {
+        if (!senderSessionStore.CompleteSession(session.SenderSessionId,
+                PayjoinSenderSessionStatus.Failed, null,
+                "the operator cancelled the payment before it was shared with the receiver", requireUnshared: true))
+            return false;
+        await ReleaseAsync(pendingTransactionService, senderSessionStore, session).ConfigureAwait(false);
+        return true;
+    }
+
     internal static async Task CompleteAsync(
         PendingTransactionService pendingTransactionService,
         PayjoinSenderSessionStore senderSessionStore,

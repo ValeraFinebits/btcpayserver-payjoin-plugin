@@ -67,7 +67,8 @@ public class PayjoinSenderTickConcurrencyIntegrationTests : UnitTestBase
             provider.GetRequiredService<BTCPayServer.ExplorerClientProvider>(),
             provider.GetRequiredService<PendingTransactionService>(),
             provider.GetRequiredService<PayjoinSenderSignatureHandler>(),
-            NullLogger<PayjoinSenderSessionProcessor>.Instance);
+            NullLogger<PayjoinSenderSessionProcessor>.Instance,
+            provider.GetRequiredService<PayjoinSenderSigningRequestService>());
 
         await processor.ProcessTickAsync(cts.Token).WaitAsync(cts.Token).ConfigureAwait(true);
 

@@ -7,6 +7,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Transactions;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -369,6 +370,25 @@ public sealed class PayjoinSenderSessionStore
     /// different transaction from the original, so a wallet that cannot sign on the server has
     /// to sign a second time before the payjoin can be broadcast.
     /// </summary>
+    internal async Task<string?> CreateSigningRequestAsync(string senderSessionId, Func<Task<string>> createRequest)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        return await context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            // Core and plugin use the same connection string. Their contexts open sequentially,
+            // so Npgsql reuses one enlisted connection, without a distributed transaction.
+            using var transaction = new TransactionScope(TransactionScopeOption.Required,
+                new TransactionOptions { IsolationLevel = IsolationLevel.ReadCommitted }, TransactionScopeAsyncFlowOption.Enabled);
+            if (!TryGetSession(senderSessionId, out var current) || current?.Status != PayjoinSenderSessionStatus.Pending)
+                return null;
+            var id = await createRequest().ConfigureAwait(false);
+            if (!AwaitSignature(senderSessionId, id))
+                return null; // Rolls back the core row as well as the failed handoff.
+            transaction.Complete();
+            return id;
+        }).ConfigureAwait(false);
+    }
+
     internal bool AwaitSignature(string senderSessionId, string pendingTransactionId)
     {
         using var context = _pluginDbContextFactory.CreateContext();

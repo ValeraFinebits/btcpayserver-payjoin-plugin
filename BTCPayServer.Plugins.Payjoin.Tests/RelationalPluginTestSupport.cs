@@ -56,6 +56,12 @@ internal sealed class RelationalPluginTestContext : IDisposable
         set => _dbContextFactory.BeforeSaveChanges = value;
     }
 
+    public Action? BeforeCreateContext
+    {
+        get => _dbContextFactory.BeforeCreateContext;
+        set => _dbContextFactory.BeforeCreateContext = value;
+    }
+
     public void BreakDatabase() => _dbContextFactory.Dispose();
 
     public void Dispose()
@@ -106,12 +112,14 @@ internal sealed class SqliteTestPayjoinPluginDbContextFactory : PayjoinPluginDbC
 
     public bool FailSaveChanges { get; set; }
     public Action? BeforeSaveChanges { get; set; }
+    public Action? BeforeCreateContext { get; set; }
 
     public Action? BeforeNextSaveChanges { get; set; }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The created SQLite connection is owned and disposed by SqliteOwnedPayjoinPluginDbContext.")]
     public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
     {
+        BeforeCreateContext?.Invoke();
         var connection = new SqliteConnection(_connectionString);
         try
         {

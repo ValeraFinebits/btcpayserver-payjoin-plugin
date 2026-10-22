@@ -69,6 +69,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
     private readonly ExplorerClientProvider _explorerClientProvider;
     private readonly PendingTransactionService _pendingTransactionService;
     private readonly PayjoinSenderSignatureHandler _signatureHandler;
+    private readonly PayjoinSenderSigningRequestService _signingRequests;
     private readonly ILogger<PayjoinSenderSessionProcessor> _logger;
 
     public PayjoinSenderSessionProcessor(
@@ -80,7 +81,8 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         ExplorerClientProvider explorerClientProvider,
         PendingTransactionService pendingTransactionService,
         PayjoinSenderSignatureHandler signatureHandler,
-        ILogger<PayjoinSenderSessionProcessor> logger)
+        ILogger<PayjoinSenderSessionProcessor> logger,
+        PayjoinSenderSigningRequestService signingRequests)
     {
         _senderSessionStore = senderSessionStore;
         _relayRequestSender = relayRequestSender;
@@ -91,6 +93,7 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
         _pendingTransactionService = pendingTransactionService;
         _signatureHandler = signatureHandler;
         _logger = logger;
+        _signingRequests = signingRequests;
     }
 
     public async Task ProcessTickAsync(CancellationToken stoppingToken)
@@ -102,20 +105,32 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
 
         // Each session runs its own guarded task: sessions advance independently, and one
         // session's long relay poll must not delay every session behind it.
-        await Task.WhenAll(_senderSessionStore.GetPendingSessions()
-            .Select(session => ProcessSessionGuardedAsync(session, stoppingToken))).ConfigureAwait(false);
+        await Parallel.ForEachAsync(_senderSessionStore.GetPendingSessions(),
+            PayjoinSenderSessionLock.WorkerOptions(stoppingToken),
+            async (session, token) => await ProcessSessionGuardedAsync(session, token).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     internal async Task ProcessSessionGuardedAsync(PayjoinSenderSessionState session, CancellationToken stoppingToken)
     {
-        var lease = await _senderSessionStore.TryLockSessionAsync(session.SenderSessionId, stoppingToken).ConfigureAwait(false);
-        if (lease is null)
-            return;
-        await using var ownership = lease.ConfigureAwait(false);
-        if (!_senderSessionStore.TryGetSession(session.SenderSessionId, out var current) ||
-            current is null || current.Status != PayjoinSenderSessionStatus.Pending)
-            return;
-        await ProcessSessionCoreGuardedAsync(current, stoppingToken).ConfigureAwait(false);
+        try
+        {
+            var lease = await _senderSessionStore.TryLockSessionAsync(session.SenderSessionId, stoppingToken).ConfigureAwait(false);
+            if (lease is null)
+                return;
+            await using var ownership = lease.ConfigureAwait(false);
+            if (!_senderSessionStore.TryGetSession(session.SenderSessionId, out var current) ||
+                current is null || current.Status != PayjoinSenderSessionStatus.Pending)
+                return;
+            await ProcessSessionCoreGuardedAsync(current, stoppingToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is System.Data.Common.DbException or TimeoutException
+                                   or Microsoft.EntityFrameworkCore.DbUpdateException
+                                   or Microsoft.EntityFrameworkCore.Storage.RetryLimitExceededException
+                                   or System.Transactions.TransactionException)
+        {
+            // Acquisition and reload failures must not end a session or stop sibling work.
+            LogSenderSessionTransient(_logger, session.SenderSessionId, ex);
+        }
     }
 
     private async Task ProcessSessionCoreGuardedAsync(PayjoinSenderSessionState session, CancellationToken stoppingToken)
@@ -208,13 +223,9 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
             // Terminal status is the cancellation record. Do not write a protocol fallback
             // transition for an original that nobody received. The marker participates in this
             // conditional update, so a dispatch claim and an unshared cancellation cannot both win.
-            if (!_senderSessionStore.CompleteSession(session.SenderSessionId,
-                PayjoinSenderSessionStatus.Failed,
-                broadcastTransactionId: null,
-                "the operator cancelled the payment before it was shared with the receiver", requireUnshared: true))
+            if (!await PayjoinSenderSessionResourceReleaser.CancelUnsharedAsync(
+                    _pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false))
                 return PayjoinSenderCancelResult.Failed("The payment changed while cancelling. Please refresh the page.");
-            await PayjoinSenderSessionResourceReleaser.ReleaseAsync(
-                _pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
             return PayjoinSenderCancelResult.Dropped();
         }
 
@@ -377,30 +388,11 @@ internal sealed class PayjoinSenderSessionProcessor : IPayjoinSenderSessionProce
                     "the session recorded no base URL, so the second signing round cannot start");
             }
 
-            var pending = await _pendingTransactionService.CreatePendingTransaction(
-                session.StoreId,
-                PayjoinConstants.BitcoinCode,
-                proposalPsbt,
-                requestBaseUrl,
-                // The same window round one gets. When it lapses the sweep ends the session, and
-                // because the original is signed by then, the plain payment goes out instead.
-                expiry: DateTimeOffset.UtcNow + PayjoinSenderService.SignatureWindow,
-                cancellationToken).ConfigureAwait(false);
+            var pendingId = await _signingRequests.CreateAsync(
+                _senderSessionStore, session, proposalPsbt, requestBaseUrl, cancellationToken).ConfigureAwait(false);
 
-            if (_senderSessionStore.AwaitSignature(session.SenderSessionId, pending.Id))
-            {
-                LogProposalAwaitingSignature(_logger, session.SenderSessionId, pending.Id, null);
-            }
-            else
-            {
-                // The session ended while the request was being created, so nothing waits on it.
-                // Withdraw it, or the operator would be asked to sign for a dead session.
-                await _pendingTransactionService.CancelPendingTransaction(
-                    new PendingTransactionService.PendingTransactionFullId(
-                        PayjoinConstants.BitcoinCode,
-                        session.StoreId,
-                        pending.Id)).ConfigureAwait(false);
-            }
+            if (pendingId is not null)
+                LogProposalAwaitingSignature(_logger, session.SenderSessionId, pendingId, null);
 
             return;
         }

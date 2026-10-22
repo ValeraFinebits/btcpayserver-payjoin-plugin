@@ -13,6 +13,65 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 public class PayjoinSenderSafetyTests
 {
     [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task OwnershipAcquisitionFailureDefersWithoutFallback(int error)
+    {
+        using var database = new RelationalPluginTestContext();
+        var store = database.CreateSenderStore();
+        var session = CreateSession(store);
+        var relay = new GatedRelay();
+        relay.Resume.SetResult();
+        database.BeforeCreateContext = () =>
+        {
+            database.BeforeCreateContext = null;
+            throw error switch
+            {
+                0 => new Npgsql.NpgsqlException("Injected acquisition failure"),
+                1 => new TimeoutException("Injected acquisition timeout"),
+                2 => new System.Transactions.TransactionAbortedException("Injected transaction abort"),
+                _ => new Microsoft.EntityFrameworkCore.Storage.RetryLimitExceededException("Injected retry exhaustion")
+            };
+        };
+        var processor = CreateProcessor(store, relay);
+        await processor.ProcessSessionGuardedAsync(session, TestContext.Current.CancellationToken);
+        Assert.False(relay.Entered.Task.IsCompleted);
+        Assert.True(store.TryGetSession(session.SenderSessionId, out var unchanged));
+        Assert.False(unchanged!.PaymentExposed);
+        Assert.Equal(PayjoinSenderSessionStatus.Pending, unchanged.Status);
+        Assert.Single(store.GetOutpointsHeldByLiveSessions("store"));
+        await processor.ProcessSessionGuardedAsync(session, TestContext.Current.CancellationToken);
+        Assert.True(relay.Entered.Task.IsCompleted); // Acquisition failure released the local lock.
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ACompletionWinsAfterTheCompetingTransitionHasReadPending(bool competingCompletion)
+    {
+        using var database = new RelationalPluginTestContext();
+        var store = database.CreateSenderStore();
+        CreateSession(store);
+        // The losing context has already read Pending. Commit the winner before releasing
+        // its SaveChanges; a status check without a database concurrency token would fail.
+        database.BeforeSaveChanges = () =>
+        {
+            database.BeforeSaveChanges = null;
+            Assert.True(store.CompleteSession("sender", PayjoinSenderSessionStatus.CompletedFallback, "winner", null));
+        };
+        Assert.False(competingCompletion
+            ? store.CompleteSession("sender", PayjoinSenderSessionStatus.CompletedPayjoin, "loser", null)
+            : store.AwaitSignature("sender", "late-request"));
+        Assert.True(store.TryGetSession("sender", out var current));
+        Assert.Equal(PayjoinSenderSessionStatus.CompletedFallback, current!.Status);
+        Assert.Equal("winner", current.BroadcastTransactionId);
+        Assert.Null(current.PendingTransactionId);
+        Assert.Empty(store.GetOutpointsHeldByLiveSessions("store"));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void DispatchClaimAndCancellationCannotBothWinTheDatabaseRace(bool dispatchWins)
@@ -167,7 +226,7 @@ public class PayjoinSenderSafetyTests
         var nbx = new NBXplorerNetworkProvider(ChainName.Testnet);
         var network = new BTCPayNetwork { CryptoCode = "BTC", NBXplorerNetwork = nbx.GetFromCryptoCode("BTC"), DefaultSettings = new BTCPayDefaultSettings() };
         var networks = new BTCPayNetworkProvider([network], nbx, new Logs());
-        return new PayjoinSenderSessionProcessor(store, relay!, networks, null!, null!, null!, null!, null!, NullLogger<PayjoinSenderSessionProcessor>.Instance);
+        return new PayjoinSenderSessionProcessor(store, relay!, networks, null!, null!, null!, null!, null!, NullLogger<PayjoinSenderSessionProcessor>.Instance, null!);
     }
 
     private sealed class GatedRelay : IPayjoinReceiverRelayRequestSender

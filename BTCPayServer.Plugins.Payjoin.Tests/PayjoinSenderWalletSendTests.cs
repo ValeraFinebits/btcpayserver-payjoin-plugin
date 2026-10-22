@@ -11,6 +11,37 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 /// </summary>
 public class PayjoinSenderWalletSendTests
 {
+    [Fact]
+    public async Task DirectServiceCallAlsoRejectsEmptySelectionBeforeWalletAccess()
+    {
+        var service = new BTCPayServer.Plugins.Payjoin.Services.PayjoinSenderService(null!, null!, null!, null!, null!, null!, null!, null!, null!);
+        var result = await service.StartAsync("store", PayjoinUri, 5m,
+            BTCPayServer.Abstractions.RequestBaseUrl.FromUrl(new System.Uri("http://localhost/")), [], TestContext.Current.CancellationToken);
+        Assert.False(result.Success);
+        Assert.Contains("Select at least one coin", result.Error, System.StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EmptyManualCoinSelectionIsRefused(bool missing)
+    {
+        var model = CreateModel();
+        model.InputSelection = true;
+        model.SelectedInputs = missing ? null : [];
+        Assert.Null(UIPayjoinSenderController.ResolveSingleDestination(model, out var error));
+        Assert.Contains("Select at least one coin", error, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NoChangeIsRefused()
+    {
+        var model = CreateModel();
+        model.NoChange = true;
+        Assert.Null(UIPayjoinSenderController.ResolveSingleDestination(model, out var error));
+        Assert.Contains("No change", error, System.StringComparison.Ordinal);
+    }
+
     private const string PayjoinUri = "bitcoin:tb1qdestination?amount=0.001&pj=https://example.test/#K1";
 
     [Fact]

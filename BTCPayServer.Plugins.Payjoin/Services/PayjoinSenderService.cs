@@ -121,7 +121,7 @@ public sealed class PayjoinSenderService
 
     /// <param name="selectedInputs">
     /// The coins the operator picked, when they came through BTCPay's own send screen with coin
-    /// selection open. Empty means the wallet chooses.
+    /// selection open. Null means the wallet chooses; an empty selection is refused.
     /// </param>
     internal async Task<PayjoinSenderStartResult> StartAsync(
         string storeId,
@@ -135,6 +135,8 @@ public sealed class PayjoinSenderService
         {
             return PayjoinSenderStartResult.Failed("A BIP 21 payment URI is required.");
         }
+        if (selectedInputs is { Count: 0 })
+            return PayjoinSenderStartResult.Failed("Select at least one coin, or turn off coin selection.");
 
         var network = _networkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
         if (network is null)

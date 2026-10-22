@@ -30,17 +30,20 @@ public class UIPayjoinSenderController : Controller
     private readonly PayjoinSenderSessionStore _senderSessionStore;
     private readonly IPayjoinSenderSessionProcessor _senderSessionProcessor;
     private readonly WalletRepository _walletRepository;
+    private readonly IAuthorizationService _authorizationService;
 
     public UIPayjoinSenderController(
         PayjoinSenderService senderService,
         PayjoinSenderSessionStore senderSessionStore,
         IPayjoinSenderSessionProcessor senderSessionProcessor,
-        WalletRepository walletRepository)
+        WalletRepository walletRepository,
+        IAuthorizationService authorizationService)
     {
         _senderService = senderService;
         _senderSessionStore = senderSessionStore;
         _senderSessionProcessor = senderSessionProcessor;
         _walletRepository = walletRepository;
+        _authorizationService = authorizationService;
     }
 
     /// <summary>
@@ -109,6 +112,16 @@ public class UIPayjoinSenderController : Controller
     /// </summary>
     internal static WalletSendModel.TransactionOutput? ResolveSingleDestination(WalletSendModel model, out string? error)
     {
+        if (model.InputSelection && model.SelectedInputs?.Any() is not true)
+        {
+            error = "Select at least one coin, or turn off coin selection.";
+            return null;
+        }
+        if (model.NoChange)
+        {
+            error = "Async payjoin does not support No change. Turn off this option to continue.";
+            return null;
+        }
         if (string.IsNullOrEmpty(model.PayJoinBIP21))
         {
             error = "This destination does not advertise async payjoin.";
@@ -161,7 +174,8 @@ public class UIPayjoinSenderController : Controller
     private async Task SaveDestinationLabelsAsync(WalletId walletId, WalletSendModel.TransactionOutput destination)
     {
         var labels = destination.Labels?.Where(x => !string.IsNullOrWhiteSpace(x)).ToArray() ?? [];
-        if (labels.Length == 0)
+        if (labels.Length == 0 || !(await _authorizationService.AuthorizeAsync(
+                User, walletId.StoreId, WalletPolicies.CanManageWalletTransactions).ConfigureAwait(false)).Succeeded)
         {
             return;
         }

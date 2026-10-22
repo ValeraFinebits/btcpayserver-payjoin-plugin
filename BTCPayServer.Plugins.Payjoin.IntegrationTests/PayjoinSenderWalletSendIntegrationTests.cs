@@ -67,7 +67,8 @@ public class PayjoinSenderWalletSendIntegrationTests : UnitTestBase
             ]
         };
 
-        using var controller = CreateController(tester);
+        using var controller = payer.GetController<UIPayjoinSenderController>();
+        controller.Url = new UrlHelperMock(new Uri("http://127.0.0.1/"));
         var posted = await controller.SendFromWallet(payer.StoreId, sendModel, bip21Response.Bip21, cts.Token).ConfigureAwait(true);
 
         // A redirect back to a wallet or plugin screen, not a re-render carrying an error.
