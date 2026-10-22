@@ -16,6 +16,14 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 internal static class PayjoinSenderSessionLock
 {
     private static readonly PayjoinSessionBuildLock LocalLocks = new();
+    internal const int Capacity = 16;
+    private static readonly SemaphoreSlim OwnershipSlots = new(Capacity, Capacity);
+
+    internal static ParallelOptions WorkerOptions(CancellationToken token) => new()
+    {
+        MaxDegreeOfParallelism = Capacity / 2,
+        CancellationToken = token
+    };
 
     internal static async Task<IAsyncDisposable?> TryAcquireAsync(
         PayjoinPluginDbContextFactory factory, string sessionId, CancellationToken cancellationToken)
@@ -25,15 +33,23 @@ internal static class PayjoinSenderSessionLock
             return null;
 
         PayjoinPluginDbContext? context = null;
+        var hasSlot = false;
         try
         {
             context = factory.CreateContext();
             if (context.Database.IsNpgsql())
             {
+                hasSlot = await OwnershipSlots.WaitAsync(0, cancellationToken).ConfigureAwait(false);
+                if (!hasSlot)
+                {
+                    await context.DisposeAsync().ConfigureAwait(false);
+                    local.Dispose();
+                    return null;
+                }
                 // Long polls must not occupy the same pool needed by the short persistence
                 // writes inside this operation. Bound the separate ownership pool as well.
                 var connection = new NpgsqlConnectionStringBuilder(context.Database.GetConnectionString())
-                    { ApplicationName = "Payjoin sender ownership", MaxPoolSize = 16 };
+                    { ApplicationName = "Payjoin sender ownership", MaxPoolSize = Capacity };
                 context.Database.SetConnectionString(connection.ConnectionString);
                 await context.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
                 // This ownership transaction must not run through EF's retry strategy: a
@@ -46,12 +62,13 @@ internal static class PayjoinSenderSessionLock
                 {
                     await context.DisposeAsync().ConfigureAwait(false);
                     local.Dispose();
+                    OwnershipSlots.Release();
                     return null;
                 }
             }
 
             // InMemory/SQLite fixtures use the local guard; production uses PostgreSQL as well.
-            return new Lease(context, local);
+            return new Lease(context, local, hasSlot);
         }
         catch
         {
@@ -60,17 +77,25 @@ internal static class PayjoinSenderSessionLock
                 if (context is not null)
                     await context.DisposeAsync().ConfigureAwait(false);
             }
-            finally { local.Dispose(); }
+            finally
+            {
+                local.Dispose();
+                if (hasSlot) OwnershipSlots.Release();
+            }
             throw;
         }
     }
 
-    private sealed class Lease(PayjoinPluginDbContext context, IDisposable local) : IAsyncDisposable
+    private sealed class Lease(PayjoinPluginDbContext context, IDisposable local, bool hasSlot) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {
             try { await context.DisposeAsync().ConfigureAwait(false); }
-            finally { local.Dispose(); }
+            finally
+            {
+                local.Dispose();
+                if (hasSlot) OwnershipSlots.Release();
+            }
         }
     }
 }

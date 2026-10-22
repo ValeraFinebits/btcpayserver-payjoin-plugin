@@ -68,11 +68,13 @@ internal sealed class PayjoinSenderSignatureHandler
         // The first two sweeps can touch the network (a fallback broadcast, a proposal
         // broadcast), so each session runs its own guarded task and one slow session does not
         // delay the rest.
-        await Task.WhenAll(_senderSessionStore.GetSessionsAwaitingSignature()
-            .Select(session => ReconcileGuardedAsync(session, ReconcileSessionAsync, cancellationToken))).ConfigureAwait(false);
+        await Parallel.ForEachAsync(_senderSessionStore.GetSessionsAwaitingSignature(),
+            PayjoinSenderSessionLock.WorkerOptions(cancellationToken),
+            async (session, token) => await ReconcileGuardedAsync(session, ReconcileSessionAsync, token).ConfigureAwait(false)).ConfigureAwait(false);
 
-        await Task.WhenAll(_senderSessionStore.GetLiveSessionsWithCoinReservations()
-            .Select(session => ReconcileGuardedAsync(session, ReconcileReservationAsync, cancellationToken))).ConfigureAwait(false);
+        await Parallel.ForEachAsync(_senderSessionStore.GetLiveSessionsWithCoinReservations(),
+            PayjoinSenderSessionLock.WorkerOptions(cancellationToken),
+            async (session, token) => await ReconcileGuardedAsync(session, ReconcileReservationAsync, token).ConfigureAwait(false)).ConfigureAwait(false);
 
         // A run that crashed between completing a session and releasing its rows left them
         // holding coins for a session that is over. Finish those releases here.
@@ -119,7 +121,8 @@ internal sealed class PayjoinSenderSignatureHandler
         }
         catch (Exception ex) when (ex is InvalidOperationException or UniffiException or FormatException
                                    or PayjoinSenderBroadcastException or System.Net.Http.HttpRequestException
-                                   or Microsoft.EntityFrameworkCore.DbUpdateException)
+                                   or Microsoft.EntityFrameworkCore.DbUpdateException or System.Data.Common.DbException or TimeoutException
+                                   or Microsoft.EntityFrameworkCore.Storage.RetryLimitExceededException)
         {
             // One session must not stop the sweep: the others are waiting on their own
             // transactions and have nothing to do with this failure.
@@ -130,9 +133,8 @@ internal sealed class PayjoinSenderSignatureHandler
     /// <summary>
     /// Follows what the operator does to a session's coin reservation on BTCPay's own screen.
     /// The reservation is the signed plain payment, so a manual broadcast there is the fallback
-    /// happening by hand, and a cancellation carries the same intent as this plugin's own stop
-    /// control: end the payjoin, keep the payment. The payment cannot be taken back either way,
-    /// because the receiver already holds the signed original.
+    /// happening by hand. Cancellation never authorizes a broadcast. An exposed payment
+    /// cannot be safely dropped, so it retains its session and outpoint ownership.
     /// </summary>
     private async Task ReconcileReservationAsync(PayjoinSenderSessionState session, CancellationToken cancellationToken)
     {
@@ -164,8 +166,11 @@ internal sealed class PayjoinSenderSignatureHandler
                     failureMessage: null).ConfigureAwait(false);
                 break;
             case PendingTransactionState.Cancelled:
+                await PayjoinSenderSessionResourceReleaser.CancelUnsharedAsync(
+                    _pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
+                break;
             case PendingTransactionState.Expired:
-                await EndSessionAsync(session, "the operator cancelled the reserved payment", cancellationToken).ConfigureAwait(false);
+                await EndSessionAsync(session, "the reserved payment expired", cancellationToken).ConfigureAwait(false);
                 break;
             case PendingTransactionState.Invalidated:
                 // Something else spent the coins. When that something is this session's own
@@ -215,7 +220,8 @@ internal sealed class PayjoinSenderSignatureHandler
                     await CompleteFromExternalBroadcastAsync(session, pendingTransaction).ConfigureAwait(false);
                     break;
                 case PendingTransactionState.Cancelled:
-                    await EndSessionAsync(session, "the operator cancelled the transaction", cancellationToken).ConfigureAwait(false);
+                    await PayjoinSenderSessionResourceReleaser.CancelUnsharedAsync(
+                        _pendingTransactionService, _senderSessionStore, session).ConfigureAwait(false);
                     break;
                 case PendingTransactionState.Expired:
                     await EndSessionAsync(session, "the transaction expired before it was signed", cancellationToken).ConfigureAwait(false);

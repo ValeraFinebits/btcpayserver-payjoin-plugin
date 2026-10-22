@@ -30,6 +30,71 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 // outside this fixture. Returning view models as JSON keeps those dependencies out of the test.
 public class PayjoinSenderHttpTests
 {
+    [Theory]
+    [InlineData("InputSelection", "Select at least one coin")]
+    [InlineData("NoChange", "No change")]
+    public async Task UnsupportedWalletOptionsAreRejectedThroughMvc(string option, string error)
+    {
+        using var database = new RelationalPluginTestContext();
+        var store = database.CreateSenderStore();
+        var app = CreateApp(store);
+        await using var lifetime = app.ConfigureAwait(false);
+        await app.StartAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        using var client = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
+        client.DefaultRequestHeaders.Add("X-Test-Permissions", SendPermissions);
+        var form = ValidForm();
+        form[option] = "true";
+        using var content = new FormUrlEncodedContent(form);
+        using var response = await client.PostAsync(new Uri("/stores/store/payjoin/send/from-wallet", UriKind.Relative), content, TestContext.Current.CancellationToken).ConfigureAwait(true);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(error, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken).ConfigureAwait(true), StringComparison.Ordinal);
+        Assert.Empty(store.GetSessions("store"));
+        await app.StopAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LabelsRequireTheirOwnPermissionThroughMvc(bool canManage)
+    {
+        using var database = new RelationalPluginTestContext();
+        var walletDatabase = new WalletAccessProbe();
+        var app = CreateApp(database.CreateSenderStore(), new WalletRepository(walletDatabase));
+        await using var lifetime = app.ConfigureAwait(false);
+        await app.StartAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false, CheckCertificateRevocationList = true };
+        using var client = new HttpClient(handler) { BaseAddress = new Uri(app.Urls.Single()) };
+        client.DefaultRequestHeaders.Add("X-Test-Permissions", SendPermissions + (canManage ? "," + WalletPolicies.CanManageWalletTransactions : ""));
+        var form = ValidForm();
+        form["Outputs[0].Labels[0]"] = "label";
+        using var content = new FormUrlEncodedContent(form);
+        using var response = await client.PostAsync(new Uri("/stores/store/payjoin/send/from-wallet", UriKind.Relative), content, TestContext.Current.CancellationToken).ConfigureAwait(true);
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal(canManage ? 1 : 0, walletDatabase.AccessCount);
+        await app.StopAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+    }
+
+    private const string SendPermissions = WalletPolicies.CanCreateWalletTransactions + "," + WalletPolicies.CanSignWalletTransactions + "," + WalletPolicies.CanBroadcastWalletTransactions;
+
+    private static Dictionary<string, string> ValidForm() => new()
+    {
+        ["FeeSatoshiPerByte"] = "5",
+        ["asyncPayjoinBip21"] = "bitcoin:destination?amount=0.001&pj=https://example.test/",
+        ["Outputs[0].DestinationAddress"] = "destination",
+        ["Outputs[0].Amount"] = "0.001"
+    };
+
+    private sealed class WalletAccessProbe() : ApplicationDbContextFactory(
+        Options.Create(new DatabaseOptions { ConnectionString = "Host=unused;Database=unused" }), NullLoggerFactory.Instance)
+    {
+        public int AccessCount { get; private set; }
+        public override ApplicationDbContext CreateContext(Action<Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure.NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
+        {
+            AccessCount++;
+            throw new InvalidOperationException("Wallet write reached.");
+        }
+    }
+
     [Fact]
     public async Task RestrictedWalletRequestsUseRealActivationAndKeepOperationPermissionsSeparate()
     {
@@ -111,7 +176,7 @@ public class PayjoinSenderHttpTests
         return await client.PostAsync(new Uri(path, UriKind.Relative), content, TestContext.Current.CancellationToken).ConfigureAwait(false);
     }
 
-    private static WebApplication CreateApp(PayjoinSenderSessionStore store)
+    private static WebApplication CreateApp(PayjoinSenderSessionStore store, WalletRepository? walletRepository = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -122,14 +187,16 @@ public class PayjoinSenderHttpTests
         mvc.AddApplicationPart(typeof(UIPayjoinSenderController).Assembly).AddApplicationPart(typeof(HttpErrorController).Assembly).AddControllersAsServices();
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton<IPayjoinSenderSessionProcessor>(PayjoinSenderSafetyTests.CreateProcessor(store));
-        builder.Services.AddSingleton(new PayjoinSenderService(null!, null!, null!, null!, null!, store, null!, new PayjoinSessionBuildLock(), NullLogger<PayjoinSenderService>.Instance));
-        builder.Services.AddSingleton(new WalletRepository(new ApplicationDbContextFactory(
+        var networks = new BTCPayNetworkProvider([], new NBXplorer.NBXplorerNetworkProvider(NBitcoin.ChainName.Regtest), new BTCPayServer.Logging.Logs());
+        builder.Services.AddSingleton(new PayjoinSenderService(networks, null!, null!, null!, null!, store, null!, new PayjoinSessionBuildLock(), NullLogger<PayjoinSenderService>.Instance));
+        builder.Services.AddSingleton(walletRepository ?? new WalletRepository(new ApplicationDbContextFactory(
             Options.Create(new DatabaseOptions { ConnectionString = "Host=unused;Database=unused" }), NullLoggerFactory.Instance)));
         builder.Services.AddAuthentication(AuthenticationSchemes.Cookie).AddScheme<AuthenticationSchemeOptions, PermissionAuthentication>(AuthenticationSchemes.Cookie, _ => { });
         builder.Services.AddAuthorization(options =>
         {
             foreach (var permission in new[] { WalletPolicies.CanCreateWalletTransactions, WalletPolicies.CanSignWalletTransactions,
-                         WalletPolicies.CanBroadcastWalletTransactions, WalletPolicies.CanCancelWalletTransactions, WalletPolicies.CanViewWallet })
+                         WalletPolicies.CanBroadcastWalletTransactions, WalletPolicies.CanCancelWalletTransactions, WalletPolicies.CanViewWallet,
+                         WalletPolicies.CanManageWalletTransactions })
                 options.AddPolicy(permission, policy => policy.RequireAuthenticatedUser().RequireClaim("permission", permission));
         });
         var app = builder.Build();
@@ -180,5 +247,5 @@ public class HttpErrorController : Controller
 public class UIWalletsController : Controller
 {
     [HttpGet]
-    public IActionResult WalletSend() => Content("wallet");
+    public IActionResult WalletSend() => Json(TempData.GetStatusMessageModel());
 }

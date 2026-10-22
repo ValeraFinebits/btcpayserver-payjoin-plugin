@@ -9,11 +9,203 @@ using Microsoft.Extensions.Options;
 using Npgsql;
 using Payjoin;
 using Xunit;
+using BTCPayServer.Data;
+using BTCPayServer.HostedServices;
+using Microsoft.Extensions.Logging.Abstractions;
+using NBitcoin;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
+using Uri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests;
 
+[Collection(nameof(BTCPayServer.Tests.NonParallelizableCollectionDefinition))]
 public class PayjoinSenderDatabaseIntegrationTests
 {
+    [Theory, Trait("Integration", "Integration")]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task CoreCancellationNeverBroadcasts(bool signingRequest, bool exposed)
+    {
+        var database = new DatabaseFixture();
+        await using var lifetime = database.ConfigureAwait(false);
+        await database.InitializeAsync();
+        using var events = new EventAggregator(new BTCPayServer.Logging.Logs());
+        var pending = database.CreatePendingService(events);
+        var request = await pending.CreatePendingTransaction("store", "BTC", PSBT.Parse(PayjoinMethods.OriginalPsbt(), Network.TestNet),
+            BTCPayServer.Abstractions.RequestBaseUrl.FromUrl(new Uri("http://localhost/")), cancellationToken: TestContext.Current.CancellationToken).ConfigureAwait(true);
+        var store = database.CreateStore();
+        store.CreateSession("cancel", "store", "bitcoin:cancel", "test", 1000, "original", ["bootstrap"],
+            outpointsUsed: ["held:0"], originalTransactionHex: "signed-original",
+            pendingTransactionId: signingRequest ? request.Id : null,
+            coinReservationTransactionId: signingRequest ? null : request.Id,
+            status: signingRequest ? PayjoinSenderSessionStatus.AwaitingSignature : PayjoinSenderSessionStatus.Pending);
+        if (exposed) Assert.True(store.TryMarkPaymentExposed("cancel"));
+        await pending.CancelPendingTransaction(new("BTC", "store", request.Id)).ConfigureAwait(true);
+        // No network or explorer dependency: any attempt to broadcast fails this test.
+        var handler = new PayjoinSenderSignatureHandler(store, pending, null!, null!, NullLogger<PayjoinSenderSignatureHandler>.Instance);
+        await handler.ReconcileAsync(TestContext.Current.CancellationToken);
+        Assert.True(store.TryGetSession("cancel", out var session));
+        Assert.Null(session!.BroadcastTransactionId);
+        Assert.Equal(exposed ? 1 : 0, store.GetOutpointsHeldByLiveSessions("store").Count);
+        Assert.Equal(exposed ? (signingRequest ? PayjoinSenderSessionStatus.AwaitingSignature : PayjoinSenderSessionStatus.Pending)
+            : PayjoinSenderSessionStatus.Failed, session.Status);
+        if (!exposed)
+        {
+            Assert.Null(session.PendingTransactionId);
+            Assert.Null(session.CoinReservationTransactionId);
+        }
+    }
+
+    [Fact, Trait("Integration", "Integration")]
+    public async Task FailedSigningHandoffRollsBackTheCoreRequestAndRetriesOnce()
+    {
+        var database = new DatabaseFixture();
+        await using var lifetime = database.ConfigureAwait(false);
+        await database.InitializeAsync();
+        using var events = new EventAggregator(new BTCPayServer.Logging.Logs());
+        var store = database.CreateStore();
+        var session = CreateSession(store, "handoff", ["bootstrap"]);
+        var service = new PayjoinSenderSigningRequestService(database.Networks, database.CoreFactory, events, NullLogger<PendingTransactionService>.Instance);
+        var published = new List<PendingTransactionService.PendingTransactionEvent>();
+        using var subscription = events.Subscribe<PendingTransactionService.PendingTransactionEvent>(published.Add);
+        Task<string?> CreateRequest() => service.CreateAsync(store, session,
+            PSBT.Parse(PayjoinMethods.OriginalPsbt(), Network.TestNet),
+            BTCPayServer.Abstractions.RequestBaseUrl.FromUrl(new Uri("http://localhost/")), TestContext.Current.CancellationToken);
+        database.Factory.BeforeSave = () => throw new DbUpdateException("Injected handoff failure");
+        var failure = await Assert.ThrowsAsync<DbUpdateException>(CreateRequest);
+        Assert.Equal("Injected handoff failure", failure.Message);
+        database.Factory.BeforeSave = null;
+        using (var core = database.CoreFactory.CreateContext())
+            Assert.Empty(core.PendingTransactions.ToArray()); // Not even an orphaned Cancelled row.
+        Assert.True(store.TryGetSession("handoff", out var unchanged));
+        Assert.Equal(PayjoinSenderSessionStatus.Pending, unchanged!.Status);
+        Assert.Null(unchanged.PendingTransactionId);
+        Assert.Empty(published);
+
+        var id = await CreateRequest();
+        Assert.NotNull(id);
+        Assert.Null(await CreateRequest());
+        Assert.Equal(id, Assert.Single(published).Data.Id);
+        using (var core = database.CoreFactory.CreateContext())
+            Assert.Equal(id, Assert.Single(core.PendingTransactions.ToArray()).Id);
+        // Fresh context/store sees the committed handoff after a process would restart.
+        Assert.True(database.CreateStore().TryGetSession("handoff", out var linked));
+        Assert.Equal(id, linked!.PendingTransactionId);
+        Assert.Equal(PayjoinSenderSessionStatus.AwaitingSignature, linked.Status);
+    }
+
+    [Theory, Trait("Integration", "Integration")]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OverlappingTransitionsCannotOverwriteTheWinningCompletion(bool competingCompletion)
+    {
+        var database = new DatabaseFixture();
+        await using var lifetime = database.ConfigureAwait(false);
+        using (var context = database.Factory.CreateContext())
+            await context.Database.MigrateAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        var store = database.CreateStore();
+        CreateSession(store, "race", ["bootstrap"]);
+        database.Factory.BeforeSave = () =>
+        {
+            database.Factory.BeforeSave = null;
+            Assert.True(store.CompleteSession("race", PayjoinSenderSessionStatus.CompletedFallback, "winner", null));
+        };
+        Assert.False(competingCompletion
+            ? store.CompleteSession("race", PayjoinSenderSessionStatus.CompletedPayjoin, "loser", null)
+            : store.AwaitSignature("race", "late"));
+        Assert.True(store.TryGetSession("race", out var current));
+        Assert.Equal(PayjoinSenderSessionStatus.CompletedFallback, current!.Status);
+        Assert.Equal("winner", current.BroadcastTransactionId);
+        Assert.Null(current.PendingTransactionId);
+    }
+
+    [Fact, Trait("Integration", "Integration")]
+    public async Task OwnershipSaturationDefersAndReleasesCapacity()
+    {
+        var database = new DatabaseFixture();
+        await using var lifetime = database.ConfigureAwait(false);
+        using (var context = database.Factory.CreateContext())
+            await context.Database.MigrateAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        var store = database.CreateStore();
+        var leases = new List<IAsyncDisposable>();
+        try
+        {
+            for (var i = 0; i < PayjoinSenderSessionLock.Capacity; i++)
+            {
+                var lease = await store.TryLockSessionAsync($"held-{i}", TestContext.Current.CancellationToken);
+                Assert.NotNull(lease);
+                leases.Add(lease);
+            }
+            Assert.Null(await store.TryLockSessionAsync("excess", TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken).ConfigureAwait(true));
+            await leases[0].DisposeAsync().ConfigureAwait(true);
+            leases.RemoveAt(0);
+            var resumed = await store.TryLockSessionAsync("excess", TestContext.Current.CancellationToken);
+            Assert.NotNull(resumed);
+            leases.Add(resumed);
+        }
+        finally
+        {
+            foreach (var lease in leases) await lease.DisposeAsync().ConfigureAwait(true);
+        }
+    }
+
+    [Fact, Trait("Integration", "Integration")]
+    public async Task MoreThanOnePoolOfSessionsProgressWithBoundedLongPolls()
+    {
+        var database = new DatabaseFixture();
+        await using var lifetime = database.ConfigureAwait(false);
+        using (var context = database.Factory.CreateContext())
+            await context.Database.MigrateAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        var store = database.CreateStore();
+        using var keys = OhttpKeys.Decode(Convert.FromHexString("01001604ba48c49c3d4a92a3ad00ecc63a024da10ced02180c73ec12d8a7ad2cc91bb483824fe2bee8d28bfe2eb2fc6453bc4d31cd851e8a6540e86c5382af588d370957000400010003"));
+        using var receiverBuilder = new ReceiverBuilder("2MuyMrZHkbHbfjudmKUy45dU4P17pjG2szK", "https://example.com", keys);
+        using var receiverTransition = receiverBuilder.Build();
+        using var receiver = receiverTransition.Save(new CapturingReceiverSessionPersister());
+        using var uri = receiver.PjUri();
+        var bootstrap = new CapturingSenderSessionPersister();
+        using var builder = new SenderBuilder(PayjoinMethods.OriginalPsbt(), uri);
+        using var transition = builder.BuildRecommended(1000);
+        using var sender = transition.Save(bootstrap);
+        for (var i = 0; i < 24; i++) CreateSession(store, $"poll-{i}", bootstrap.Load());
+        var relay = new BoundedRelay();
+        var handler = new PayjoinSenderSignatureHandler(store, null!, null!, null!, NullLogger<PayjoinSenderSignatureHandler>.Instance);
+        var processor = new PayjoinSenderSessionProcessor(store, relay, database.Networks, null!, null!, null!, null!, handler,
+            NullLogger<PayjoinSenderSessionProcessor>.Instance, null!);
+        var tick = processor.ProcessTickAsync(TestContext.Current.CancellationToken);
+        await relay.Full.Task.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken).ConfigureAwait(true);
+        try
+        {
+            Assert.Equal(8, relay.Started);
+            Assert.False(tick.IsCompleted);
+            CreateSession(store, "interactive", bootstrap.Load());
+            Assert.True((await processor.CancelAsync("store", "interactive", TestContext.Current.CancellationToken)).Success);
+        }
+        finally { relay.Release.TrySetResult(); }
+        await tick.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken).ConfigureAwait(true);
+        Assert.Equal(24, relay.Started);
+        Assert.Equal(24, store.GetPendingSessions().Count);
+    }
+
+    private sealed class BoundedRelay : IPayjoinReceiverRelayRequestSender
+    {
+        private int _started;
+        public int Started => Volatile.Read(ref _started);
+        public TaskCompletionSource Full { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<(byte[] ResponseBody, TRequestContext RequestContext)> SendAsync<TRequestContext>(
+            string storeId, string sessionId, Func<string, TRequestContext> buildRequest,
+            Func<TRequestContext, (Uri Url, string ContentType, byte[] Body)> describeRequest,
+            CancellationToken cancellationToken) where TRequestContext : IDisposable
+        {
+            if (Interlocked.Increment(ref _started) == 8) Full.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            throw new HttpRequestException("Simulated lost relay response.");
+        }
+    }
+
     [Fact, Trait("Integration", "Integration")]
     public async Task DispatchMigrationPreservesUncertaintyForExistingSignedSessions()
     {
@@ -121,12 +313,33 @@ public class PayjoinSenderDatabaseIntegrationTests
 
     private sealed class DatabaseFixture : IAsyncDisposable
     {
-        public PayjoinPluginDbContextFactory Factory { get; }
+        public InterceptingFactory Factory { get; }
+        public ApplicationDbContextFactory CoreFactory { get; }
+        public BTCPayNetworkProvider Networks { get; }
         public DatabaseFixture()
         {
             var connection = new NpgsqlConnectionStringBuilder(Environment.GetEnvironmentVariable("TESTS_POSTGRES") ??
                 "Host=127.0.0.1;Port=39372;Username=postgres") { Database = $"btcpayserver_pr113_{Guid.NewGuid():N}" };
-            Factory = new PayjoinPluginDbContextFactory(Options.Create(new DatabaseOptions { ConnectionString = connection.ConnectionString }));
+            var options = Options.Create(new DatabaseOptions { ConnectionString = connection.ConnectionString });
+            Factory = new InterceptingFactory(options);
+            CoreFactory = new ApplicationDbContextFactory(options, NullLoggerFactory.Instance);
+            var nbx = new NBXplorer.NBXplorerNetworkProvider(ChainName.Testnet);
+            var network = new BTCPayNetwork { CryptoCode = "BTC", NBXplorerNetwork = nbx.GetFromCryptoCode("BTC"), DefaultSettings = new BTCPayDefaultSettings() };
+            Networks = new BTCPayNetworkProvider([network], nbx, new BTCPayServer.Logging.Logs());
+        }
+        public async Task InitializeAsync()
+        {
+            using var core = CoreFactory.CreateContext();
+            await core.Database.MigrateAsync(TestContext.Current.CancellationToken).ConfigureAwait(false);
+            core.Stores.Add(new StoreData { Id = "store", StoreName = "Review fixture" });
+            await core.SaveChangesAsync(TestContext.Current.CancellationToken).ConfigureAwait(false);
+            using var plugin = Factory.CreateContext();
+            await plugin.Database.MigrateAsync(TestContext.Current.CancellationToken).ConfigureAwait(false);
+        }
+        public PendingTransactionService CreatePendingService(EventAggregator events)
+        {
+            return new PendingTransactionService(Networks,
+                CoreFactory, events, NullLogger<PendingTransactionService>.Instance);
         }
         public PayjoinSenderSessionStore CreateStore() => new(Factory, new PostgresPayjoinUniqueConstraintViolationDetector());
         public async ValueTask DisposeAsync()
@@ -134,6 +347,29 @@ public class PayjoinSenderDatabaseIntegrationTests
             var context = Factory.CreateContext();
             await using var contextLifetime = context.ConfigureAwait(false);
             await context.Database.EnsureDeletedAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class InterceptingFactory(IOptions<DatabaseOptions> options) : PayjoinPluginDbContextFactory(options)
+    {
+        public Action? BeforeSave { get; set; }
+        public override PayjoinPluginDbContext CreateContext(Action<NpgsqlDbContextOptionsBuilder>? npgsqlOptionsAction = null)
+        {
+            var builder = new DbContextOptionsBuilder<PayjoinPluginDbContext>();
+            ConfigureBuilder(builder, npgsqlOptionsAction);
+            builder.AddInterceptors(new SaveInterceptor(this));
+            return new PayjoinPluginDbContext(builder.Options);
+        }
+    }
+
+    private sealed class SaveInterceptor(InterceptingFactory factory) : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public override Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> SavingChanges(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result)
+        {
+            factory.BeforeSave?.Invoke();
+            return result;
         }
     }
 }
