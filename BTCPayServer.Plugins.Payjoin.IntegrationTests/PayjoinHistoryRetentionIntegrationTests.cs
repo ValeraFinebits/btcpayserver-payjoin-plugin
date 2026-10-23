@@ -1,12 +1,15 @@
 using System.Collections.Concurrent;
 using System.Data.Common;
 using BTCPayServer.Abstractions.Models;
+using BTCPayServer.Data;
 using BTCPayServer.Logging;
 using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Services.Invoices;
 using BTCPayServer.Tests;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBXplorer;
@@ -26,6 +29,99 @@ public partial class PayjoinHistoryRetentionIntegrationTests(ITestOutputHelper h
     private const string ReceiverAddress = "receiver";
     private const string SessionUri = "bitcoin:receiver?amount=0.0005&pj=https%3A%2F%2Fexample.com%2Foriginal%2FURI&pjos=0";
     private static readonly string[] OriginalEvents = ["{\"original\":\"unaltered\"}", "{\"outputs\":\"committed\"}"];
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task ExpiredCorruptSessionStopsBeforeScriptResolutionAndReplay(bool prepared, bool invalidReceiverAddress)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var database = CreateDBTester();
+        await database.MigrateAsync().WaitAsync(token).ConfigureAwait(true);
+        try
+        {
+            using (var core = database.CreateContext())
+            {
+                var invoice = new InvoiceData { Id = InvoiceId, Status = nameof(Client.Models.InvoiceStatus.New) };
+                invoice.SetBlob(new InvoiceEntity
+                {
+                    Version = InvoiceEntity.Lastest_Version,
+                    InvoiceTime = DateTimeOffset.UtcNow,
+                    Currency = "BTC",
+                    Price = 0.1m
+                });
+                core.Invoices.Add(invoice);
+                await core.SaveChangesAsync(token).ConfigureAwait(true);
+            }
+
+            var factory = new ObservedFactory(database.ConnectionString);
+            using (var context = factory.CreateContext())
+                await context.Database.MigrateAsync(token).ConfigureAwait(true);
+            var store = CreateStore(factory);
+            using var receiverKey = new Key();
+            var address = receiverKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+            using var keys = OhttpKeys.Decode(Convert.FromHexString(
+                "01001604ba48c49c3d4a92a3ad00ecc63a024da10ced02180c73ec12d8a7ad2cc91bb483824fe2bee8d28bfe2eb2fc6453bc4d31cd851e8a6540e86c5382af588d370957000400010003"));
+            using var builder = new ReceiverBuilder(address, "https://directory.example/", keys);
+            using var pinned = builder.WithAmount(50_000);
+            using var expiring = pinned.WithExpiration(600);
+            using var bootstrap = expiring.Build();
+            var capture = new CapturingReceiverSessionPersister();
+            using var initialized = bootstrap.Save(capture);
+            using var uri = initialized.PjUri();
+            var session = store.GetOrCreateSession(InvoiceId, invalidReceiverAddress ? "invalid-address" : address,
+                "store", DateTimeOffset.UtcNow.AddMinutes(10), capture.Events);
+            store.StorePayjoinUri(InvoiceId, session.ReceiverAddress, uri.AsString(), session.SessionInstanceId);
+            await factory.SeedBridgeAsync(BridgeRequest(prepared ? uint256.One.ToString() : null), token).ConfigureAwait(true);
+            using (var replay = PayjoinMethods.ReplayReceiverEventLog(PayjoinReceiverSessionStore.Snapshot(session)))
+            using (var state = replay.State())
+                Assert.IsType<ReceiveSession.Initialized>(state);
+
+            store.CreatePersister(session).Save("{malformed-event");
+            var logger = new GuardWarningLog();
+            var guard = new PayjoinReceiverSessionGuard(store, CreateNetworkProvider(ChainName.Regtest),
+                database.GetInvoiceRepository(), logger);
+            if (prepared)
+            {
+                Assert.Null(await guard.TryPrepareAsync(store.GetAttempt(InvoiceId, session.SessionInstanceId), token).ConfigureAwait(true));
+                Assert.Contains(5, logger.Warnings);
+                logger.Warnings.Clear();
+            }
+            using (var context = factory.CreateContext())
+            {
+                context.ReceiverSessions.Single().MonitoringExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+                await context.SaveChangesAsync(token).ConfigureAwait(true);
+            }
+            var expired = store.GetAttempt(InvoiceId, session.SessionInstanceId);
+            var bridge = await CreateBridgeService(factory).TryGetByInvoiceIdAsync(InvoiceId, token).ConfigureAwait(true);
+
+            Assert.Null(await guard.TryPrepareAsync(expired, token).ConfigureAwait(true));
+
+            Assert.Empty(logger.Warnings);
+            Assert.Equal(bridge, await CreateBridgeService(factory).TryGetByInvoiceIdAsync(InvoiceId, token).ConfigureAwait(true));
+            Assert.Equal(prepared, store.TryGetSession(InvoiceId, out var retained));
+            using var verification = factory.CreateContext();
+            if (prepared)
+            {
+                Assert.NotNull(retained);
+                Assert.Equal(expired.SessionInstanceId, retained.SessionInstanceId);
+                Assert.Equal(expired.AttemptVersion, retained.AttemptVersion);
+                Assert.Equal(expired.PayjoinUri, retained.PayjoinUri);
+                Assert.Equal(expired.GetEvents(), retained.GetEvents());
+            }
+            else
+            {
+                Assert.Empty(verification.ReceiverSessionEvents);
+                Assert.Null(store.GetServablePayjoinUri(InvoiceId, expired.ReceiverAddress));
+            }
+        }
+        finally
+        {
+            await using var core = database.CreateContext();
+            await core.Database.EnsureDeletedAsync(CancellationToken.None).ConfigureAwait(true);
+        }
+    }
 
     [Theory]
     [InlineData(false)]
@@ -301,6 +397,17 @@ public partial class PayjoinHistoryRetentionIntegrationTests(ITestOutputHelper h
         {
             Calls++;
             throw new NetworkStoppedException();
+        }
+    }
+
+    private sealed class GuardWarningLog : ILogger<PayjoinReceiverSessionGuard>
+    {
+        public List<int> Warnings { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel >= LogLevel.Warning) Warnings.Add(eventId.Id);
         }
     }
 

@@ -56,17 +56,22 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
         session = refreshedSession;
 
-        if (!TryGetReceiverScript(session, out var receiverScript))
-        {
-            LogPayjoinReceiverScriptUnavailable(_logger, session.InvoiceId, null);
-            return null;
-        }
-
         var persister = _sessionStore.CreatePersister(session);
         ReplayResult? replay = null;
         ReceiveSession? state = null;
         try
         {
+            if (TryExpireSession(session))
+            {
+                return null;
+            }
+
+            if (!TryGetReceiverScript(session, out var receiverScript))
+            {
+                LogPayjoinReceiverScriptUnavailable(_logger, session.InvoiceId, null);
+                return null;
+            }
+
             var replayScope = PayjoinMethods.ReplayReceiverEventLog(persister);
             replay = replayScope;
 
@@ -88,7 +93,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
                 }
             }
 
-            if (TryExpireSession(session) || TryRemoveCloseRequestedSession(session, replayState)) return null;
+            if (TryRemoveCloseRequestedSession(session, replayState)) return null;
 
             var result = new PayjoinReceiverSessionGuardResult(
                 session,
