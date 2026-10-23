@@ -538,8 +538,8 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
             tester, context.Merchant, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertPlainBip21(bip21Response);
-        Assert.Equal(PayjoinAvailabilityStatus.TemporarilyUnavailable, bip21Response.Status);
-        Assert.Equal(PayjoinUnavailableReasons.NoConfirmedReceiverInputs, bip21Response.UnavailableReason);
+        Assert.Equal(PayjoinAvailabilityStatus.MerchantRequirementsUnmet, bip21Response.Status);
+        Assert.Equal(PayjoinUnavailableReasons.UnsupportedWalletProfile, bip21Response.UnavailableReason);
         Assert.False(tester.PayTester.GetService<PayjoinReceiverSessionStore>().TryGetSession(invoiceId, out _));
     }
 
