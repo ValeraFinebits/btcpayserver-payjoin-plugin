@@ -268,7 +268,7 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
 
     [Theory]
     [InlineData(false, "NBXplorerGenerated")]
-    [InlineData(true, "ImportedSeed")]
+    [InlineData(true, "ManualDerivationScheme")]
     [Trait("Integration", "Integration")]
     public async Task UnsupportedProfileKeepsOrdinaryPaymentAndSavedCoinAccess(bool hot, string source)
     {

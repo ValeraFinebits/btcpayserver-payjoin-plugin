@@ -1,7 +1,9 @@
 using BTCPayServer.BIP78.Sender;
 using BTCPayServer.Client.Models;
+using BTCPayServer.Controllers;
 using BTCPayServer.Data;
 using BTCPayServer.HostedServices;
+using BTCPayServer.Models.StoreViewModels;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Payments.PayJoin.Sender;
@@ -13,6 +15,7 @@ using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
 using BTCPayServer.Tests;
+using Microsoft.AspNetCore.Mvc;
 using NBitcoin;
 using NBitcoin.Payment;
 using NBitpayClient;
@@ -43,6 +46,99 @@ public class PayjoinPluginIntegrationTests : UnitTestBase
         var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
 
         PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task RestoredHotWalletContributesRegisteredCoinFromBeforeRestore()
+    {
+        using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
+        using var tester = CreateServerTester(newDb: true);
+        var context = await PayjoinAccountTestHelper.CreateInitializedTestContextAsync(
+            tester, initialFundingUtxoCount: 1, cancellationToken: cts.Token).ConfigureAwait(true);
+        var payer = await PayjoinAccountTestHelper.CreateInitializedAccountAsync(tester, context.Network, cancellationToken: cts.Token).ConfigureAwait(true);
+        var stores = tester.PayTester.GetService<StoreRepository>();
+        var handlers = tester.PayTester.GetService<PaymentMethodHandlerDictionary>();
+        var method = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        var storeBeforeRestore = await stores.FindStore(context.Merchant.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.NotNull(storeBeforeRestore);
+        var settingsBeforeRestore = storeBeforeRestore.GetPaymentMethodConfig<DerivationSchemeSettings>(method, handlers, true);
+        Assert.NotNull(settingsBeforeRestore);
+        var accountBeforeRestore = settingsBeforeRestore.GetFirstAccountKeySettings();
+        var generatedWallet = context.Merchant.GenerateWalletResponseV;
+        var mnemonic = generatedWallet.Mnemonic;
+        var passphrase = generatedWallet.Passphrase;
+        var accountPath = generatedWallet.AccountKeyPath;
+        var scriptPubKeyType = settingsBeforeRestore.AccountDerivation.ScriptPubKeyType();
+        Assert.Equal(ScriptPubKeyType.Segwit, scriptPubKeyType);
+        Assert.False(string.IsNullOrEmpty(mnemonic));
+
+        var wallet = tester.PayTester.GetService<BTCPayWalletProvider>().GetWallet(context.Network);
+        Assert.NotNull(wallet);
+        var receiverCoin = Assert.Single(await wallet.GetUnspentCoins(
+            settingsBeforeRestore.AccountDerivation, excludeUnconfirmed: true, cancellation: cts.Token).ConfigureAwait(true));
+        var receiverOutpointBeforeRestore = receiverCoin.OutPoint;
+        Assert.True(receiverCoin.Confirmations > 0);
+        Assert.True(receiverCoin.ScriptPubKey.IsScriptType(ScriptType.P2WPKH));
+        var explorer = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(context.Network);
+        var registeredCoin = await explorer.GetKeyInformationAsync(
+            settingsBeforeRestore.AccountDerivation, receiverCoin.ScriptPubKey, cts.Token).ConfigureAwait(true);
+        Assert.NotNull(registeredCoin);
+        Assert.Equal(receiverCoin.ScriptPubKey, registeredCoin.ScriptPubKey);
+
+        var controller = tester.PayTester.GetController<UIStoreOnChainWalletsController>(
+            context.Merchant.UserId, context.Merchant.StoreId, true);
+        var restoreResult = await controller.GenerateWallet(
+            context.Merchant.StoreId, PayjoinConstants.BitcoinCode, WalletSetupMethod.Seed,
+            new WalletSetupRequest
+            {
+                ExistingMnemonic = mnemonic,
+                Passphrase = passphrase,
+                SavePrivateKeys = true,
+                ScriptPubKeyType = scriptPubKeyType,
+                AccountNumber = checked((int)(accountPath.KeyPath.Indexes[2] & 0x7fffffffu))
+            }).WaitAsync(cts.Token).ConfigureAwait(true);
+        var confirmationView = Assert.IsType<ViewResult>(restoreResult);
+        Assert.Equal("ImportWallet/ConfirmAddresses", confirmationView.ViewName);
+        var confirmation = Assert.IsType<WalletSetupViewModel>(confirmationView.Model);
+        Assert.True(confirmation.Confirmation);
+        Assert.False(string.IsNullOrEmpty(confirmation.Config));
+
+        var savedResult = await controller.UpdateWallet(new WalletSetupViewModel
+        {
+            Config = confirmation.Config,
+            Confirmation = confirmation.Confirmation,
+            Method = confirmation.Method,
+            AccountKey = confirmation.AccountKey,
+            RootFingerprint = confirmation.RootFingerprint,
+            KeyPath = confirmation.KeyPath
+        }, context.Merchant.StoreId, PayjoinConstants.BitcoinCode).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.IsType<RedirectToActionResult>(savedResult);
+
+        var restoredStore = await stores.FindStore(context.Merchant.StoreId).WaitAsync(cts.Token).ConfigureAwait(true);
+        Assert.NotNull(restoredStore);
+        var restoredSettings = restoredStore.GetPaymentMethodConfig<DerivationSchemeSettings>(method, handlers, true);
+        Assert.NotNull(restoredSettings);
+        Assert.Equal("ImportedSeed", restoredSettings.Source);
+        Assert.True(restoredSettings.IsHotWallet);
+        Assert.Equal(settingsBeforeRestore.AccountDerivation.ToString(), restoredSettings.AccountDerivation.ToString());
+        var restoredAccount = restoredSettings.GetFirstAccountKeySettings();
+        Assert.Equal(accountBeforeRestore.AccountKey, restoredAccount.AccountKey);
+        Assert.Equal(accountBeforeRestore.AccountKeyPath, restoredAccount.AccountKeyPath);
+        Assert.Equal(accountBeforeRestore.RootFingerprint, restoredAccount.RootFingerprint);
+
+        await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
+        var availability = await tester.PayTester.GetService<PayjoinAvailabilityService>().GetNewSessionAvailabilityAsync(
+            context.Merchant.StoreId, PayjoinConstants.BitcoinCode, context.Network, cts.Token).ConfigureAwait(true);
+        Assert.Equal(PayjoinAvailabilityStatus.Active, availability.Status);
+        var paymentResult = await PayjoinIntegrationTestSupport.CreateAndPayInvoiceViaExternalPayjoinPayerAsync(
+            tester, context.Merchant, payer, context.Network, cts.Token).ConfigureAwait(true);
+        PayjoinIntegrationTestSupport.AssertSuccessfulPayjoinTransaction(paymentResult);
+        Assert.Single(paymentResult.PayjoinTransaction.Inputs, input => input.PrevOut == receiverOutpointBeforeRestore);
+        var confirmedOutput = await tester.ExplorerNode.GetTxOutAsync(
+            paymentResult.PayjoinTransaction.GetHash(), 0, true, cts.Token).ConfigureAwait(true);
+        Assert.NotNull(confirmedOutput);
+        Assert.True(confirmedOutput.Confirmations > 0);
     }
 
     [Fact]

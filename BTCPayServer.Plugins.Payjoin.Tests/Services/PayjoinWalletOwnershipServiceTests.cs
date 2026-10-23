@@ -312,10 +312,12 @@ public class PayjoinWalletOwnershipServiceTests
 
     [Theory]
     [InlineData(false, "NBXplorerGenerated", Models.PayjoinAvailabilityStatus.MerchantRequirementsUnmet)]
-    [InlineData(true, "ImportedSeed", Models.PayjoinAvailabilityStatus.MerchantRequirementsUnmet)]
+    [InlineData(false, "ImportedSeed", Models.PayjoinAvailabilityStatus.MerchantRequirementsUnmet)]
     [InlineData(true, "SeedImported", Models.PayjoinAvailabilityStatus.MerchantRequirementsUnmet)]
+    [InlineData(true, "Manual", Models.PayjoinAvailabilityStatus.MerchantRequirementsUnmet)]
     [InlineData(true, "NBXplorerGenerated", Models.PayjoinAvailabilityStatus.Active)]
-    public void OnlyBtcpayGeneratedHotProfileIsSupported(bool hot, string source, Models.PayjoinAvailabilityStatus expected)
+    [InlineData(true, "ImportedSeed", Models.PayjoinAvailabilityStatus.Active)]
+    public void BtcpayCreatedAndRestoredHotProfilesAreSupported(bool hot, string source, Models.PayjoinAvailabilityStatus expected)
     {
         var factory = new NBXplorerNetworkProvider(ChainName.Regtest).GetFromCryptoCode("BTC").DerivationStrategyFactory;
         var settings = new DerivationSchemeSettings
@@ -326,7 +328,7 @@ public class PayjoinWalletOwnershipServiceTests
         Assert.Equal(expected, PayjoinWalletContext.GetProfileStatus(settings));
         Assert.Equal(Models.PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinWalletContext.GetProfileStatus(null));
         settings.IsHotWallet = true;
-        settings.Source = "NBXplorerGenerated";
+        settings.Source = source is "NBXplorerGenerated" or "ImportedSeed" ? source : "NBXplorerGenerated";
         settings.AccountDerivation = null!;
         Assert.Equal(Models.PayjoinAvailabilityStatus.TemporarilyUnavailable, PayjoinWalletContext.GetProfileStatus(settings));
     }

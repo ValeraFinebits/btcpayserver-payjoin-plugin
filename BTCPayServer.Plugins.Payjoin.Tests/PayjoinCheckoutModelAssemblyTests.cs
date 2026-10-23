@@ -57,14 +57,17 @@ public class PayjoinCheckoutModelAssemblyTests
 
     [Theory]
     [InlineData(false, "NBXplorerGenerated", true, true, false, false)]
-    [InlineData(true, "ImportedSeed", true, true, false, false)]
+    [InlineData(false, "ImportedSeed", true, true, false, false)]
+    [InlineData(true, "SeedImported", true, true, false, false)]
+    [InlineData(true, "ImportedSeed", true, true, true, true)]
     [InlineData(true, "NBXplorerGenerated", false, true, true, false)]
+    [InlineData(true, "ImportedSeed", false, true, true, false)]
     [InlineData(true, "NBXplorerGenerated", true, true, true, true)]
     [InlineData(true, "NBXplorerGenerated", true, false, false, false)]
     [InlineData(true, "ImportedSeed", true, false, false, false)]
-    [InlineData(true, "NBXplorerGenerated", true, true, true, false, "json")]
-    [InlineData(true, "NBXplorerGenerated", true, true, true, false, "format")]
-    [InlineData(true, "NBXplorerGenerated", true, true, true, false, "cancel")]
+    [InlineData(true, "ImportedSeed", true, true, true, false, "json")]
+    [InlineData(true, "ImportedSeed", true, true, true, false, "format")]
+    [InlineData(true, "ImportedSeed", true, true, true, false, "cancel")]
     public void RealCheckoutUsesCurrentProfileAndRetainsTheSameSession(
         bool hot, string source, bool accountAvailable, bool enabled, bool bootstrap, bool publish, string? failure = null)
     {
@@ -152,7 +155,7 @@ public class PayjoinCheckoutModelAssemblyTests
         profileError = null;
         store.DerivationStrategies = originalConfig;
         wallet.IsHotWallet = true;
-        wallet.Source = "NBXplorerGenerated";
+        wallet.Source = source is "NBXplorerGenerated" or "ImportedSeed" ? source : "NBXplorerGenerated";
         wallet.AccountDerivation = account;
         store.SetPaymentMethodConfig(handler, wallet);
         var recovered = Render();
@@ -165,6 +168,8 @@ public class PayjoinCheckoutModelAssemblyTests
         Assert.True(sessions.TryGetSession(InvoiceId, out var restored));
         Assert.Equal(before.PayjoinUri, restored!.PayjoinUri);
         Assert.Equal(events, restored.GetEvents());
+        Assert.Equal(PlainUrl, recovered.InvoiceBitcoinUrl);
+        Assert.Equal(plainQr, recovered.InvoiceBitcoinUrlQR);
     }
 
     [Fact]

@@ -139,7 +139,7 @@ internal sealed record PayjoinWalletContext(
 {
     internal static PayjoinAvailabilityStatus GetProfileStatus(DerivationSchemeSettings? settings) =>
         settings is null ? PayjoinAvailabilityStatus.TemporarilyUnavailable :
-        !settings.IsHotWallet || settings.Source != "NBXplorerGenerated" ? PayjoinAvailabilityStatus.MerchantRequirementsUnmet :
+        !settings.IsHotWallet || settings.Source is not ("NBXplorerGenerated" or "ImportedSeed") ? PayjoinAvailabilityStatus.MerchantRequirementsUnmet :
         settings.AccountDerivation is not StandardDerivationStrategyBase ? PayjoinAvailabilityStatus.TemporarilyUnavailable :
         PayjoinAvailabilityStatus.Active;
 

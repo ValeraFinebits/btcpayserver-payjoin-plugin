@@ -25,7 +25,7 @@ Async Payjoin is enabled by default for stores without saved plugin settings. Di
 
 ## Prepare a store
 
-Async Payjoin supports a hot account created by BTCPay and used exclusively through one BTCPay/NBXplorer installation with intact address registration. An offline seed backup is allowed. Imported accounts, external address generation and incomplete NBXplorer recovery are outside this supported mode. Other wallet profiles can still receive ordinary BTCPay payments.
+Async Payjoin supports hot wallets created or restored through BTCPay when the wallet is used exclusively through one BTCPay/NBXplorer installation and all used receive/change scripts of its hot signing account are registered in NBXplorer. An offline seed backup is allowed. The wallet's `Source`, NBXplorer's `IsTracked` result, synchronization and importing a seed do not prove that this registration is complete. Restoring a seed with the existing NBXplorer registration is supported; external address generation and incomplete NBXplorer recovery are outside this supported mode. The plugin does not automatically detect or repair a missing address index. Other wallet profiles can still receive ordinary BTCPay payments.
 
 1. The receiving store needs a **hot Bitcoin wallet** with a backed-up recovery phrase and at least one confirmed, spendable native SegWit or Taproot UTXO. A watch-only wallet cannot sign the receiver's inputs. For a new wallet, follow [BTCPay's hot-wallet setup](https://docs.btcpayserver.org/CreateWallet/) and keep the default Segwit address type.
 2. In the receiving store's left sidebar, open **Settings → Async Payjoin**. Enable it, keep the default **Directory URLs** and **OHTTP Relay URLs**, leave **Cold wallet** and **Maximum fee rate** empty, and save.

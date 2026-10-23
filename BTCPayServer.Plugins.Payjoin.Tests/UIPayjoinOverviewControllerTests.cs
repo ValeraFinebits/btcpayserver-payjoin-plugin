@@ -1,6 +1,10 @@
 using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
+using BTCPayServer.Configuration;
+using BTCPayServer.Services;
+using BTCPayServer.Services.Stores;
+using BTCPayServer.Services.Wallets;
 using BTCPayServer.Data;
 using BTCPayServer.Logging;
 using BTCPayServer.HostedServices;
@@ -20,12 +24,15 @@ using Microsoft.AspNetCore.Mvc.ViewFeatures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Localization;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBXplorer;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using NSubstitute;
 using System.Security.Claims;
+using System.Net;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -93,11 +100,12 @@ public class UIPayjoinOverviewControllerTests
         Assert.Equal("secondary", store.Status.Severity);
         Assert.Equal("Disabled", store.Status.Title);
         Assert.Null(store.HasConfirmedReceiverInputs);
+        Assert.Equal(0, context.CoinLookups);
     }
 
     [Theory]
     [InlineData(false, "NBXplorerGenerated", true, "danger", "Needs configuration")]
-    [InlineData(true, "ImportedSeed", true, "danger", "Needs configuration")]
+    [InlineData(true, "Other", true, "danger", "Needs configuration")]
     [InlineData(true, "NBXplorerGenerated", false, "warning", "Unavailable")]
     public async Task IndexExplainsProfileBeforeAnyUnavailableCoinLookup(
         bool hot, string source, bool accountAvailable, string severity, string title)
@@ -123,6 +131,7 @@ public class UIPayjoinOverviewControllerTests
         var view = Assert.IsType<ViewResult>(await controller.Index());
         var model = Assert.IsType<PayjoinOverviewViewModel>(view.Model).CurrentStore!;
         Assert.Null(model.HasConfirmedReceiverInputs);
+        Assert.Equal(0, context.CoinLookups);
         Assert.Equal(severity, model.Status.Severity);
         Assert.Equal(title, model.Status.Title);
         Assert.Contains("not checked", model.Status.Message, StringComparison.Ordinal);
@@ -130,7 +139,7 @@ public class UIPayjoinOverviewControllerTests
         Assert.DoesNotContain("no confirmed receiver inputs", model.Status.Message, StringComparison.Ordinal);
         if (accountAvailable)
         {
-            Assert.Contains("BTCPay-generated hot wallet", model.Status.Message, StringComparison.Ordinal);
+            Assert.Contains("BTCPay-created or restored hot wallet", model.Status.Message, StringComparison.Ordinal);
             Assert.Equal(PayjoinCheckoutMode.StandardBitcoin, model.DefaultCheckoutMode);
         }
         else
@@ -165,12 +174,11 @@ public class UIPayjoinOverviewControllerTests
         handler.PaymentMethodId.Returns(method);
         ((IHandler<PaymentMethodId>)handler).Id.Returns(method);
         handler.Serializer.Returns(serializer);
-        var reads = 0;
-        StoreData? store = null;
+        var overviewProfileReads = 0;
         handler.ParsePaymentMethodConfig(Arg.Any<JToken>()).Returns(call =>
         {
-            reads++;
-            if (failure is not null && (!failSecondRead || reads == 2))
+            overviewProfileReads++;
+            if (failure is not null && (!failSecondRead || overviewProfileReads == 2))
             {
                 throw failure switch
                 {
@@ -179,17 +187,13 @@ public class UIPayjoinOverviewControllerTests
                     _ => new OperationCanceledException()
                 };
             }
-            if (failure == "json" && failSecondRead)
-            {
-                store!.DerivationStrategies = "{";
-            }
             return ((JToken)call[0]).ToObject<DerivationSchemeSettings>(serializer)!;
         });
         var dashboard = new NBXplorerDashboard();
         dashboard.Publish(new BTCPayNetwork { CryptoCode = "BTC" }, NBXplorerState.Ready,
             new StatusResult { BitcoinStatus = new() { Capabilities = new() { CanSupportTransactionCheck = true } } }, null!, null!);
         using var controller = context.CreateController(new PaymentMethodHandlerDictionary([handler]), dashboard);
-        store = controller.HttpContext.GetNavStoreData()!;
+        var store = controller.HttpContext.GetNavStoreData()!;
         store.SetStoreBlob(new StoreBlob { PayJoinEnabled = true });
         store.SetPaymentMethodConfig(handler, new DerivationSchemeSettings
         {
@@ -205,13 +209,15 @@ public class UIPayjoinOverviewControllerTests
         if (failure == "cancel")
         {
             await Assert.ThrowsAsync<OperationCanceledException>(() => controller.Index());
+            Assert.Equal(failSecondRead ? 2 : 1, overviewProfileReads);
+            Assert.Equal(failSecondRead ? 1 : 0, context.CoinLookups);
             return;
         }
 
         var view = Assert.IsType<ViewResult>(await controller.Index());
         var model = Assert.IsType<PayjoinOverviewViewModel>(view.Model).CurrentStore!;
         Assert.Equal(failure is null, model.V1FallbackEffective);
-        Assert.Equal(enabled && settingsAvailable && failure is not null && !failSecondRead
+        Assert.Equal(enabled && settingsAvailable
             ? PayjoinCheckoutMode.AsyncPayjoin
             : failure is null ? PayjoinCheckoutMode.PayjoinV1 : PayjoinCheckoutMode.StandardBitcoin, model.DefaultCheckoutMode);
         if (!settingsAvailable)
@@ -221,15 +227,63 @@ public class UIPayjoinOverviewControllerTests
         }
         else
         {
-            Assert.Null(model.HasConfirmedReceiverInputs);
-            Assert.Equal(!enabled ? "Disabled" : failSecondRead || failure is null ? "Needs configuration" : "Unavailable", model.Status.Title);
-            Assert.Equal(!enabled ? "secondary" : failSecondRead || failure is null ? "danger" : "warning", model.Status.Severity);
+            if (enabled && (failSecondRead || failure is null))
+            {
+                Assert.False(model.HasConfirmedReceiverInputs);
+            }
+            else
+            {
+                Assert.Null(model.HasConfirmedReceiverInputs);
+            }
+            Assert.Equal(!enabled ? "Disabled" : failSecondRead || failure is null ? "Additional requirements pending" : "Unavailable", model.Status.Title);
+            Assert.Equal(!enabled ? "secondary" : "warning", model.Status.Severity);
             Assert.Contains(failure is null ? "built-in Payjoin v1" : "standard Bitcoin payment", model.Status.Message, StringComparison.Ordinal);
         }
-        if (failure != "json")
+        Assert.Equal(enabled && settingsAvailable && (failSecondRead || failure is null) ? 1 : 0, context.CoinLookups);
+        if (failure != "json" || failSecondRead)
         {
-            Assert.Equal(enabled && settingsAvailable ? 2 : 1, reads);
+            Assert.Equal(enabled && settingsAvailable ? 2 : 1, overviewProfileReads);
         }
+    }
+
+    [Theory]
+    [InlineData("NBXplorerGenerated", false)]
+    [InlineData("NBXplorerGenerated", true)]
+    [InlineData("ImportedSeed", false)]
+    [InlineData("ImportedSeed", true)]
+    public async Task IndexChecksConfirmedCoinsForSupportedHotProfiles(string source, bool hasConfirmedCoins)
+    {
+        using var context = new TestContext(registerBitcoinNetwork: true, hasConfirmedCoins: hasConfirmedCoins);
+        var bitcoin = new NBXplorerNetworkProvider(ChainName.Regtest).GetFromCryptoCode("BTC");
+        var handler = CreateProfileHandler(bitcoin);
+        using var controller = context.CreateController(new PaymentMethodHandlerDictionary([handler]));
+        controller.HttpContext.GetNavStoreData()!.SetPaymentMethodConfig(handler, new DerivationSchemeSettings
+        {
+            IsHotWallet = true, Source = source,
+            AccountDerivation = bitcoin.DerivationStrategyFactory.CreateDirectDerivationStrategy(
+                new ExtKey().Neuter(), new DerivationStrategyOptions { ScriptPubKeyType = ScriptPubKeyType.Segwit })
+        });
+
+        var view = Assert.IsType<ViewResult>(await controller.Index());
+        var model = Assert.IsType<PayjoinOverviewViewModel>(view.Model).CurrentStore!;
+        Assert.Equal(hasConfirmedCoins, model.HasConfirmedReceiverInputs);
+        Assert.Equal(1, context.CoinLookups);
+        Assert.Equal(hasConfirmedCoins ? "success" : "warning", model.Status.Severity);
+        Assert.Equal(hasConfirmedCoins ? "Basic prerequisites present" : "Additional requirements pending", model.Status.Title);
+        Assert.Equal(PayjoinCheckoutMode.AsyncPayjoin, model.DefaultCheckoutMode);
+    }
+
+    private static IPaymentMethodHandler CreateProfileHandler(NBXplorerNetwork bitcoin)
+    {
+        var serializer = JsonSerializer.Create(bitcoin.Serializer.Settings);
+        var method = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
+        var handler = Substitute.For<IPaymentMethodHandler>();
+        handler.PaymentMethodId.Returns(method);
+        ((IHandler<PaymentMethodId>)handler).Id.Returns(method);
+        handler.Serializer.Returns(serializer);
+        handler.ParsePaymentMethodConfig(Arg.Any<JToken>()).Returns(call =>
+            ((JToken)call[0]).ToObject<DerivationSchemeSettings>(serializer)!);
+        return handler;
     }
 
     [Fact]
@@ -286,8 +340,8 @@ public class UIPayjoinOverviewControllerTests
         Assert.Equal(PayjoinAccountingBridgeStatus.Failed, bridge!.Status);
     }
 
-    // Drives the controller against the real bridge and attention services over an in-memory
-    // database; only authorization, localization, and store settings are substituted.
+    // Uses real availability, wallet, bridge and attention services. Store lookup and
+    // NBXplorer HTTP responses stay local; availability has a separate profile reader.
     private sealed class TestContext : IDisposable
     {
         private readonly TestPayjoinPluginDbContextFactory _dbContextFactory = new();
@@ -295,17 +349,25 @@ public class UIPayjoinOverviewControllerTests
         private readonly bool _payjoinV2Enabled;
         private readonly bool _registerBitcoinNetwork;
         private readonly bool _settingsAvailable;
+        private readonly bool _hasConfirmedCoins;
+        private readonly MemoryCache _cache = new(new MemoryCacheOptions());
+        private readonly List<HttpClient> _httpClients = [];
+        private readonly List<IDisposable> _ownedResources = [];
+
+        public int CoinLookups { get; private set; }
 
         public TestContext(
             bool canModifyStoreSettings = true,
             bool payjoinV2Enabled = true,
             bool registerBitcoinNetwork = false,
-            bool settingsAvailable = true)
+            bool settingsAvailable = true,
+            bool hasConfirmedCoins = false)
         {
             _canModifyStoreSettings = canModifyStoreSettings;
             _payjoinV2Enabled = payjoinV2Enabled;
             _registerBitcoinNetwork = registerBitcoinNetwork;
             _settingsAvailable = settingsAvailable;
+            _hasConfirmedCoins = hasConfirmedCoins;
             BridgeService = new PayjoinAccountingBridgeService(_dbContextFactory, new PayjoinSessionBuildLock());
         }
 
@@ -341,9 +403,35 @@ public class UIPayjoinOverviewControllerTests
             var networks = _registerBitcoinNetwork
                 ? new BTCPayNetworkBase[] { CreateBitcoinNetwork(nbxplorerNetworkProvider) }
                 : [];
-            var networkProvider = new BTCPayNetworkProvider(networks, nbxplorerNetworkProvider, new Logs());
+            var logs = new Logs();
+            var networkProvider = new BTCPayNetworkProvider(networks, nbxplorerNetworkProvider, logs);
 
-            var availabilityService = new PayjoinAvailabilityService(null!, null!, null!, null!);
+            dashboard ??= new NBXplorerDashboard();
+            var store = new StoreData { Id = StoreId, StoreName = "Test Store" };
+            var dbFactory = Substitute.For<ApplicationDbContextFactory>(
+                Options.Create(new DatabaseOptions { ConnectionString = "Host=localhost;Database=unused;Username=postgres" }),
+                NullLoggerFactory.Instance);
+            dbFactory.CreateContext(Arg.Any<Action<NpgsqlDbContextOptionsBuilder>?>()).Returns(_ => new StoreLookupDbContext(store));
+            var bitcoin = nbxplorerNetworkProvider.GetFromCryptoCode("BTC");
+            var serializer = JsonSerializer.Create(bitcoin.Serializer.Settings);
+            var availabilityHandler = CreateProfileHandler(bitcoin);
+            var availabilityHandlers = new PaymentMethodHandlerDictionary([availabilityHandler]);
+            var explorer = bitcoin.CreateExplorerClient(new Uri("http://overview.example/"));
+            var coinResponses = new CoinResponseHandler(this, bitcoin, serializer);
+            _ownedResources.Add(coinResponses);
+            var http = new HttpClient(coinResponses, disposeHandler: false);
+            _httpClients.Add(http);
+            explorer.SetClient(http);
+            explorer.SetNoAuth();
+            var explorerProvider = new LocalExplorerClientProvider(networkProvider, dashboard, explorer);
+            var events = new EventAggregator(logs);
+            _ownedResources.Add(events);
+            var storeRepository = new StoreRepository(dbFactory, bitcoin.Serializer.Settings, events,
+                new SettingsRepository(dbFactory, events, _cache));
+            var walletProvider = new BTCPayWalletProvider(explorerProvider, Options.Create(new MemoryCacheOptions()),
+                dbFactory, networkProvider, new NBXplorerConnectionFactory(Options.Create(new NBXplorerOptions()), logs),
+                new WalletRepository(dbFactory), dashboard, logs);
+            var availabilityService = new PayjoinAvailabilityService(storeRepository, availabilityHandlers, walletProvider, explorerProvider);
 
             var authorizationService = Substitute.For<IAuthorizationService>();
             authorizationService.AuthorizeAsync(Arg.Any<ClaimsPrincipal>(), Arg.Any<object?>(), Policies.CanViewStoreSettings)
@@ -356,13 +444,13 @@ public class UIPayjoinOverviewControllerTests
             localizer[Arg.Any<string>(), Arg.Any<object[]>()].Returns(callInfo => new LocalizedString((string)callInfo[0], (string)callInfo[0]));
 
             var httpContext = new DefaultHttpContext();
-            httpContext.SetNavStoreData(new StoreData { Id = StoreId, StoreName = "Test Store" });
+            httpContext.SetNavStoreData(store);
 
             var controller = new UIPayjoinOverviewController(
                 storeSettingsRepository,
                 availabilityService,
-                handlers!,
-                dashboard!,
+                handlers ?? availabilityHandlers,
+                dashboard,
                 networkProvider,
                 authorizationService,
                 new PayjoinBridgeAttentionService(BridgeService),
@@ -391,8 +479,61 @@ public class UIPayjoinOverviewControllerTests
             }.SetDefaultElectrumMapping(ChainName.Regtest);
         }
 
+        private sealed class StoreLookupDbContext(StoreData store)
+            : ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>().Options)
+        {
+            public override ValueTask<TEntity?> FindAsync<TEntity>(params object?[]? keyValues) where TEntity : class
+            {
+                Assert.Equal(store.Id, Assert.Single(keyValues!));
+                return ValueTask.FromResult<TEntity?>(Assert.IsType<TEntity>(store));
+            }
+        }
+
+        private sealed class CoinResponseHandler(TestContext context, NBXplorerNetwork bitcoin, JsonSerializer serializer) : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                var path = Uri.UnescapeDataString(request.RequestUri!.AbsolutePath);
+                const string prefix = "/v1/cryptos/BTC/derivations/";
+                const string suffix = "/utxos";
+                Assert.StartsWith(prefix, path, StringComparison.Ordinal);
+                Assert.EndsWith(suffix, path, StringComparison.Ordinal);
+                context.CoinLookups++;
+                var account = Assert.IsAssignableFrom<StandardDerivationStrategyBase>(
+                    bitcoin.DerivationStrategyFactory.Parse(path[prefix.Length..^suffix.Length]));
+                var keyPath = new KeyPath("0/0");
+                var script = account.GetDerivation(keyPath).ScriptPubKey;
+                UTXO[] coins = context._hasConfirmedCoins
+                    ? [new UTXO { Outpoint = new OutPoint(uint256.One, 0), Value = Money.Coins(1m), ScriptPubKey = script,
+                        KeyPath = keyPath, Confirmations = 1 }]
+                    : [];
+                var response = JObject.FromObject(new
+                {
+                    currentHeight = 1,
+                    confirmed = new { utxos = coins, spentOutpoints = Array.Empty<OutPoint>() },
+                    unconfirmed = new { utxos = Array.Empty<UTXO>(), spentOutpoints = Array.Empty<OutPoint>() }
+                }, serializer);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(response.ToString(), System.Text.Encoding.UTF8, "application/json")
+                });
+            }
+        }
+
+        private sealed class LocalExplorerClientProvider : ExplorerClientProvider
+        {
+            public LocalExplorerClientProvider(BTCPayNetworkProvider networks, NBXplorerDashboard dashboard, ExplorerClient explorer)
+                : base(networks, dashboard)
+            {
+                _Clients.Add("BTC", explorer);
+            }
+        }
+
         public void Dispose()
         {
+            foreach (var http in _httpClients) http.Dispose();
+            foreach (var resource in _ownedResources) resource.Dispose();
+            _cache.Dispose();
             using var db = _dbContextFactory.CreateContext();
             db.Database.EnsureDeleted();
         }

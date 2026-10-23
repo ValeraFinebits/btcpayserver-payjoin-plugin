@@ -7,7 +7,7 @@ public static class PayjoinUnavailableReasons
     public const string DirectoryUrlsMissing = "directory URLs are missing";
     public const string OhttpRelayUrlsMissing = "OHTTP relay URLs are missing";
     public const string InvoiceAmountNotPositive = "invoice amount is not positive";
-    public const string UnsupportedWalletProfile = "payjoin requires a BTCPay-generated hot wallet used exclusively through this BTCPay/NBXplorer installation";
+    public const string UnsupportedWalletProfile = "payjoin requires a BTCPay-created or restored hot wallet used exclusively through this BTCPay/NBXplorer installation, with all used receive/change scripts of its hot signing account registered in NBXplorer";
     public const string WalletContextUnavailable = "hot wallet context is temporarily unavailable";
     public const string NoConfirmedReceiverInputs = "no confirmed receiver inputs are available";
     public const string OhttpKeysUnavailable = "OHTTP keys are unavailable from all configured relays";

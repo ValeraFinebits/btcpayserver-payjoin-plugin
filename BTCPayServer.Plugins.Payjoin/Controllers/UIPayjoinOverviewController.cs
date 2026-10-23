@@ -220,8 +220,8 @@ public class UIPayjoinOverviewController : Controller
         if (profileStatus == PayjoinAvailabilityStatus.MerchantRequirementsUnmet)
         {
             var message = v1FallbackEffective
-                ? StringLocalizer["Async Payjoin requires a BTCPay-generated hot wallet used exclusively through this BTCPay/NBXplorer installation. Receiver inputs were not checked. Checkout falls back to built-in Payjoin v1 (BIP 78)."].Value
-                : StringLocalizer["Async Payjoin requires a BTCPay-generated hot wallet used exclusively through this BTCPay/NBXplorer installation. Receiver inputs were not checked. Checkout falls back to a standard Bitcoin payment."].Value;
+                ? StringLocalizer["Async Payjoin requires a BTCPay-created or restored hot wallet used exclusively through this BTCPay/NBXplorer installation, with all used receive/change scripts of its hot signing account registered in NBXplorer. Receiver inputs were not checked. Checkout falls back to built-in Payjoin v1 (BIP 78)."].Value
+                : StringLocalizer["Async Payjoin requires a BTCPay-created or restored hot wallet used exclusively through this BTCPay/NBXplorer installation, with all used receive/change scripts of its hot signing account registered in NBXplorer. Receiver inputs were not checked. Checkout falls back to a standard Bitcoin payment."].Value;
             return new PayjoinCurrentStoreStatus("danger", StringLocalizer["Needs configuration"].Value, message);
         }
 
