@@ -56,14 +56,13 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
 
         var guard = new ReplayingLosingSessionGuard(fixture.Sessions, losingInvoice);
         var dependencies = new UnexpectedReceiverDependencies();
-        var bridge = new PayjoinAccountingBridgeService(fixture.Factory,
-            new PostgresPayjoinUniqueConstraintViolationDetector(), new PayjoinSessionBuildLock());
+        var bridge = new PayjoinAccountingBridgeService(fixture.Factory, new PayjoinSessionBuildLock());
         var mailroom = new PayjoinMailroomManager(NullLogger<PayjoinMailroomManager>.Instance, TimeSpan.FromMinutes(1),
             dependencies.FetchKeysAsync);
         var stateProcessor = new PayjoinReceiverStateProcessor(fixture.Sessions, dependencies, dependencies, fixture.SeenInputs, mailroom);
         using var log = new ProcessorLog();
         var processor = new PayjoinReceiverSessionProcessor(fixture.Sessions, guard, stateProcessor, dependencies, dependencies,
-            bridge, dependencies, dependencies, dependencies, CreateNetworkProvider(ChainName.Regtest), log);
+            bridge, dependencies, CreateNetworkProvider(ChainName.Regtest), log);
 
         fixture.Barrier.Arm();
         var losingTick = Task.Run(() => processor.ProcessTickAsync(cancellation.Token), cancellation.Token);
@@ -75,7 +74,7 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
             Assert.Equal(new[] { (freshInput.Hash.ToString(), (long)freshInput.N), (sharedInput.Hash.ToString(), (long)sharedInput.N) },
                 fixture.Barrier.StagedInputs);
             RecordingSeenInputCallback? winningCallback = null;
-            using var next = fixture.SeenInputs.ExecuteSeenInputTransition(winningInvoice, (callback, persister) =>
+            using var next = fixture.SeenInputs.ExecuteSeenInputTransition(fixture.Sessions.Owner(winningInvoice), (callback, persister) =>
             {
                 winningCallback = new RecordingSeenInputCallback(callback);
                 using var transition = winningState.CheckNoInputsSeenBefore(winningCallback);

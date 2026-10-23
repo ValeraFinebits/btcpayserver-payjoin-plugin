@@ -32,7 +32,8 @@ internal sealed class UnexpectedReceiverDependencies : IPayjoinReceiverRelayRequ
         => Unexpected<Task<PayjoinReceiverOutputBuilder.OutputBuildResult>>(nameof(TryCreateSettlementOutputsAsync));
 
     public Task<ReceiverInputContributionResult> TryContributeInputsAsync(WantsInputs proposal, string storeId,
-        string invoiceId, DateTimeOffset reservationExpiresAt, CancellationToken cancellationToken)
+        DateTimeOffset reservationExpiresAt, PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister owner,
+        CancellationToken cancellationToken)
         => Unexpected<Task<ReceiverInputContributionResult>>(nameof(TryContributeInputsAsync));
 
     public Task<ReceivedCoin[]?> TryGetPersistedContributedCoinsAsync(PayjoinReceiverSessionState session,
