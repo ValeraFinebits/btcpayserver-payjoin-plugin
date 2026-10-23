@@ -17,19 +17,22 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly BTCPayNetworkProvider _networkProvider;
+    private readonly IPayjoinInvoiceEventPublisher? _invoiceEvents;
 
     public PayjoinReceiverProposalFinalizer(
         IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinReceiverProposalSigner proposalSigner,
         IPayjoinAccountingBridgeService accountingBridgeService,
         PayjoinReceiverSessionStore sessionStore,
-        BTCPayNetworkProvider networkProvider)
+        BTCPayNetworkProvider networkProvider,
+        IPayjoinInvoiceEventPublisher? invoiceEvents = null)
     {
         _relayRequestSender = relayRequestSender;
         _proposalSigner = proposalSigner;
         _accountingBridgeService = accountingBridgeService;
         _sessionStore = sessionStore;
         _networkProvider = networkProvider;
+        _invoiceEvents = invoiceEvents;
     }
 
     public async Task FinalizeAsync(
@@ -70,6 +73,7 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
         // defensive backfill.
         var capturingPersister = new CapturingReceiverSessionPersister();
         var payjoinProposal = saveTransition(capturingPersister);
+        string? preparedTransactionId = null;
         try
         {
             var bridge = await _accountingBridgeService.TryGetByInvoiceIdAsync(context.InvoiceId, cancellationToken).ConfigureAwait(false);
@@ -99,6 +103,10 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
                             bridgeData.Status = PayjoinAccountingBridgeStatus.PendingFinalTransaction;
                         }
                     });
+                if (!string.Equals(bridge.ExpectedFinalTransactionId, finalTransactionId, StringComparison.OrdinalIgnoreCase))
+                {
+                    preparedTransactionId = finalTransactionId;
+                }
             }
         }
         catch
@@ -110,6 +118,10 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
 
         try
         {
+            if (preparedTransactionId is not null)
+            {
+                _invoiceEvents?.Publish(PayjoinInvoiceEventKind.ProposalPrepared, context.InvoiceId, preparedTransactionId);
+            }
             await PostAsync(context, payjoinProposal, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -144,12 +156,16 @@ internal sealed class PayjoinReceiverProposalFinalizer : IPayjoinReceiverProposa
 
         var expectedFinalOutput = TryGetSettlementOutput(bridge, finalTransaction);
         // TODO: Remove the sender-PSBT fallback and require the invoice-pinned settlement amount.
-        await _accountingBridgeService.SetExpectedFinalTransactionAsync(
+        var updatedBridge = await _accountingBridgeService.SetExpectedFinalTransactionAsync(
             context.InvoiceId,
             finalTransactionId,
             expectedFinalOutput?.Index,
             expectedFinalOutput?.ValueSats ?? bridge.EffectiveInvoiceValueSats ?? bridge.FallbackValueSats,
             cancellationToken).ConfigureAwait(false);
+        if (updatedBridge is not null && string.Equals(updatedBridge.ExpectedFinalTransactionId, finalTransactionId, StringComparison.OrdinalIgnoreCase))
+        {
+            _invoiceEvents?.Publish(PayjoinInvoiceEventKind.ProposalPrepared, context.InvoiceId, finalTransactionId);
+        }
     }
 
     public async Task PostAsync(
