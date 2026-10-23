@@ -482,6 +482,7 @@ public class PayjoinReceiverRelayFlowTests
         var quarantineDuration = TimeSpan.FromMinutes(10);
         using var fixture = new ReceiverFixture(quarantineDuration, clock);
         using var proposal = await fixture.PrepareProposalAsync();
+        await SeedCommittedBridgeAsync(fixture);
         var expectedPsbt = proposal.Psbt();
         var eventsBeforePost = fixture.Events();
         var reservation = new PayjoinReceiverInputReservationData
