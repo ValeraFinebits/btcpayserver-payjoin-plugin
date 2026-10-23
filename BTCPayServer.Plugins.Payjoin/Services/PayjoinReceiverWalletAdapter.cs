@@ -6,8 +6,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using PayjoinInputPair = global::Payjoin.InputPair;
 using PayjoinOutPoint = global::Payjoin.OutPoint;
-using PayjoinPsbtInput = global::Payjoin.PsbtInput;
-using PayjoinTxIn = global::Payjoin.TxIn;
 using PayjoinTxOut = global::Payjoin.TxOut;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
@@ -45,9 +43,42 @@ internal sealed class PayjoinReceiverWalletAdapter : IPayjoinReceiverWalletAdapt
         CancellationToken cancellationToken)
     {
         var confirmed = await GetConfirmedReceiverCoinsAsync(storeId, cancellationToken).ConfigureAwait(false);
-        return confirmed
-            .Select(coin => new PayjoinReceiverInputCandidate(CreateInputPair(coin), coin))
-            .ToArray();
+        return CreateInputCandidates(confirmed, cancellationToken);
+    }
+
+    internal static IReadOnlyList<PayjoinReceiverInputCandidate> CreateInputCandidates(
+        IReadOnlyList<ReceivedCoin> coins,
+        CancellationToken cancellationToken,
+        Func<ReceivedCoin, PayjoinInputPair>? inputPairFactory = null)
+    {
+        var createInputPair = inputPairFactory ?? CreateInputPair;
+        var candidates = new List<PayjoinReceiverInputCandidate>(coins.Count);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var coin in coins)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!PayjoinAvailabilityService.IsSupportedReceiverCoin(coin.ScriptPubKey))
+                {
+                    continue;
+                }
+
+                candidates.Add(new PayjoinReceiverInputCandidate(createInputPair(coin), coin));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return candidates.ToArray();
+        }
+        catch
+        {
+            foreach (var candidate in candidates)
+            {
+                candidate.Input.Dispose();
+            }
+
+            throw;
+        }
     }
 
     public PayjoinReceiverInputCandidate? ResolveSelectedCandidate(
@@ -89,13 +120,7 @@ internal sealed class PayjoinReceiverWalletAdapter : IPayjoinReceiverWalletAdapt
             return PayjoinInputPair.NewP2wpkh(txout, outpoint);
         }
 
-        var txin = new PayjoinTxIn(
-            outpoint,
-            Array.Empty<byte>(),
-            uint.MaxValue,
-            Array.Empty<byte[]>());
-        var psbtIn = new PayjoinPsbtInput(txout, null, null);
-        return new PayjoinInputPair(txin, psbtIn, null);
+        throw new NotSupportedException("The receiver input script type is not supported.");
     }
 }
 

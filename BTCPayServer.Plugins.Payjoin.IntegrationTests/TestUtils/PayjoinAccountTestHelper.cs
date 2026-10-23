@@ -1,7 +1,12 @@
+using BTCPayServer.Data;
+using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Services;
+using BTCPayServer.Services.Invoices;
+using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
 using BTCPayServer.Tests;
 using NBitcoin;
+using NBXplorer.DerivationStrategy;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
@@ -40,6 +45,32 @@ internal static class PayjoinAccountTestHelper
         }
 
         return user;
+    }
+
+    public static async Task<TestContext> CreateInitializedP2wshTestContextAsync(ServerTester tester, CancellationToken cancellationToken)
+    {
+        var context = await CreateInitializedTestContextAsync(tester,
+            confirmFunding: false, initialFundingUtxoCount: 0, cancellationToken: cancellationToken).ConfigureAwait(true);
+        var factory = tester.ExplorerClient.Network.DerivationStrategyFactory;
+        var derivation = (StandardDerivationStrategyBase)factory.CreateMultiSigDerivationStrategy(
+            new[] { new ExtKey().Neuter() }, 1,
+            new DerivationStrategyOptions { ScriptPubKeyType = ScriptPubKeyType.Segwit });
+        var wallet = tester.PayTester.GetService<BTCPayWalletProvider>().GetWallet(context.Network);
+        Assert.NotNull(wallet);
+        await wallet.TrackAsync(derivation).WaitAsync(cancellationToken).ConfigureAwait(true);
+
+        var storeRepository = tester.PayTester.GetService<StoreRepository>();
+        var store = await storeRepository.FindStore(context.Merchant.StoreId).WaitAsync(cancellationToken).ConfigureAwait(true);
+        Assert.NotNull(store);
+        var handlers = tester.PayTester.GetService<PaymentMethodHandlerDictionary>();
+        var paymentMethodId = PaymentTypes.CHAIN.GetPaymentMethodId(PayjoinConstants.BitcoinCode);
+        store.SetPaymentMethodConfig(handlers[paymentMethodId], new DerivationSchemeSettings(derivation, context.Network));
+        await storeRepository.UpdateStore(store).WaitAsync(cancellationToken).ConfigureAwait(true);
+
+        context.Merchant.GenerateWalletResponseV.DerivationScheme = derivation;
+        await FundWalletAsync(context.Merchant, context.Network, 1, cancellationToken).ConfigureAwait(true);
+        await ConfirmWalletFundingAsync(tester, context.Merchant, context.Network, 1, cancellationToken).ConfigureAwait(true);
+        return context;
     }
 
     private static BTCPayNetwork GetBitcoinNetwork(ServerTester tester)
