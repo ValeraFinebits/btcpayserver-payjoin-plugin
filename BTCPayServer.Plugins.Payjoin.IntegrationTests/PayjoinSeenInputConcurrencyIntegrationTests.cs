@@ -57,12 +57,18 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
         var guard = new ReplayingLosingSessionGuard(fixture.Sessions, losingInvoice);
         var dependencies = new UnexpectedReceiverDependencies();
         var bridge = new PayjoinAccountingBridgeService(fixture.Factory, new PayjoinSessionBuildLock());
+        var losingBridgeBefore = await bridge.TryGetByInvoiceIdAsync(losingInvoice, cancellation.Token);
+        var winningBridgeBefore = await bridge.TryGetByInvoiceIdAsync(winningInvoice, cancellation.Token);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, losingBridgeBefore!.Status);
+        Assert.Null(losingBridgeBefore.FallbackTransactionId);
+        Assert.Null(losingBridgeBefore.ExpectedFinalTransactionId);
+        var validator = new AcceptedOriginalValidator();
         var mailroom = new PayjoinMailroomManager(NullLogger<PayjoinMailroomManager>.Instance, TimeSpan.FromMinutes(1),
             dependencies.FetchKeysAsync);
-        var stateProcessor = new PayjoinReceiverStateProcessor(fixture.Sessions, dependencies, dependencies, fixture.SeenInputs, mailroom);
+        var stateProcessor = new PayjoinReceiverStateProcessor(fixture.Sessions, dependencies, dependencies, fixture.SeenInputs, mailroom, validator, guard);
         using var log = new ProcessorLog();
         var processor = new PayjoinReceiverSessionProcessor(fixture.Sessions, guard, stateProcessor, dependencies, dependencies,
-            bridge, dependencies, CreateNetworkProvider(ChainName.Regtest), log);
+            bridge, dependencies, CreateNetworkProvider(ChainName.Regtest), log, validator);
 
         fixture.Barrier.Arm();
         var losingTick = Task.Run(() => processor.ProcessTickAsync(cancellation.Token), cancellation.Token);
@@ -98,7 +104,9 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
         Assert.Equal("IX_ReceiverSeenInputs_TransactionId_OutputIndex", unique.ConstraintName);
         Assert.IsType<global::Payjoin.ReceiverPersistedException.Storage>(Assert.Single(log.Exceptions));
         Assert.Equal(1, fixture.Sql.SharedInsertAttempts);
-        Assert.Equal(1, guard.Replays);
+        Assert.Equal(2, guard.Replays);
+        Assert.Equal(losingBridgeBefore, await bridge.TryGetByInvoiceIdAsync(losingInvoice, cancellation.Token));
+        Assert.Equal(winningBridgeBefore, await bridge.TryGetByInvoiceIdAsync(winningInvoice, cancellation.Token));
         Assert.Empty(dependencies.Calls);
 
         var afterFailure = SnapshotInputs(fixture.Factory);
@@ -117,7 +125,9 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
         }
 
         await processor.ProcessTickAsync(cancellation.Token).WaitAsync(timeout, cancellation.Token);
-        Assert.Equal(2, guard.Replays);
+        Assert.Equal(4, guard.Replays);
+        Assert.Equal(losingBridgeBefore, await bridge.TryGetByInvoiceIdAsync(losingInvoice, cancellation.Token));
+        Assert.Equal(winningBridgeBefore, await bridge.TryGetByInvoiceIdAsync(winningInvoice, cancellation.Token));
         Assert.Single(fixture.Barrier.Failures);
         Assert.Equal(1, fixture.Sql.SharedInsertAttempts);
         Assert.Equal(2, log.Exceptions.Count);
@@ -166,6 +176,15 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
 
     private sealed record SessionSnapshot(PayjoinReceiverSessionData Session, PayjoinReceiverSessionEventData[] Events);
     private sealed record SeenInputSnapshot(long Id, string TransactionId, long OutputIndex, DateTimeOffset SeenAt);
+
+    private sealed class AcceptedOriginalValidator : IPayjoinOriginalTransactionValidator
+    {
+        public Task<OriginalTransactionValidation> ValidateAsync(byte[] original, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new OriginalTransactionValidation(OriginalTransactionVerdict.Accepted, "Synthetic seen-input fixture"));
+        }
+    }
 
     private sealed class ReplayingLosingSessionGuard(PayjoinReceiverSessionStore store, string losingInvoice) : IPayjoinReceiverSessionGuard
     {
