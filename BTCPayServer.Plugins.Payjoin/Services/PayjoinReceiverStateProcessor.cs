@@ -16,19 +16,25 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
     private readonly IPayjoinWalletOwnershipService _walletOwnershipService;
     private readonly PayjoinSeenInputStore _seenInputStore;
     private readonly PayjoinMailroomManager _mailroomManager;
+    private readonly IPayjoinOriginalTransactionValidator _originalValidator;
+    private readonly IPayjoinReceiverSessionGuard _sessionGuard;
 
     public PayjoinReceiverStateProcessor(
         PayjoinReceiverSessionStore sessionStore,
         IPayjoinReceiverRelayRequestSender relayRequestSender,
         IPayjoinWalletOwnershipService walletOwnershipService,
         PayjoinSeenInputStore seenInputStore,
-        PayjoinMailroomManager mailroomManager)
+        PayjoinMailroomManager mailroomManager,
+        IPayjoinOriginalTransactionValidator originalValidator,
+        IPayjoinReceiverSessionGuard sessionGuard)
     {
         _sessionStore = sessionStore;
         _relayRequestSender = relayRequestSender;
         _walletOwnershipService = walletOwnershipService;
         _seenInputStore = seenInputStore;
         _mailroomManager = mailroomManager;
+        _originalValidator = originalValidator;
+        _sessionGuard = sessionGuard;
     }
 
     public async Task ProcessInitializedAsync(
@@ -125,9 +131,22 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             return;
         }
 
-        // TODO: Validate this untrusted PSBT with Bitcoin Core testmempoolaccept before contributing receiver inputs.
+        var validation = await _originalValidator.ValidateAsync(
+            proposal.ExtractTxToCheckBroadcastSuitability(), cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (validation.Verdict is OriginalTransactionVerdict.Unavailable or OriginalTransactionVerdict.AlreadyKnown) return;
+        var refreshed = await PayjoinReceiverSessionGuard.RefreshAfterExternalCheckAsync(
+            _sessionGuard, _sessionStore, context, cancellationToken).ConfigureAwait(false);
+        if (refreshed is null) return;
+        context = refreshed;
+        if (context.Session.IsCloseRequested)
+        {
+            if (!await TryRejectCloseRequestedOriginalPayloadAsync(context, proposal, cancellationToken).ConfigureAwait(false))
+                context.RemoveCloseRequestedSession(context.Session);
+            return;
+        }
         // TODO: Reject or suspend proposals while cold-wallet ownership readiness is unverified.
-        using var transition = proposal.AssumeInteractiveReceiver();
+        using var transition = proposal.ApplyBroadcastSuitability(null, validation.Verdict == OriginalTransactionVerdict.Accepted);
         using var maybeInputsOwned = transition.Save(context.Persister);
         await ProcessMaybeInputsOwnedAsync(context, maybeInputsOwned, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
     }
