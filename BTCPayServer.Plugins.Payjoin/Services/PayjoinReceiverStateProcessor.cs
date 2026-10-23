@@ -39,7 +39,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
     {
         if (context.Session.IsCloseRequested)
         {
-            _sessionStore.TryConsumeInitializedPollAfterCloseRequest(context.Session.InvoiceId);
+            _sessionStore.TryConsumeInitializedPollAfterCloseRequest(context.Session.InvoiceId, context.Session.SessionInstanceId);
         }
 
         var (responseBody, requestResponse) = await _relayRequestSender.SendAsync(
@@ -161,7 +161,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         CancellationToken cancellationToken)
     {
         using var outputsUnknown = _seenInputStore.ExecuteSeenInputTransition(
-            context.InvoiceId,
+            context.Persister,
             (callback, persister) =>
             {
                 using var transition = proposal.CheckNoInputsSeenBefore(callback);
@@ -235,10 +235,10 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             return context;
         }
 
-        if (!_sessionStore.TryGetSession(context.InvoiceId, out var latestSession) || latestSession is null || !latestSession.IsCloseRequested)
-        {
-            return context;
-        }
+        var latestSession = _sessionStore.GetAttempt(context.InvoiceId, context.Session.SessionInstanceId);
+        if (context.Persister.AttemptVersion != latestSession.AttemptVersion)
+            throw new PayjoinSessionStaleException();
+        if (!latestSession.IsCloseRequested) return context;
 
         return new PayjoinReceiverStateContext(
             latestSession,

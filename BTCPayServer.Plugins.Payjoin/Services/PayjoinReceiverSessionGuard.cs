@@ -56,32 +56,27 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
         session = refreshedSession;
 
-        if (TryExpireSession(session))
-        {
-            return null;
-        }
-
-        if (!TryGetReceiverScript(session, out var receiverScript))
-        {
-            LogPayjoinReceiverScriptUnavailable(_logger, session.InvoiceId, null);
-            return null;
-        }
-
         var persister = _sessionStore.CreatePersister(session);
         ReplayResult? replay = null;
         ReceiveSession? state = null;
         try
         {
+            if (TryExpireSession(session))
+            {
+                return null;
+            }
+
+            if (!TryGetReceiverScript(session, out var receiverScript))
+            {
+                LogPayjoinReceiverScriptUnavailable(_logger, session.InvoiceId, null);
+                return null;
+            }
+
             var replayScope = PayjoinMethods.ReplayReceiverEventLog(persister);
             replay = replayScope;
 
             var replayState = replayScope.State();
             state = replayState;
-
-            if (TryRemoveCloseRequestedSession(session, replayState))
-            {
-                return null;
-            }
 
             // Give the ownership checks the original transaction's output scripts when the replayed
             // history already carries the sender's payload, so ownership is resolved before the
@@ -90,7 +85,15 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
             using (var history = replayScope.SessionHistory())
             {
                 fallbackBytes = history.FallbackTx();
+                using var uri = history.PjUri();
+                if (fallbackBytes is { Length: > 0 } && uri.AmountSats() is not > 0)
+                {
+                    _sessionStore.FailPayment(persister, "original payload has no trustworthy session amount");
+                    return null;
+                }
             }
+
+            if (TryRemoveCloseRequestedSession(session, replayState)) return null;
 
             var result = new PayjoinReceiverSessionGuardResult(
                 session,
@@ -111,13 +114,24 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
             state = null;
             return result;
         }
+        catch (Exception ex) when (PayjoinSessionStaleException.IsStale(ex))
+        {
+            (ex as IDisposable)?.Dispose();
+            return null;
+        }
+        catch (ReceiverReplayException ex) when (ex.IsExpired())
+        {
+            ex.Dispose();
+            RemoveSession(session.InvoiceId, "native receiver session expired", session.SessionInstanceId,
+                persister.AttemptVersion);
+            return null;
+        }
         catch (ReceiverReplayException ex)
         {
-            // TODO: Extend payjoin-ffi ReceiverReplayError with a persistence-failure
-            // classification. A temporary Load/storage failure must retain the session for a later
-            // replay, while malformed or otherwise irrecoverable event logs may still be removed.
+            // Replay does not distinguish corrupt history from a temporary storage failure.
+            // Neither is proof of a financial contradiction: preserve reconciliation eligibility.
             LogPayjoinReceiverReplayFailed(_logger, session.InvoiceId, ex.Message, ex);
-            RemoveSession(session.InvoiceId, "receiver replay failed");
+            ex.Dispose();
             return null;
         }
         finally
@@ -132,17 +146,15 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
         var invoice = await _invoiceRepository.GetInvoice(session.InvoiceId).ConfigureAwait(false);
         if (invoice is null)
         {
-            RemoveSession(session.InvoiceId, "invoice no longer exists");
+            RemoveSession(session.InvoiceId, "invoice no longer exists", session.SessionInstanceId, session.AttemptVersion);
             return null;
         }
 
         if (invoice.GetInvoiceState().Status != InvoiceStatus.New)
         {
             var status = invoice.GetInvoiceState().Status;
-            _sessionStore.RequestClose(session.InvoiceId, status);
-            return _sessionStore.TryGetSession(session.InvoiceId, out var closeRequestedSession)
-                ? closeRequestedSession
-                : null;
+            _sessionStore.RequestClose(session.InvoiceId, status, session.SessionInstanceId);
+            return _sessionStore.GetAttempt(session.InvoiceId, session.SessionInstanceId);
         }
 
         return session;
@@ -154,7 +166,8 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
         var deadline = GetCleanupDeadline(session);
         if (now >= deadline)
         {
-            return RemoveSession(session.InvoiceId, $"cleanup deadline reached at {deadline:O}");
+            RemoveSession(session.InvoiceId, $"cleanup deadline reached at {deadline:O}", session.SessionInstanceId, session.AttemptVersion);
+            return true;
         }
 
         return false;
@@ -177,12 +190,13 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
     private bool RemoveCloseRequestedSession(PayjoinReceiverSessionState session)
     {
-        return RemoveSession(session.InvoiceId, $"invoice is no longer payable ({session.CloseInvoiceStatus})");
+        RemoveSession(session.InvoiceId, $"invoice is no longer payable ({session.CloseInvoiceStatus})", session.SessionInstanceId, session.AttemptVersion);
+        return true;
     }
 
-    private bool RemoveSession(string invoiceId, string reason)
+    private bool RemoveSession(string invoiceId, string reason, Guid? sessionInstanceId, int? expectedVersion)
     {
-        if (!_sessionStore.RemoveSession(invoiceId))
+        if (!_sessionStore.RemoveSession(invoiceId, sessionInstanceId, expectedVersion))
         {
             return false;
         }

@@ -7,7 +7,7 @@ using Xunit;
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 /// <summary>
-/// Lifecycle tests across session recreation and the accounting worker, driving the real bridge
+/// Lifecycle tests across history retention and the accounting worker, driving the real bridge
 /// service and the real poller reconciliation pass rather than the field reset in isolation.
 /// </summary>
 public class PayjoinAccountingBridgeLifecycleFlowTests
@@ -15,34 +15,32 @@ public class PayjoinAccountingBridgeLifecycleFlowTests
     private const string OldSessionFinalTransactionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string FallbackTransactionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    [Fact]
-    public async Task OldSessionsFinalTransactionStillReconcilesAfterSessionRecreation()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SignedHistoryIsHeldUntilAccountingSucceedsOrFails(bool failAccounting)
     {
-        // The lifecycle Valera's review asks about: a previous session already reached
-        // PendingFinalTransaction (its signed proposal is in the sender's hands), a fresh receiver
-        // session is created for the same invoice and resets the bridge, and the previous session's
-        // final transaction becomes observable afterwards. The armed expectation survives the reset
-        // by design, and the worker's reconciliation pass still credits the settlement.
+        // A signed proposal may still settle after checkout closes. Keep its original
+        // history through the accounting pass, including a terminal reconciliation failure.
         using var testContext = new RelationalPluginTestContext();
         var bridgeService = testContext.CreateBridgeService();
+        var store = testContext.CreateStore();
         var now = DateTimeOffset.UtcNow;
+        var session = store.GetOrCreateSession("invoice-lifecycle", "receiver", "store-1", now.AddMinutes(1), ["original", "signed proposal"]);
+        store.StorePayjoinUri(session.InvoiceId, session.ReceiverAddress, "bitcoin:receiver?amount=0.000009&pj=https://example.com/exact");
 
-        await bridgeService.CreateOrGetAsync(
+        await testContext.SeedBridgeAsync(
             new CreatePayjoinAccountingBridgeRequest(
                 "invoice-lifecycle",
                 "store-1",
                 PayjoinConstants.BitcoinCode,
                 "BTC-BTC",
                 now.AddHours(1),
-                EffectiveInvoiceValueSats: 1000),
+                EffectiveInvoiceValueSats: 900, FallbackTransactionId: FallbackTransactionId, FallbackOutputIndex: 0, FallbackValueSats: 900,
+                SettlementScript: "CCDD", ExpectedFinalTransactionId: OldSessionFinalTransactionId, ExpectedFinalOutputIndex: 0, ExpectedFinalValueSats: 950),
             CancellationToken.None);
-        await bridgeService.AttachFallbackAsync("invoice-lifecycle", FallbackTransactionId, 0, 900, 900, "CCDD", CancellationToken.None);
-        await bridgeService.SetExpectedFinalTransactionAsync("invoice-lifecycle", OldSessionFinalTransactionId, 0, 950, CancellationToken.None);
-
-        // Session recreation: the reset runs, and must leave the armed expectation alone.
-        var afterReset = await bridgeService.ResetForNewSessionAsync("invoice-lifecycle", 1200, now.AddHours(2), CancellationToken.None);
-        Assert.NotNull(afterReset);
-        Assert.Equal(OldSessionFinalTransactionId, afterReset!.ExpectedFinalTransactionId);
+        Assert.False(store.RemoveSession(session.InvoiceId));
+        Assert.False(store.TryRemoveSessionUnlessNegotiating(session.InvoiceId));
 
         // The old final transaction becomes observable: the worker's reconciliation pass runs and
         // the payment settles.
@@ -50,14 +48,20 @@ public class PayjoinAccountingBridgeLifecycleFlowTests
             testContext.CreateStore(),
             new NoOpSessionProcessor(),
             bridgeService,
-            new SettledPaymentAccountingPaymentService(),
+            new SettledPaymentAccountingPaymentService(failAccounting),
             NullLogger<PayjoinReceiverPoller>.Instance);
         await poller.ProcessTickOnceAsync(CancellationToken.None);
 
         var reconciled = await bridgeService.TryGetByInvoiceIdAsync("invoice-lifecycle", CancellationToken.None);
         Assert.NotNull(reconciled);
-        Assert.Equal(PayjoinAccountingBridgeStatus.Reconciled, reconciled!.Status);
+        Assert.Equal(failAccounting ? PayjoinAccountingBridgeStatus.Failed : PayjoinAccountingBridgeStatus.Reconciled, reconciled!.Status);
         Assert.Equal(OldSessionFinalTransactionId, reconciled.ExpectedFinalTransactionId);
+        Assert.True(store.TryGetSession(session.InvoiceId, out var held));
+        Assert.NotNull(held);
+        Assert.Equal(session.GetEvents(), held.GetEvents());
+        Assert.Equal("bitcoin:receiver?amount=0.000009&pj=https://example.com/exact", held.PayjoinUri);
+        Assert.Equal(!failAccounting, store.RemoveSession(session.InvoiceId));
+        Assert.Equal(failAccounting, store.TryGetSession(session.InvoiceId, out _));
     }
 
     private sealed class NoOpSessionProcessor : IPayjoinReceiverSessionProcessor
@@ -65,10 +69,11 @@ public class PayjoinAccountingBridgeLifecycleFlowTests
         public Task ProcessTickAsync(CancellationToken stoppingToken) => Task.CompletedTask;
     }
 
-    private sealed class SettledPaymentAccountingPaymentService : IPayjoinAccountingPaymentService
+    private sealed class SettledPaymentAccountingPaymentService(bool failAccounting) : IPayjoinAccountingPaymentService
     {
         public Task<BTCPayServer.Services.Invoices.PaymentEntity?> ReconcileWithFinalTransactionAsync(PayjoinAccountingBridgeState bridge, CancellationToken cancellationToken)
         {
+            if (failAccounting) throw new PayjoinAccountingReconciliationDataException("settlement mismatch");
             return Task.FromResult<BTCPayServer.Services.Invoices.PaymentEntity?>(new BTCPayServer.Services.Invoices.PaymentEntity
             {
                 Status = PaymentStatus.Settled

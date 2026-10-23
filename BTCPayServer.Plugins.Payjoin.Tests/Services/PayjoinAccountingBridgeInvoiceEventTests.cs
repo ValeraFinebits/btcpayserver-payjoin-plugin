@@ -3,6 +3,7 @@ using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using NBitcoin;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
@@ -13,7 +14,7 @@ public class PayjoinAccountingBridgeInvoiceEventTests
     private const string TransactionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     [Fact]
-    public async Task LifecyclePublishesCommittedTransitionsAndRetainsEventsForNewRetryAttempts()
+    public async Task SessionlessBridgePublishesCommittedTransitionsAndRetainsEventsForNewRetryAttempts()
     {
         using var context = new RelationalPluginTestContext();
         using var events = new EventAggregator(new Logs());
@@ -36,10 +37,8 @@ public class PayjoinAccountingBridgeInvoiceEventTests
         var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
         var service = context.CreateBridgeService(publisher);
         var request = CreateRequest(DateTimeOffset.UtcNow.AddHours(1));
-        await service.CreateOrGetAsync(request, TestContext.Current.CancellationToken);
-        await service.CreateOrGetAsync(request, TestContext.Current.CancellationToken);
-        await service.SetExpectedFinalTransactionAsync(InvoiceId, TransactionId, 0, 1000, TestContext.Current.CancellationToken);
-        Assert.Equal(PayjoinInvoiceEventKind.TrackingStarted, Assert.Single(captured).Kind);
+        await context.SeedBridgeAsync(request with { ExpectedFinalTransactionId = TransactionId }, TestContext.Current.CancellationToken);
+        Assert.Empty(captured);
 
         await service.MarkFailedAsync(InvoiceId, "mismatched output", TestContext.Current.CancellationToken);
         await service.MarkFailedAsync(InvoiceId, "mismatched output", TestContext.Current.CancellationToken);
@@ -52,11 +51,9 @@ public class PayjoinAccountingBridgeInvoiceEventTests
         await service.MarkReconciledAsync(InvoiceId, TransactionId, 0, 1000, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken);
 
         var restarted = context.CreateBridgeService(publisher);
-        await restarted.CreateOrGetAsync(request, TestContext.Current.CancellationToken);
         await restarted.MarkReconciledAsync(InvoiceId, TransactionId, 0, 1000, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken);
         Assert.Equal(new[]
         {
-            PayjoinInvoiceEventKind.TrackingStarted,
             PayjoinInvoiceEventKind.Failed,
             PayjoinInvoiceEventKind.RetryRequested,
             PayjoinInvoiceEventKind.Failed,
@@ -78,8 +75,8 @@ public class PayjoinAccountingBridgeInvoiceEventTests
         var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
         var service = context.CreateBridgeService(publisher);
         var now = DateTimeOffset.UtcNow;
-        await service.CreateOrGetAsync(CreateRequest(now.AddMinutes(-1)), TestContext.Current.CancellationToken);
-        await service.CreateOrGetAsync(CreateRequest(now.AddHours(-7)) with
+        await context.SeedBridgeAsync(CreateRequest(now.AddMinutes(-1)), TestContext.Current.CancellationToken);
+        await context.SeedBridgeAsync(CreateRequest(now.AddHours(-7)) with
         {
             InvoiceId = "invoice-armed",
             ExpectedFinalTransactionId = TransactionId
@@ -104,19 +101,22 @@ public class PayjoinAccountingBridgeInvoiceEventTests
     }
 
     [Fact]
-    public async Task NewSessionResetPublishesOnlyWhenItActuallyResetsTracking()
+    public void NewSessionCreationPublishesOnlyOncePerAttempt()
     {
         using var context = new RelationalPluginTestContext();
         using var events = new EventAggregator(new Logs());
         var captured = new List<PayjoinInvoiceEvent>();
         using var subscription = events.Subscribe<PayjoinInvoiceEvent>(captured.Add);
         var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
-        var service = context.CreateBridgeService(publisher);
-        await service.CreateOrGetAsync(CreateRequest(DateTimeOffset.UtcNow.AddHours(1)), TestContext.Current.CancellationToken);
-        await service.AttachFallbackAsync(InvoiceId, TransactionId, 0, 1000, 1000, "0014", TestContext.Current.CancellationToken);
+        var store = context.CreateStore(publisher);
+        var first = CreateSession(store);
+        Assert.Equal(first.SessionInstanceId, CreateSession(store).SessionInstanceId);
+        Assert.Equal(PayjoinInvoiceEventKind.TrackingStarted, Assert.Single(captured).Kind);
 
-        await service.ResetForNewSessionAsync(InvoiceId, 1200, DateTimeOffset.UtcNow.AddHours(2), TestContext.Current.CancellationToken);
-        await service.ResetForNewSessionAsync(InvoiceId, 1200, DateTimeOffset.UtcNow.AddHours(2), TestContext.Current.CancellationToken);
+        Assert.True(store.RemoveSession(InvoiceId, first.SessionInstanceId));
+        var second = CreateSession(store, 1200);
+        Assert.NotEqual(first.SessionInstanceId, second.SessionInstanceId);
+        Assert.Equal(second.SessionInstanceId, CreateSession(store, 1200).SessionInstanceId);
 
         Assert.Equal(2, captured.Count);
         Assert.All(captured, evt => Assert.Equal(PayjoinInvoiceEventKind.TrackingStarted, evt.Kind));
@@ -135,20 +135,81 @@ public class PayjoinAccountingBridgeInvoiceEventTests
         var captured = new List<PayjoinInvoiceEvent>();
         using var subscription = events.Subscribe<PayjoinInvoiceEvent>(captured.Add);
         var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
-        var service = context.CreateBridgeService(publisher);
+        var store = context.CreateStore(publisher);
         context.FailSaveChanges = true;
-        await Assert.ThrowsAsync<DbUpdateException>(() => service.CreateOrGetAsync(CreateRequest(DateTimeOffset.UtcNow.AddHours(1)), TestContext.Current.CancellationToken));
+        Assert.Throws<DbUpdateException>(() => CreateSession(store));
         Assert.Empty(captured);
         context.FailSaveChanges = false;
-        await service.CreateOrGetAsync(CreateRequest(DateTimeOffset.UtcNow.AddHours(1)), TestContext.Current.CancellationToken);
+        var session = CreateSession(store);
         captured.Clear();
         context.FailSaveChanges = true;
-        await Assert.ThrowsAsync<DbUpdateException>(() => service.MarkFailedAsync(InvoiceId, "injected", TestContext.Current.CancellationToken));
+        Assert.Throws<DbUpdateException>(() => store.FailPayment(store.CreatePersister(session), "injected"));
+        Assert.Throws<DbUpdateException>(() => store.CommitProposal(store.CreatePersister(session), ["uncommitted proposal"],
+            new PayjoinReceiverSessionStore.ProposalSettlement(TransactionId, 0, 1000)));
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.CreateBridgeService(publisher)
+            .MarkFailedAsync(InvoiceId, "injected", TestContext.Current.CancellationToken));
         context.FailSaveChanges = false;
 
         Assert.Empty(captured);
         using var persisted = context.CreateDbContext();
-        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, Assert.Single(persisted.AccountingBridges).Status);
+        var bridge = Assert.Single(persisted.AccountingBridges);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFallback, bridge.Status);
+        Assert.Null(bridge.ExpectedFinalTransactionId);
+        Assert.DoesNotContain(persisted.ReceiverSessionEvents, row => row.Event == "uncommitted proposal");
+    }
+
+    [Fact]
+    public void ProtocolEventsFollowCommittedWritesAndIgnoreStaleOrRepeatedTransitions()
+    {
+        using var context = new RelationalPluginTestContext();
+        using var events = new EventAggregator(new Logs());
+        var captured = new List<PayjoinInvoiceEvent>();
+        using var subscription = events.Subscribe<PayjoinInvoiceEvent>(evt =>
+        {
+            using var persisted = context.CreateDbContext();
+            var bridge = Assert.Single(persisted.AccountingBridges);
+            if (evt.Kind == PayjoinInvoiceEventKind.ProposalPrepared)
+            {
+                Assert.Equal(TransactionId, bridge.ExpectedFinalTransactionId);
+                Assert.Contains(persisted.ReceiverSessionEvents, row => row.Event == "prepared proposal");
+            }
+            if (evt.Kind == PayjoinInvoiceEventKind.Failed)
+                Assert.Equal(PayjoinAccountingBridgeStatus.Failed, bridge.Status);
+            captured.Add(evt);
+        });
+        var publisher = new PayjoinInvoiceEventPublisher(events, NullLogger<PayjoinInvoiceEventPublisher>.Instance);
+        var store = context.CreateStore(publisher);
+        var session = CreateSession(store);
+        var stale = store.CreatePersister(session);
+        var owner = store.CreatePersister(session);
+        var settlement = new PayjoinReceiverSessionStore.ProposalSettlement(TransactionId, 0, 1000);
+        store.CommitProposal(owner, ["prepared proposal"], settlement);
+        store.BackfillProposalExpectation(owner, settlement);
+        Assert.Throws<PayjoinSessionStaleException>(() => store.FailPayment(stale, "stale failure"));
+        store.FailPayment(owner, "mismatched output");
+        store.FailPayment(owner, "mismatched output");
+
+        Assert.Equal(new[]
+        {
+            PayjoinInvoiceEventKind.TrackingStarted,
+            PayjoinInvoiceEventKind.ProposalPrepared,
+            PayjoinInvoiceEventKind.Failed
+        }, captured.Select(evt => evt.Kind));
+    }
+
+    private static PayjoinReceiverSessionState CreateSession(PayjoinReceiverSessionStore store, ulong amountSats = 1000)
+    {
+        using var key = new Key();
+        var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        using var keys = global::Payjoin.OhttpKeys.Decode(Convert.FromHexString(
+            "01001604ba48c49c3d4a92a3ad00ecc63a024da10ced02180c73ec12d8a7ad2cc91bb483824fe2bee8d28bfe2eb2fc6453bc4d31cd851e8a6540e86c5382af588d370957000400010003"));
+        using var builder = new global::Payjoin.ReceiverBuilder(address, "https://directory.example/", keys);
+        using var pinned = builder.WithAmount(amountSats);
+        using var bootstrap = pinned.Build();
+        var capture = new CapturingReceiverSessionPersister();
+        using var initialized = bootstrap.Save(capture);
+        var request = CreateRequest(DateTimeOffset.UtcNow.AddHours(1));
+        return store.GetOrCreateSession(InvoiceId, address, request.StoreId, request.ExpiresAt!.Value, capture.Events, request);
     }
 
     private static CreatePayjoinAccountingBridgeRequest CreateRequest(DateTimeOffset expiresAt) =>

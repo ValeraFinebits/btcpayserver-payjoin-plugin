@@ -23,6 +23,7 @@ internal sealed class PayjoinAccountingBridgeConfiguration : IEntityTypeConfigur
         entity.Property(x => x.ExpectedFinalTransactionId)
             .HasMaxLength(PayjoinPluginDbSchema.TransactionIdMaxLength);
         entity.Property(x => x.ExpectedFinalOutputIndex);
+        entity.Property(x => x.UpdatedAt).IsConcurrencyToken();
         entity.Property(x => x.FailureMessage)
             .HasMaxLength(PayjoinPluginDbSchema.BridgeFailureMessageMaxLength);
         entity.HasIndex(x => x.InvoiceId)

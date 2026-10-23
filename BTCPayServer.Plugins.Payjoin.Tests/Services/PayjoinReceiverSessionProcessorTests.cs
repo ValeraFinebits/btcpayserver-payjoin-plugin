@@ -1,4 +1,5 @@
 using BTCPayServer.Logging;
+using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Wallets;
@@ -27,6 +28,40 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 public class PayjoinReceiverSessionProcessorTests
 {
     [Fact]
+    public void CommittedOutputEvidenceDistinguishesAbsenceFromUnreadableFormat()
+    {
+        Assert.Null(PayjoinReceiverPaymentValidation.ReadCommittedOutputs(["{\"Initialized\":{}}"]));
+        Assert.Throws<FormatException>(() => PayjoinReceiverPaymentValidation.ReadCommittedOutputs(["{\"CommittedOutputs\":{\"outputs\":\"unknown\"}}"]));
+        Assert.Throws<Newtonsoft.Json.JsonReaderException>(() => PayjoinReceiverPaymentValidation.ReadCommittedOutputs(["invalid JSON"]));
+    }
+
+    [Theory]
+    [InlineData(null, 10_000, 0, false)]
+    [InlineData(0UL, 10_000, 0, false)]
+    [InlineData(10_000UL, 0, 0, false)]
+    [InlineData(10_000UL, 4_000, 6_000, false)]
+    [InlineData(10_000UL, 10_000, 1, false)]
+    [InlineData(10_000UL, 10_001, 0, false)]
+    [InlineData(10_000UL, 9_999, 0, false)]
+    [InlineData(10_000UL, 10_000, 0, true)]
+    public void OriginalRequiresPositivePinAndOneExactlyMatchingOutput(ulong? pin, long first, long second, bool valid)
+    {
+        using var key = new Key();
+        var script = key.PubKey.WitHash.ScriptPubKey;
+        var tx = Network.RegTest.CreateTransaction();
+        if (first > 0) tx.Outputs.Add(Money.Satoshis(first), script);
+        if (second > 0) tx.Outputs.Add(Money.Satoshis(second), script);
+        var payment = PayjoinReceiverPaymentValidation.ValidateOriginalAmount(pin, tx, script.ToBytes());
+        Assert.Equal(valid, payment is not null);
+        if (payment is not null)
+        {
+            Assert.Equal(first, payment.AmountSats);
+            Assert.Equal(tx.GetHash().ToString(), payment.TransactionId);
+            Assert.Equal(0U, payment.OutputIndex);
+        }
+    }
+
+    [Fact]
     public void ResolveFallbackReceiverOutputReturnsMatchingReceiverOutputWhenItIsNotAtIndexZero()
     {
         using var receiverKey = new Key();
@@ -35,10 +70,10 @@ public class PayjoinReceiverSessionProcessorTests
         fallbackTransaction.Outputs.Add(Money.Satoshis(10_000), otherKey.PubKey.WitHash.ScriptPubKey);
         fallbackTransaction.Outputs.Add(Money.Satoshis(20_000), receiverKey.PubKey.WitHash.ScriptPubKey);
 
-        var match = PayjoinReceiverSessionProcessor.ResolveFallbackReceiverOutput(fallbackTransaction, receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes());
+        var match = PayjoinReceiverPaymentValidation.ResolveFallbackReceiverOutput(fallbackTransaction, receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes());
 
         Assert.True(match.Success);
-        Assert.Equal(PayjoinReceiverSessionProcessor.FallbackReceiverOutputMatchStatus.Found, match.Status);
+        Assert.Equal(PayjoinReceiverPaymentValidation.FallbackReceiverOutputMatchStatus.Found, match.Status);
         Assert.Equal(1U, match.OutputIndex);
         Assert.Equal(20_000, match.ValueSats);
     }
@@ -51,10 +86,10 @@ public class PayjoinReceiverSessionProcessorTests
         var fallbackTransaction = Network.RegTest.CreateTransaction();
         fallbackTransaction.Outputs.Add(Money.Satoshis(10_000), otherKey.PubKey.WitHash.ScriptPubKey);
 
-        var match = PayjoinReceiverSessionProcessor.ResolveFallbackReceiverOutput(fallbackTransaction, receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes());
+        var match = PayjoinReceiverPaymentValidation.ResolveFallbackReceiverOutput(fallbackTransaction, receiverKey.PubKey.WitHash.ScriptPubKey.ToBytes());
 
         Assert.False(match.Success);
-        Assert.Equal(PayjoinReceiverSessionProcessor.FallbackReceiverOutputMatchStatus.NotFound, match.Status);
+        Assert.Equal(PayjoinReceiverPaymentValidation.FallbackReceiverOutputMatchStatus.NotFound, match.Status);
         Assert.Null(match.OutputIndex);
         Assert.Null(match.ValueSats);
     }
@@ -68,10 +103,10 @@ public class PayjoinReceiverSessionProcessorTests
         fallbackTransaction.Outputs.Add(Money.Satoshis(10_000), receiverScript);
         fallbackTransaction.Outputs.Add(Money.Satoshis(20_000), receiverScript);
 
-        var match = PayjoinReceiverSessionProcessor.ResolveFallbackReceiverOutput(fallbackTransaction, receiverScript.ToBytes());
+        var match = PayjoinReceiverPaymentValidation.ResolveFallbackReceiverOutput(fallbackTransaction, receiverScript.ToBytes());
 
         Assert.False(match.Success);
-        Assert.Equal(PayjoinReceiverSessionProcessor.FallbackReceiverOutputMatchStatus.Ambiguous, match.Status);
+        Assert.Equal(PayjoinReceiverPaymentValidation.FallbackReceiverOutputMatchStatus.Ambiguous, match.Status);
         Assert.Null(match.OutputIndex);
         Assert.Null(match.ValueSats);
     }
@@ -84,7 +119,7 @@ public class PayjoinReceiverSessionProcessorTests
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-expired-cleanup");
         var outPoint = new OutPoint(uint256.Parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"), 1);
-        Assert.True(store.TryReserveContributedInput(session.StoreId, session.InvoiceId, outPoint, DateTimeOffset.UtcNow.AddMinutes(-1)));
+        Assert.True(store.TryReserveContributedInput(store.Owner(session.InvoiceId), session.StoreId, outPoint, DateTimeOffset.UtcNow.AddMinutes(-1)));
 
         var guard = new RecordingSessionGuard();
         var processor = CreateProcessor(store, guard);
@@ -99,7 +134,7 @@ public class PayjoinReceiverSessionProcessorTests
     }
 
     [Theory]
-    [InlineData("invalid", false)]
+    [InlineData("invalid", true)]
     [InlineData("http", true)]
     [InlineData("timeout", true)]
     public async Task ProcessTickAsyncIsolatesFailuresAndRetainsSessionsForTransientErrors(string failure, bool retained)
@@ -171,7 +206,7 @@ public class PayjoinReceiverSessionProcessorTests
         using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
         var session = CreateSession(store, "invoice-fatal-persistence-failure");
-        var guard = new FatalThenClosedReplayGuard();
+        var guard = new FatalThenClosedReplayGuard(store);
         var processor = CreateProcessor(store, guard);
 
         // Act
@@ -219,7 +254,7 @@ public class PayjoinReceiverSessionProcessorTests
     }
 
     [Fact]
-    public async Task ProcessTickAsyncRecordsTheExpectedFinalTransactionBeforeRepostingAReplayedProposal()
+    public async Task ProcessTickAsyncDoesNotRepostAnUnvalidatedSyntheticProposal()
     {
         // Arrange: the session replays straight to the PayjoinProposal state, as it does when a
         // previous run stopped between finalizing the proposal and completing the bridge write.
@@ -234,16 +269,14 @@ public class PayjoinReceiverSessionProcessorTests
         await processor.ProcessTickAsync(CancellationToken.None);
 
         // Assert
-        Assert.Equal(
-            new[] { nameof(IPayjoinReceiverProposalFinalizer.EnsureExpectedFinalTransactionAsync), nameof(IPayjoinReceiverProposalFinalizer.PostAsync) },
-            finalizer.Calls);
+        Assert.Empty(finalizer.Calls);
     }
 
     [Theory]
     [InlineData("Ready", true)]
     [InlineData("RetryableFailure", true)]
-    [InlineData("InvalidDestination", false)]
-    public async Task PreparingSettlementOutputsRetainsOrRemovesTheSessionAccordingToTheOutcome(string outcome, bool retained)
+    [InlineData("InvalidDestination", true)]
+    public async Task PreparingSettlementOutputsWithoutProofOfAnUnsignedAttemptRetainsTheSession(string outcome, bool retained)
     {
         using var testContext = new SessionStoreFixture();
         var store = testContext.CreateStore();
@@ -257,8 +290,7 @@ public class PayjoinReceiverSessionProcessorTests
         var builder = new ScriptedOutputBuilder(() => new PayjoinReceiverOutputBuilder.OutputBuildResult(status, outputs));
         var processor = CreateProcessor(store, new RecordingSessionGuard(), outputBuilder: builder);
 
-        var result = await processor.CreateSettlementOutputsOrRemoveSessionAsync(
-            true, session.StoreId, session.InvoiceId, receiverScript, CancellationToken.None);
+        var result = await processor.CreateSettlementOutputsOrCompleteUnsignedAttemptAsync(true, session.StoreId, session.InvoiceId, receiverScript, 50_000, store.CreatePersister(session), CancellationToken.None);
 
         Assert.Same(outputs, result);
         Assert.Equal(retained, store.TryGetSession(session.InvoiceId, out var reloaded));
@@ -289,16 +321,30 @@ public class PayjoinReceiverSessionProcessorTests
         });
         var processor = CreateProcessor(store, new RecordingSessionGuard(), outputBuilder: builder);
 
-        await Assert.ThrowsAsync<HttpRequestException>(() => processor.CreateSettlementOutputsOrRemoveSessionAsync(
-            true, session.StoreId, session.InvoiceId, script, CancellationToken.None));
+        await Assert.ThrowsAsync<HttpRequestException>(() => processor.CreateSettlementOutputsOrCompleteUnsignedAttemptAsync(true, session.StoreId, session.InvoiceId, script, 50_000, store.CreatePersister(session), CancellationToken.None));
         Assert.True(store.TryGetSession(session.InvoiceId, out _));
-        var outputs = await processor.CreateSettlementOutputsOrRemoveSessionAsync(
-            true, session.StoreId, session.InvoiceId, script, CancellationToken.None);
+        var outputs = await processor.CreateSettlementOutputsOrCompleteUnsignedAttemptAsync(true, session.StoreId, session.InvoiceId, script, 50_000, store.CreatePersister(session), CancellationToken.None);
 
         Assert.NotNull(outputs);
         Assert.Null(outputs.SettlementKeyPath);
         Assert.True(store.TryGetSession(session.InvoiceId, out var reloaded));
         Assert.Equal(session.MonitoringExpiresAt, reloaded!.MonitoringExpiresAt);
+    }
+
+    [Fact]
+    public async Task FailedSnapshotStopsBeforeTheSessionGuardCanRemoveEvidence()
+    {
+        using var fixture = new SessionStoreFixture();
+        var store = fixture.CreateStore();
+        var session = CreateSession(store, "invoice-racing-failure");
+        var pending = await fixture.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest(
+            session.InvoiceId, session.StoreId, "BTC", "BTC-CHAIN", session.MonitoringExpiresAt), CancellationToken.None);
+        var guard = new RecordingSessionGuard();
+        var processor = CreateProcessor(store, guard, bridgeService: new NoOpAccountingBridgeService(pending with { Status = PayjoinAccountingBridgeStatus.Failed }));
+        await processor.ProcessTickAsync(CancellationToken.None);
+        Assert.Empty(guard.VisitedInvoiceIds);
+        Assert.True(store.TryGetSession(session.InvoiceId, out var held));
+        Assert.Equal(session.GetEvents(), held!.GetEvents());
     }
 
     [Fact]
@@ -325,6 +371,7 @@ public class PayjoinReceiverSessionProcessorTests
         IPayjoinReceiverSessionGuard sessionGuard,
         IPayjoinReceiverProposalFinalizer? proposalFinalizer = null,
         IPayjoinReceiverOutputBuilder? outputBuilder = null,
+        IPayjoinAccountingBridgeService? bridgeService = null,
         IPayjoinReceiverStateProcessor? stateProcessor = null)
     {
         var nbxplorerNetworkProvider = new NBXplorerNetworkProvider(ChainName.Regtest);
@@ -349,9 +396,7 @@ public class PayjoinReceiverSessionProcessorTests
             stateProcessor ?? new NoOpStateProcessor(),
             outputBuilder ?? new NoOpOutputBuilder(),
             new NoOpInputSelector(),
-            new NoOpAccountingBridgeService(),
-            new NoOpAccountingPaymentService(),
-            new NoOpInvoiceLookup(),
+            bridgeService ?? new NoOpAccountingBridgeService(),
             proposalFinalizer ?? new NoOpProposalFinalizer(),
             networkProvider,
             NullLogger<PayjoinReceiverSessionProcessor>.Instance);
@@ -365,6 +410,49 @@ public class PayjoinReceiverSessionProcessorTests
             "store-1",
             DateTimeOffset.UtcNow.AddMinutes(15),
             ["bootstrap-event"]);
+    }
+
+    private sealed class ReplayedStateGuard(Func<ReceiveSession> createState) : IPayjoinReceiverSessionGuard
+    {
+        public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
+        {
+            return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(
+                session,
+                persister: null!,
+                receiverScript: [0x00, 0x14],
+                replay: null!,
+                state: createState(),
+                removeCloseRequestedSession: _ => false));
+        }
+    }
+
+    private sealed class RecordingProposalFinalizer : IPayjoinReceiverProposalFinalizer
+    {
+        public List<string> Calls { get; } = [];
+
+        public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, WantsFeeRange proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken)
+        {
+            Calls.Add(nameof(FinalizeAsync));
+            return Task.CompletedTask;
+        }
+
+        public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, ProvisionalProposal proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken)
+        {
+            Calls.Add(nameof(FinalizeAsync));
+            return Task.CompletedTask;
+        }
+
+        public Task EnsureExpectedFinalTransactionAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken)
+        {
+            Calls.Add(nameof(EnsureExpectedFinalTransactionAsync));
+            return Task.CompletedTask;
+        }
+
+        public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken)
+        {
+            Calls.Add(nameof(PostAsync));
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class RecordingSessionGuard : IPayjoinReceiverSessionGuard
@@ -410,11 +498,6 @@ public class PayjoinReceiverSessionProcessorTests
         }
     }
 
-    private sealed class NoOpInvoiceLookup : IPayjoinInvoiceLookup
-    {
-        public Task<InvoiceEntity?> GetInvoiceAsync(string invoiceId) => Task.FromResult<InvoiceEntity?>(null);
-    }
-
     private sealed class NoOpOutputBuilder : IPayjoinReceiverOutputBuilder
     {
         public Task<PayjoinReceiverOutputBuilder.OutputBuildResult> TryCreateSettlementOutputsAsync(string storeId, string invoiceId, byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken) => Task.FromResult(new PayjoinReceiverOutputBuilder.OutputBuildResult(PayjoinReceiverOutputBuilder.OutputBuildStatus.RetryableFailure));
@@ -427,7 +510,7 @@ public class PayjoinReceiverSessionProcessorTests
 
     private sealed class NoOpInputSelector : IPayjoinReceiverInputSelector
     {
-        public Task<ReceiverInputContributionResult> TryContributeInputsAsync(WantsInputs proposal, string storeId, string invoiceId, DateTimeOffset reservationExpiresAt, CancellationToken cancellationToken) => Task.FromResult(ReceiverInputContributionResult.Failure("not used"));
+        public Task<ReceiverInputContributionResult> TryContributeInputsAsync(WantsInputs proposal, string storeId, DateTimeOffset reservationExpiresAt, PayjoinReceiverSessionStore.DatabaseBackedReceiverPersister owner, CancellationToken cancellationToken) => Task.FromResult(ReceiverInputContributionResult.Failure("not used"));
         public Task<ReceivedCoin[]?> TryGetPersistedContributedCoinsAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken) => Task.FromResult<ReceivedCoin[]?>(null);
     }
 
@@ -439,68 +522,17 @@ public class PayjoinReceiverSessionProcessorTests
         public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
-    private sealed class RecordingProposalFinalizer : IPayjoinReceiverProposalFinalizer
+    private sealed class NoOpAccountingBridgeService(PayjoinAccountingBridgeState? bridge = null) : IPayjoinAccountingBridgeService
     {
-        public List<string> Calls { get; } = [];
-
-        public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, WantsFeeRange proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken)
-        {
-            Calls.Add(nameof(FinalizeAsync));
-            return Task.CompletedTask;
-        }
-
-        public Task FinalizeAsync(PayjoinReceiverProposalFinalizationContext context, ProvisionalProposal proposal, ReceivedCoin[] contributedCoins, CancellationToken cancellationToken)
-        {
-            Calls.Add(nameof(FinalizeAsync));
-            return Task.CompletedTask;
-        }
-
-        public Task EnsureExpectedFinalTransactionAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken)
-        {
-            Calls.Add(nameof(EnsureExpectedFinalTransactionAsync));
-            return Task.CompletedTask;
-        }
-
-        public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, IPayjoinProposal proposal, CancellationToken cancellationToken)
-        {
-            Calls.Add(nameof(PostAsync));
-            return Task.CompletedTask;
-        }
-    }
-
-    private sealed class ReplayedStateGuard(Func<ReceiveSession> createState) : IPayjoinReceiverSessionGuard
-    {
-        public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
-        {
-            return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(
-                session,
-                persister: null!,
-                receiverScript: [0x00, 0x14],
-                replay: null!,
-                state: createState(),
-                removeCloseRequestedSession: _ => false));
-        }
-    }
-
-    private sealed class NoOpAccountingBridgeService : IPayjoinAccountingBridgeService
-    {
-        public Task<PayjoinAccountingBridgeState> CreateOrGetAsync(CreatePayjoinAccountingBridgeRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<PayjoinAccountingBridgeState?> TryGetByInvoiceIdAsync(string invoiceId, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
-        public Task<PayjoinAccountingBridgeState?> AttachFallbackAsync(string invoiceId, string fallbackTransactionId, long fallbackOutputIndex, long fallbackValueSats, long effectiveInvoiceValueSats, string? settlementScript, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        public Task<PayjoinAccountingBridgeState?> SetExpectedFinalTransactionAsync(string invoiceId, string expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<PayjoinAccountingBridgeState?> TryGetByInvoiceIdAsync(string invoiceId, CancellationToken cancellationToken) => Task.FromResult(bridge);
+        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingReconciliationAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
+        public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken, DateTimeOffset? expectedUpdatedAt = null) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
+        public Task<PayjoinAccountingBridgeState?> MarkFailedAsync(string invoiceId, string failureMessage, CancellationToken cancellationToken, Guid? sessionInstanceId = null, DateTimeOffset? expectedUpdatedAt = null) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
         public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> ExpirePendingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<PayjoinAccountingBridgeState>>([]);
         public Task<PayjoinAccountingBridgeAttentionResult> GetRequiringAttentionAsync(string storeId, CancellationToken cancellationToken) => Task.FromResult(new PayjoinAccountingBridgeAttentionResult([], 0));
         public Task<PayjoinAccountingBridgeState?> TryRetryAsync(string invoiceId, string storeId, DateTimeOffset now, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        public Task<PayjoinAccountingBridgeState?> ResetForNewSessionAsync(string invoiceId, long? effectiveInvoiceValueSats, DateTimeOffset? expiresAt, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
     }
 
-    private sealed class NoOpAccountingPaymentService : IPayjoinAccountingPaymentService
-    {
-        public Task<PaymentEntity?> ReconcileWithFinalTransactionAsync(PayjoinAccountingBridgeState bridge, CancellationToken cancellationToken) => Task.FromResult<PaymentEntity?>(null);
-    }
 
     private sealed class DbConflictGuard(string failingInvoiceId) : IPayjoinReceiverSessionGuard
     {
@@ -526,7 +558,7 @@ public class PayjoinReceiverSessionProcessorTests
         }
     }
 
-    private sealed class FatalThenClosedReplayGuard : IPayjoinReceiverSessionGuard
+    private sealed class FatalThenClosedReplayGuard(PayjoinReceiverSessionStore store) : IPayjoinReceiverSessionGuard
     {
         private const int EncapsulatedMessageBytes = 8192;
         private const string OhttpKeysHex =
@@ -550,7 +582,7 @@ public class PayjoinReceiverSessionProcessorTests
                 var replayedState = replay.State();
                 return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(
                     session,
-                    _persister,
+                    store.CreatePersister(session),
                     receiverScript: [0x00, 0x14],
                     replay,
                     replayedState,

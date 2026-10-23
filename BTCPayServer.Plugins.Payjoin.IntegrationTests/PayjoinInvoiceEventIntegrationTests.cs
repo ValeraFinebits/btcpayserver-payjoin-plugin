@@ -51,7 +51,8 @@ public class PayjoinInvoiceEventIntegrationTests : UnitTestBase
         }
         var expectedFinal = scenario == "unresolved-final" ? ExpectedTransactionId : null;
         var bridges = tester.PayTester.GetService<IPayjoinAccountingBridgeService>();
-        await bridges.CreateOrGetAsync(CreateRequest(invoiceId, merchant.StoreId, DateTimeOffset.UtcNow.AddHours(-7), expectedFinal), cancellation.Token).ConfigureAwait(true);
+        await tester.PayTester.GetService<PayjoinPluginDbContextFactory>().SeedBridgeAsync(
+            CreateRequest(invoiceId, merchant.StoreId, DateTimeOffset.UtcNow.AddHours(-7), expectedFinal), cancellation.Token).ConfigureAwait(true);
         await bridges.ExpirePendingAsync(DateTimeOffset.UtcNow, cancellation.Token).ConfigureAwait(true);
         await bridges.ExpirePendingAsync(DateTimeOffset.UtcNow, cancellation.Token).ConfigureAwait(true);
         var bridge = await bridges.TryGetByInvoiceIdAsync(invoiceId, cancellation.Token).ConfigureAwait(true);
@@ -112,7 +113,8 @@ public class PayjoinInvoiceEventIntegrationTests : UnitTestBase
 
         var invoiceId = await CreateInvoiceIdAsync(merchant, cancellation.Token).ConfigureAwait(true);
         var bridges = tester.PayTester.GetService<IPayjoinAccountingBridgeService>();
-        await bridges.CreateOrGetAsync(CreateRequest(invoiceId, merchant.StoreId, DateTimeOffset.UtcNow.AddHours(1), ExpectedTransactionId), cancellation.Token).ConfigureAwait(true);
+        await tester.PayTester.GetService<PayjoinPluginDbContextFactory>().SeedBridgeAsync(
+            CreateRequest(invoiceId, merchant.StoreId, DateTimeOffset.UtcNow.AddHours(1), ExpectedTransactionId), cancellation.Token).ConfigureAwait(true);
         await bridges.MarkFailedAsync(invoiceId, "controlled settlement mismatch", cancellation.Token).ConfigureAwait(true);
         await bridges.MarkFailedAsync(invoiceId, "controlled settlement mismatch", cancellation.Token).ConfigureAwait(true);
         Assert.Null(await bridges.TryRetryAsync(invoiceId, "wrong-store", DateTimeOffset.UtcNow, cancellation.Token).ConfigureAwait(true));
