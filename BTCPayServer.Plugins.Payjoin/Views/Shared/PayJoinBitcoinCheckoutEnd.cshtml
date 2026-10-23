@@ -86,9 +86,10 @@
     }
 
     function shouldShowControls(model) {
+        const vm = getCheckoutVm();
         return model &&
             model.status === 'New' &&
-            model.paymentMethodId === 'BTC-CHAIN' &&
+            model.payjoinV2Enabled === true && vm && !vm.isPluginPaymentMethod &&
             model.payjoinPaymentUrl &&
             model.payjoinPlainBitcoinUrl &&
             model.payjoinPaymentUrl !== model.payjoinPlainBitcoinUrl;
@@ -134,7 +135,7 @@
         }, delay);
     }
 
-    // Only bootstraps the first session; the merged URL is built server-side into the checkout model.
+    // Only bootstraps the first session; its URI is published server-side in the checkout model.
     function requestPayjoinPaymentUrl(model) {
         if (retryState.stopped) {
             return;
@@ -142,7 +143,8 @@
 
         if (!model ||
             model.status !== 'New' ||
-            model.paymentMethodId !== 'BTC-CHAIN' ||
+            model.payjoinCanBootstrap !== true ||
+            !getCheckoutVm() || getCheckoutVm().isPluginPaymentMethod ||
             !model.payjoinPaymentUrlEndpoint ||
             !model.payjoinPlainBitcoinUrl ||
             model.payjoinPaymentUrl ||
@@ -186,7 +188,7 @@
             .finally(function () {
                 retryState.inFlight = false;
 
-                // Rescheduled even on Active: the merged URL may not have reached the model yet.
+                // Rescheduled even on Active: the session URI may not have reached the model yet.
                 if (!retryState.stopped) {
                     retryState.nextAttemptAt = Date.now() + payjoinRequestDelayMs();
                     schedulePayjoinRequestRetry();
@@ -237,7 +239,7 @@
             return;
         }
 
-        // fetchData re-runs GetCheckoutModel, where the payjoin URL is merged into the model.
+        // fetchData re-runs GetCheckoutModel, where the session URI is published in the model.
         if (typeof vm.fetchData !== 'function') {
             console.error('PayJoin cannot refresh the checkout model: BTCPay no longer exposes fetchData');
             return;
@@ -293,14 +295,6 @@
         if (el) {
             el.remove();
         }
-    }
-
-    function getQrContainer() {
-        return document.querySelector('#payment .payment-box .qr-container');
-    }
-
-    function getPaymentBox() {
-        return document.querySelector('#payment .payment-box');
     }
 
     function buildModeButton(mode, label) {
@@ -368,17 +362,11 @@
                        model.invoiceBitcoinUrl === model.payjoinPlainBitcoinUrl);
     }
 
-    function placeControls(controls, qrContainer, paymentBox) {
-        if (qrContainer) {
-            if (controls.nextElementSibling !== qrContainer) {
-                qrContainer.insertAdjacentElement('beforebegin', controls);
-            }
-            return true;
-        }
-
-        if (paymentBox) {
-            if (controls.parentElement !== paymentBox || paymentBox.firstElementChild !== controls) {
-                paymentBox.prepend(controls);
+    function placeControls(controls) {
+        const methods = document.querySelector('#payment .payment-methods-wrapper');
+        if (methods) {
+            if (methods.nextElementSibling !== controls) {
+                methods.insertAdjacentElement('afterend', controls);
             }
             return true;
         }
@@ -393,20 +381,18 @@
             return;
         }
 
-        const qrContainer = getQrContainer();
-        const paymentBox = getPaymentBox();
-        if (!qrContainer && !paymentBox) {
+        if (!document.querySelector('#payment .payment-methods-wrapper')) {
             return;
         }
 
         let controls = document.getElementById(controlsId);
         if (!controls) {
             controls = buildControls(model);
-            placeControls(controls, qrContainer, paymentBox);
+            placeControls(controls);
             return;
         }
 
-        if (placeControls(controls, qrContainer, paymentBox)) {
+        if (placeControls(controls)) {
             updateControlState(controls, model);
         }
     }
@@ -499,6 +485,7 @@
 
         watchedVm = vm;
         vm.$watch('srvModel', sync);
+        vm.$watch('pmId', sync);
         return true;
     }
 
