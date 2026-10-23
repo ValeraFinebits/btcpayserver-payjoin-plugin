@@ -28,12 +28,14 @@ public sealed class PayjoinReceiverSessionStore
     private readonly IPayjoinUniqueConstraintViolationDetector _uniqueConstraintViolationDetector;
     private readonly PayjoinMailroomManager? _mailroomManager;
     private readonly ILogger<PayjoinReceiverSessionStore>? _logger;
+    private readonly PayjoinOwnershipLookupStateStore? _ownershipLookups;
 
     internal PayjoinReceiverSessionStore(
         PayjoinPluginDbContextFactory pluginDbContextFactory,
         IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector,
         PayjoinMailroomManager? mailroomManager = null,
-        ILogger<PayjoinReceiverSessionStore>? logger = null)
+        ILogger<PayjoinReceiverSessionStore>? logger = null,
+        PayjoinOwnershipLookupStateStore? ownershipLookups = null)
     {
         ArgumentNullException.ThrowIfNull(pluginDbContextFactory);
         ArgumentNullException.ThrowIfNull(uniqueConstraintViolationDetector);
@@ -41,6 +43,7 @@ public sealed class PayjoinReceiverSessionStore
         _uniqueConstraintViolationDetector = uniqueConstraintViolationDetector;
         _mailroomManager = mailroomManager;
         _logger = logger;
+        _ownershipLookups = ownershipLookups;
     }
 
     internal PayjoinReceiverSessionState GetOrCreateSession(
@@ -131,6 +134,13 @@ public sealed class PayjoinReceiverSessionStore
         return TryLoadSessionCore(context, invoiceId, out session);
     }
 
+    internal bool IsCurrentSession(PayjoinOwnershipSessionKey session)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        return context.ReceiverSessions.Any(row => row.InvoiceId == session.InvoiceId
+            && row.StoreId == session.StoreId && row.CreatedAt == session.CreatedAt);
+    }
+
     [SuppressMessage("Design", "CA1055:URI-like return values should not be strings", Justification = "A bitcoin: BIP21 URI is stored and merged as text; System.Uri would re-encode its query parameters.")]
     internal string? GetServablePayjoinUri(string invoiceId, string destination)
     {
@@ -209,10 +219,12 @@ public sealed class PayjoinReceiverSessionStore
             return false;
         }
 
+        var ownershipSession = new PayjoinOwnershipSessionKey(sessionData.StoreId, sessionData.InvoiceId, sessionData.CreatedAt);
         RemoveAllSessionEvents(context, sessionData);
         RemoveInputReservations(context, invoiceId);
         context.ReceiverSessions.Remove(sessionData);
         context.SaveChanges();
+        _ownershipLookups?.Forget(ownershipSession);
         _mailroomManager?.ClearSessionFailedRelays(invoiceId);
         return true;
     });
@@ -242,10 +254,12 @@ public sealed class PayjoinReceiverSessionStore
             return false;
         }
 
+        var ownershipSession = new PayjoinOwnershipSessionKey(sessionData.StoreId, sessionData.InvoiceId, sessionData.CreatedAt);
         RemoveAllSessionEvents(context, sessionData);
         RemoveInputReservations(context, invoiceId);
         context.ReceiverSessions.Remove(sessionData);
         context.SaveChanges();
+        _ownershipLookups?.Forget(ownershipSession);
         _mailroomManager?.ClearSessionFailedRelays(invoiceId);
         return true;
     });
@@ -417,6 +431,17 @@ public sealed class PayjoinReceiverSessionStore
         context.SaveChanges();
         return true;
     });
+
+    internal void CompleteOwnershipLookup(PayjoinReceiverSessionState session)
+        => _ownershipLookups?.Forget(PayjoinOwnershipSessionKey.From(session));
+
+    internal void CompleteOwnershipLookupIfFinished(PayjoinReceiverSessionState session, ReceiveSession state)
+    {
+        if (state is ReceiveSession.HasReplyableError or ReceiveSession.WantsOutputs or ReceiveSession.WantsInputs
+            or ReceiveSession.WantsFeeRange or ReceiveSession.ProvisionalProposal or ReceiveSession.PayjoinProposal
+            or ReceiveSession.ReceiverPendingFallback or ReceiveSession.Monitor or ReceiveSession.Closed)
+            CompleteOwnershipLookup(session);
+    }
 
     internal JsonReceiverSessionPersister CreatePersister(PayjoinReceiverSessionState session)
     {

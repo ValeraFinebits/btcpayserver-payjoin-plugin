@@ -77,6 +77,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         HasReplyableError replyableError,
         CancellationToken cancellationToken)
     {
+        _sessionStore.CompleteOwnershipLookup(context.Session);
         var (responseBody, requestResponse) = await _relayRequestSender.SendAsync(
             context.StoreId,
             context.InvoiceId,
@@ -141,15 +142,11 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         // A payload that arrived within this tick is not in the replayed history yet, so parse the
         // fallback transaction once and share its authoritative input outpoints and output scripts
         // with the rest of the chain through the context.
-        if (context.OriginalInputOutpoints.Count == 0)
-        {
-            var originalTransaction = ExtractTransactionFacts(proposal.ExtractTxToScheduleBroadcast());
-            context.OriginalInputOutpoints = originalTransaction.InputOutpoints;
-            context.OriginalOutputScripts = originalTransaction.OutputScripts;
-        }
+        context.OriginalTransaction ??= ExtractTransactionFacts(proposal.ExtractTxToScheduleBroadcast());
 
-        var ownershipResolver = await GetOrCreateInputOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
-        using var transition = proposal.CheckInputsNotOwned(new WalletInputOwnedCallback(ownershipResolver));
+        var ownershipResolver = await GetOrCreateOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
+        if (ownershipResolver is null) return;
+        using var transition = proposal.CheckInputsNotOwned(new WalletInputOwnedCallback(ownershipResolver.Inputs));
         using var maybeInputsSeen = transition.Save(context.Persister);
         await ProcessMaybeInputsSeenAsync(context, maybeInputsSeen, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
     }
@@ -176,33 +173,28 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
         CancellationToken cancellationToken)
     {
-        var ownershipResolver = await GetOrCreateOutputOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
-        using var transition = proposal.IdentifyReceiverOutputs(new WalletScriptOwnedCallback(ownershipResolver));
+        var ownershipResolver = await GetOrCreateOwnershipResolverAsync(context, cancellationToken).ConfigureAwait(false);
+        if (ownershipResolver is null) return;
+        using var transition = proposal.IdentifyReceiverOutputs(new WalletScriptOwnedCallback(ownershipResolver.Outputs));
         using var wantsOutputs = transition.Save(context.Persister);
+        _sessionStore.CompleteOwnershipLookup(context.Session);
         await continueWithOutputsAsync(wantsOutputs, context, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<PayjoinInputOwnershipResolver> GetOrCreateInputOwnershipResolverAsync(
+    private async Task<PayjoinOwnershipResolver?> GetOrCreateOwnershipResolverAsync(
         PayjoinReceiverStateContext context,
         CancellationToken cancellationToken)
     {
-        context.InputOwnershipResolver ??= await _walletOwnershipService.CreateInputResolverAsync(
-            context.StoreId,
-            context.OriginalInputOutpoints,
-            cancellationToken).ConfigureAwait(false);
-        return context.InputOwnershipResolver;
-    }
-
-    private async Task<PayjoinScriptOwnershipResolver> GetOrCreateOutputOwnershipResolverAsync(
-        PayjoinReceiverStateContext context,
-        CancellationToken cancellationToken)
-    {
-        context.OutputOwnershipResolver ??= await _walletOwnershipService.CreateOutputResolverAsync(
-            context.StoreId,
+        cancellationToken.ThrowIfCancellationRequested();
+        if (context.OwnershipResolver is not null) return context.OwnershipResolver;
+        var result = await _walletOwnershipService.CreateResolverAsync(
+            context.Session,
+            context.OriginalTransaction ?? throw new InvalidOperationException("The Original transaction is unavailable for ownership checks."),
             context.ReceiverScript,
-            context.OriginalOutputScripts,
             cancellationToken).ConfigureAwait(false);
-        return context.OutputOwnershipResolver;
+        cancellationToken.ThrowIfCancellationRequested();
+        if (result.Status == PayjoinOwnershipLookupStatus.Ready) context.OwnershipResolver = result.Resolver;
+        return context.OwnershipResolver;
     }
 
     internal static PayjoinOriginalTransactionFacts ExtractTransactionFacts(byte[] transactionBytes)
@@ -225,7 +217,7 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
             scripts.Add(output.ScriptPubKey.ToBytes());
         }
 
-        return new PayjoinOriginalTransactionFacts(inputOutpoints, scripts);
+        return new PayjoinOriginalTransactionFacts(transaction.GetHash(), inputOutpoints, scripts);
     }
 
     private PayjoinReceiverStateContext RefreshCloseRequestedContext(PayjoinReceiverStateContext context)
