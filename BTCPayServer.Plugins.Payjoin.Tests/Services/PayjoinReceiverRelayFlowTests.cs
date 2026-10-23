@@ -20,6 +20,100 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 public class PayjoinReceiverRelayFlowTests
 {
     [Theory]
+    [InlineData("UncheckedOriginalPayload", false)]
+    [InlineData("UncheckedOriginalPayload", true)]
+    [InlineData("WantsOutputs", false)]
+    [InlineData("WantsOutputs", true)]
+    [InlineData("WantsFeeRange", false)]
+    [InlineData("WantsFeeRange", true)]
+    [InlineData("ProvisionalProposal", false)]
+    [InlineData("ProvisionalProposal", true)]
+    public async Task RealValidatorReadinessPreservesCurrentAttemptAndResumesTheSameOriginal(string phase, bool losesReadiness)
+    {
+        using var fixture = new ReceiverFixture(atomicBootstrap: true);
+        await fixture.PostOriginalAsync();
+        fixture.Validator.Verdict = phase == "UncheckedOriginalPayload" ? OriginalTransactionVerdict.Unavailable : OriginalTransactionVerdict.Accepted;
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var contributed = phase is "WantsFeeRange" or "ProvisionalProposal";
+        if (contributed) fixture.ContributeToCurrentAttempt(phase);
+        using (var replay = fixture.Replay())
+        using (var history = replay.SessionHistory())
+        using (var uri = history.PjUri()) fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, uri.AsString());
+        var before = fixture.Session();
+        byte[] original;
+        using (var replay = fixture.Replay())
+        using (var state = replay.State())
+        using (var history = replay.SessionHistory()) original = state is ReceiveSession.UncheckedOriginalPayload payload
+            ? payload.Inner.ExtractTxToCheckBroadcastSuitability() : history.FallbackTx()!;
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        Assert.Null(bridge!.ExpectedFinalTransactionId);
+        var requests = fixture.Transport.Responses.Count;
+        var outputs = fixture.Outputs.Calls;
+        using var explorer = new PayjoinOriginalTransactionValidatorTests.ExplorerFixture("{\"success\":false,\"rpcCode\":-25,\"rpcCodeMessage\":\"missing-inputs\"}");
+        if (losesReadiness) explorer.Handler.Statuses.Enqueue(PayjoinOriginalTransactionValidatorTests.ExplorerHandler.Ready);
+        explorer.Handler.Statuses.Enqueue("{}");
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        var held = fixture.Session();
+        Assert.Equal(before.SessionInstanceId, held.SessionInstanceId);
+        Assert.Equal(before.AttemptVersion, held.AttemptVersion);
+        Assert.Equal(before.MonitoringExpiresAt, held.MonitoringExpiresAt);
+        Assert.Equal(before.PayjoinUri, held.PayjoinUri);
+        Assert.Equal(before.GetEvents(), held.GetEvents());
+        Assert.Equal(bridge, await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None));
+        Assert.Equal(outputs, fixture.Outputs.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(requests, fixture.Transport.Responses.Count);
+        explorer.Handler.Response = "{\"success\":true}";
+        var outpoint = new OutPoint(uint256.One, 0);
+        fixture.Inputs.PersistedCoins = [new ReceivedCoin { OutPoint = outpoint }];
+        fixture.ProposalSigner.Signer = fixture.ContributedInputSigner;
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(before.SessionInstanceId, fixture.Session().SessionInstanceId);
+        Assert.Equal(before.PayjoinUri, fixture.Session().PayjoinUri);
+        Assert.Equal(losesReadiness ? 2 : 1, explorer.Handler.Originals.Count);
+        Assert.All(explorer.Handler.Originals, bytes => Assert.Equal(original, bytes));
+        Assert.Equal(0, fixture.Inputs.ContributionCalls);
+        if (contributed)
+        {
+            Assert.Equal(outpoint, Assert.Single(fixture.Inputs.PersistedLookups));
+            Assert.Equal(1, fixture.ProposalSigner.Calls);
+            Assert.Equal(requests + 1, fixture.Transport.Responses.Count);
+            using var replay = fixture.Replay();
+            using var state = replay.State();
+            Assert.IsType<ReceiveSession.Monitor>(state);
+        }
+        else Assert.Equal(outputs + 1, fixture.Outputs.Calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnreadyCoreDoesNotOverrideCloseOrCleanupDeadline(bool close)
+    {
+        using var fixture = new ReceiverFixture(atomicBootstrap: true);
+        await fixture.PostOriginalAsync();
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var before = fixture.Session();
+        using var explorer = new PayjoinOriginalTransactionValidatorTests.ExplorerFixture("{\"success\":true}");
+        explorer.Handler.Statuses.Enqueue("{}");
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        if (close) fixture.Store.RequestClose("invoice", Client.Models.InvoiceStatus.Expired, before.SessionInstanceId);
+        else
+        {
+            using var db = fixture.Factory.CreateContext();
+            db.ReceiverSessions.Single().MonitoringExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+            db.SaveChanges();
+        }
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        Assert.False(fixture.Store.TryGetSession("invoice", out _));
+        Assert.Empty(explorer.Handler.Originals);
+        Assert.Equal(1, explorer.Handler.StatusReads);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+    }
+
+    [Theory]
     [InlineData("advance")]
     [InlineData("replace")]
     public async Task PreparedBackfillCannotWriteThroughAnObsoleteOwner(string change)
@@ -1529,7 +1623,8 @@ public class PayjoinReceiverRelayFlowTests
         private PassthroughSigner Signer { get; } = new();
         private BitcoinAddress Address => _key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
 
-        public ReceiverFixture(TimeSpan? quarantineDuration = null, TimeProvider? timeProvider = null, ulong? pin = 50_000, ulong? nativeLifetimeSeconds = null)
+        public ReceiverFixture(TimeSpan? quarantineDuration = null, TimeProvider? timeProvider = null, ulong? pin = 50_000, ulong? nativeLifetimeSeconds = null,
+            bool atomicBootstrap = false)
         {
             Services.WaitForServicesReady();
             Transport = new LocalMailroomHandler(Services);
@@ -1544,7 +1639,11 @@ public class PayjoinReceiverRelayFlowTests
             using var bootstrap = (timedBuilder ?? pinnedBuilder ?? builder).Build();
             var capture = new CapturingReceiverSessionPersister();
             Receiver = bootstrap.Save(capture);
-            Store.GetOrCreateSession("invoice", Address.ToString(), "store", DateTimeOffset.UtcNow.AddMinutes(20), capture.Events);
+            var expiresAt = DateTimeOffset.UtcNow.AddMinutes(20);
+            var bridgeRequest = new CreatePayjoinAccountingBridgeRequest("invoice", "store", "BTC", PaymentTypes.CHAIN.GetPaymentMethodId("BTC").ToString(),
+                expiresAt, EffectiveInvoiceValueSats: 50_000);
+            Store.GetOrCreateSession("invoice", Address.ToString(), "store", expiresAt, capture.Events,
+                atomicBootstrap ? bridgeRequest : null);
             UseRelays(Transport.HealthyRelay);
             var httpFactory = Substitute.For<IHttpClientFactory>();
             httpFactory.CreateClient(Arg.Any<string>()).Returns(_http);
@@ -1554,9 +1653,7 @@ public class PayjoinReceiverRelayFlowTests
                 new PayjoinSeenInputStore(Factory), Manager, Validator, new ReplayingGuard(Store, Address.ScriptPubKey.ToBytes()));
             var bridge = new PayjoinAccountingBridgeService(Factory, new PayjoinSessionBuildLock());
             BridgeService = bridge;
-            Factory.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest("invoice", "store", "BTC",
-                PaymentTypes.CHAIN.GetPaymentMethodId("BTC").ToString(), DateTimeOffset.UtcNow.AddMinutes(20),
-                EffectiveInvoiceValueSats: 50_000), CancellationToken.None).GetAwaiter().GetResult();
+            if (!atomicBootstrap) Factory.SeedBridgeAsync(bridgeRequest, CancellationToken.None).GetAwaiter().GetResult();
             var nbx = new NBXplorerNetworkProvider(ChainName.Regtest);
             var network = new BTCPayNetwork { CryptoCode = "BTC", NBXplorerNetwork = nbx.GetFromCryptoCode("BTC") };
             var networks = new BTCPayNetworkProvider([network], nbx, new Logs());
@@ -1567,14 +1664,40 @@ public class PayjoinReceiverRelayFlowTests
                 StateProcessor, Outputs, Inputs, bridge, Finalizer, networks, NullLogger<PayjoinReceiverSessionProcessor>.Instance, Validator);
         }
 
-        public PayjoinReceiverSessionProcessor RecreateProcessor()
+        public PayjoinReceiverSessionProcessor RecreateProcessor(IPayjoinOriginalTransactionValidator? validator = null)
         {
+            validator ??= Validator;
             var store = new PayjoinReceiverSessionStore(Factory, new SqliteUniqueConstraintViolationDetector(), Manager);
             var bridge = new PayjoinAccountingBridgeService(Factory, new PayjoinSessionBuildLock());
-            var stateProcessor = new PayjoinReceiverStateProcessor(store, _sender, Wallet, new PayjoinSeenInputStore(Factory), Manager, Validator, new ReplayingGuard(store, Address.ScriptPubKey.ToBytes()));
+            var stateProcessor = new PayjoinReceiverStateProcessor(store, _sender, Wallet, new PayjoinSeenInputStore(Factory), Manager, validator, new ReplayingGuard(store, Address.ScriptPubKey.ToBytes()));
             var finalizer = new PayjoinReceiverProposalFinalizer(_sender, ProposalSigner, bridge, store, Networks);
             return new PayjoinReceiverSessionProcessor(store, new ReplayingGuard(store, Address.ScriptPubKey.ToBytes()),
-                stateProcessor, Outputs, Inputs, bridge, finalizer, Networks, NullLogger<PayjoinReceiverSessionProcessor>.Instance, Validator);
+                stateProcessor, Outputs, Inputs, bridge, finalizer, Networks, NullLogger<PayjoinReceiverSessionProcessor>.Instance, validator);
+        }
+
+        public void ContributeToCurrentAttempt(string phase)
+        {
+            var owner = Store.CreatePersister(Session());
+            using var replay = PayjoinMethods.ReplayReceiverEventLog(owner);
+            using var state = replay.State();
+            var wantsOutputs = Assert.IsType<ReceiveSession.WantsOutputs>(state).Inner;
+            using var transition = wantsOutputs.CommitOutputs();
+            var capture = new CapturingReceiverSessionPersister();
+            using var wantsInputs = transition.Save(capture);
+            Store.CommitReceiverOutputs(owner, capture.Events, new PayjoinReceiverOutputBuilder.OutputReplacement(
+                [new global::Payjoin.TxOut(50_000, Address.ScriptPubKey.ToBytes())], Address.ScriptPubKey.ToBytes(), 50_000, null));
+            var outpoint = new OutPoint(uint256.One, 0);
+            Assert.True(Store.TryReserveContributedInput(owner, "store", outpoint, Session().MonitoringExpiresAt));
+            using var pair = InputPair.NewP2wpkh(new global::Payjoin.TxOut(60_000, _receiverInputKey.PubKey.WitHash.ScriptPubKey.ToBytes()),
+                new global::Payjoin.OutPoint(outpoint.Hash.ToString(), outpoint.N));
+            using var contribution = wantsInputs.ContributeInputs([pair]);
+            using var commit = contribution.CommitInputs();
+            using var fees = commit.Save(owner);
+            if (phase == "ProvisionalProposal")
+            {
+                using var apply = fees.ApplyFeeRange(null, null);
+                using var provisional = apply.Save(owner);
+            }
         }
 
         public Task RecordFallbackAsync(string transactionId, long index, long value, long pin, string? script, CancellationToken token)

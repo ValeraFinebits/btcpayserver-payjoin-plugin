@@ -24,6 +24,8 @@ internal sealed class PayjoinOriginalTransactionValidator(ExplorerClientProvider
         {
             var client = clients.GetExplorerClient(PayjoinConstants.BitcoinCode);
             if (client is null) return new(OriginalTransactionVerdict.Unavailable, "Bitcoin explorer is unavailable");
+            if (!await IsReadyAsync(client, cancellationToken).ConfigureAwait(false))
+                return new(OriginalTransactionVerdict.Unavailable, "Bitcoin explorer or node is not synchronized");
             var transaction = Transaction.Load(original, Network.Main);
             var result = await client.BroadcastAsync(transaction, testMempoolAccept: true, cancellationToken).ConfigureAwait(false);
             if (result is null) return new(OriginalTransactionVerdict.Unavailable, "Missing mempool acceptance response");
@@ -45,9 +47,10 @@ internal sealed class PayjoinOriginalTransactionValidator(ExplorerClientProvider
                 reason.Contains("already in block chain", StringComparison.OrdinalIgnoreCase) ||
                 reason.Contains("already in blockchain", StringComparison.OrdinalIgnoreCase) ||
                 reason.Contains("already in chain", StringComparison.OrdinalIgnoreCase);
-            return !alreadyKnownReason && result.RPCCode is RPCErrorCode.RPC_VERIFY_REJECTED or RPCErrorCode.RPC_VERIFY_ERROR
-                ? new(OriginalTransactionVerdict.Rejected, reason)
-                : new(OriginalTransactionVerdict.Unavailable, reason);
+            if (!alreadyKnownReason && result.RPCCode is RPCErrorCode.RPC_VERIFY_REJECTED or RPCErrorCode.RPC_VERIFY_ERROR &&
+                await IsReadyAsync(client, cancellationToken).ConfigureAwait(false))
+                return new(OriginalTransactionVerdict.Rejected, reason);
+            return new(OriginalTransactionVerdict.Unavailable, reason);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or NBXplorer.Models.NBXplorerException or
@@ -57,5 +60,12 @@ internal sealed class PayjoinOriginalTransactionValidator(ExplorerClientProvider
             cancellationToken.ThrowIfCancellationRequested();
             return new(OriginalTransactionVerdict.Unavailable, ex.Message);
         }
+    }
+
+    private static async Task<bool> IsReadyAsync(NBXplorer.ExplorerClient client, CancellationToken cancellationToken)
+    {
+        var status = await client.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+        return status?.IsFullySynched == true && status.BitcoinStatus?.IsSynched == true &&
+            status.BitcoinStatus.Blocks == status.BitcoinStatus.Headers;
     }
 }

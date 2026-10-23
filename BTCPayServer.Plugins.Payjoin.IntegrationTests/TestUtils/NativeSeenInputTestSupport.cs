@@ -35,11 +35,14 @@ internal sealed class NativeSeenInputTestSupport : IDisposable
         var receiverAddress = receiverKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
         using var keys = _services.FetchOhttpKeys();
         using var receiverBuilder = new ReceiverBuilder(receiverAddress.ToString(), _services.DirectoryUrl(), keys);
-        using var bootstrap = receiverBuilder.Build();
+        using var pinnedBuilder = receiverBuilder.WithAmount(50_000);
+        using var bootstrap = pinnedBuilder.Build();
         var capture = new CapturingReceiverSessionPersister();
         using var receiver = bootstrap.Save(capture);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(20);
         var session = _store.GetOrCreateSession(invoiceId, receiverAddress.ToString(), "store-native-seen-inputs",
-            DateTimeOffset.UtcNow.AddMinutes(20), capture.Events);
+            expiresAt, capture.Events, new CreatePayjoinAccountingBridgeRequest(invoiceId, "store-native-seen-inputs",
+                "BTC", "BTC-CHAIN", expiresAt, EffectiveInvoiceValueSats: 50_000));
         var persister = _store.CreatePersister(session);
 
         var senderAddress = senderKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
