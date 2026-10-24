@@ -167,6 +167,7 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
         var client = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(context.Network);
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
         var invoice = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
+        var session = PayjoinReceiverTestHelper.GetRequiredReceiverSession(tester, invoice.InvoiceId);
         var historyRemoved = false;
         var payer = new PayjoinTestPayer(tester, context.Merchant, context.Network, useReservedSenderChangeAddress: true,
             beforeOriginalAsync: async (original, token) =>
@@ -179,7 +180,6 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
                     command.Parameters.AddWithValue("txid", input.PrevOut.Hash.ToString());
                     Assert.Equal(1, await command.ExecuteNonQueryAsync(token).ConfigureAwait(true));
                     Assert.Null(await client.GetTransactionAsync(context.Merchant.DerivationScheme, input.PrevOut.Hash, token).ConfigureAwait(true));
-                    var session = await CreateSessionAsync(tester, context.Merchant, token).ConfigureAwait(true);
                     var result = await tester.PayTester.GetService<IPayjoinWalletOwnershipService>().CreateResolverAsync(
                         session, new PayjoinOriginalTransactionFacts(original.GetGlobalTransaction().GetHash(), [input.PrevOut]), token).ConfigureAwait(true);
                     Assert.Equal(PayjoinOwnershipLookupStatus.Ready, result.Status);
