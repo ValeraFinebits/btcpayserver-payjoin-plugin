@@ -79,6 +79,27 @@ public class PayjoinOriginalTransactionValidatorTests
     }
 
     [Theory]
+    [InlineData(false, "AlreadyKnown")]
+    [InlineData(true, "Unavailable")]
+    public async Task AlreadyKnownRequiresTheSameWitnessForTheSameTransactionId(bool differentWitness, string expected)
+    {
+        using var fixture = new ExplorerFixture("{\"success\":false,\"rpcCode\":-25,\"rpcCodeMessage\":\"txn-already-in-mempool\"}");
+        var original = fixture.Transaction;
+        original.Inputs[0].WitScript = new WitScript(new[] { new byte[] { 0x01 }, new byte[] { 0x02 } });
+        var known = original.Clone();
+        if (differentWitness) known.Inputs[0].WitScript = new WitScript(new[] { new byte[] { 0x03 }, new byte[] { 0x02 } });
+
+        Assert.NotEmpty(original.Inputs[0].WitScript.Pushes);
+        Assert.Equal(original.GetHash(), known.GetHash());
+        if (differentWitness) Assert.NotEqual(original.GetWitHash(), known.GetWitHash());
+        else Assert.Equal(original.GetWitHash(), known.GetWitHash());
+
+        fixture.Handler.Known = $$"""{"transactionHash":"{{known.GetHash()}}","transaction":"{{known.ToHex()}}","confirmations":0}""";
+        var result = await fixture.Validator.ValidateAsync(original.ToBytes(), TestContext.Current.CancellationToken);
+        Assert.Equal(Enum.Parse<OriginalTransactionVerdict>(expected), result.Verdict);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("{}")]
     [InlineData("{\"isFullySynched\":false,\"bitcoinStatus\":{\"isSynched\":true,\"blocks\":100,\"headers\":100}}")]
