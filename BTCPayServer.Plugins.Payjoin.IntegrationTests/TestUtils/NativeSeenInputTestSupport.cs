@@ -35,7 +35,8 @@ internal sealed class NativeSeenInputTestSupport : IDisposable
         var receiverAddress = receiverKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
         using var keys = _services.FetchOhttpKeys();
         using var receiverBuilder = new ReceiverBuilder(receiverAddress.ToString(), _services.DirectoryUrl(), keys);
-        using var bootstrap = receiverBuilder.Build();
+        using var builderWithAmount = receiverBuilder.WithAmount(50_000);
+        using var bootstrap = builderWithAmount.Build();
         var capture = new CapturingReceiverSessionPersister();
         using var receiver = bootstrap.Save(capture);
         var session = _store.GetOrCreateSession(invoiceId, receiverAddress.ToString(), "store-native-seen-inputs",
