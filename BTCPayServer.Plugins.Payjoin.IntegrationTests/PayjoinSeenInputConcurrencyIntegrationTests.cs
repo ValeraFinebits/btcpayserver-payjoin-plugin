@@ -74,9 +74,7 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
             Assert.Equal(new[] { (freshInput.Hash.ToString(), (long)freshInput.N), (sharedInput.Hash.ToString(), (long)sharedInput.N) },
                 fixture.Barrier.StagedInputs);
             RecordingSeenInputCallback? winningCallback = null;
-            Assert.True(fixture.Sessions.TryGetSession(winningInvoice, out var winningSession));
-            var winningOwner = fixture.Sessions.CreatePersister(winningSession!);
-            using var next = fixture.SeenInputs.ExecuteSeenInputTransition(winningOwner, (callback, persister) =>
+            using var next = fixture.SeenInputs.ExecuteSeenInputTransition(fixture.Sessions.Owner(winningInvoice), (callback, persister) =>
             {
                 winningCallback = new RecordingSeenInputCallback(callback);
                 using var transition = winningState.CheckNoInputsSeenBefore(winningCallback);
