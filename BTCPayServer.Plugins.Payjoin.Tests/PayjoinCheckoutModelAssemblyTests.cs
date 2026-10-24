@@ -87,6 +87,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var method = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
         var handler = Substitute.For<IPaymentMethodHandler>();
         handler.PaymentMethodId.Returns(method);
+        ((IHandler<PaymentMethodId>)handler).Id.Returns(method);
         handler.Serializer.Returns(serializer);
         Exception? profileError = null;
         handler.ParsePaymentMethodConfig(Arg.Any<JToken>()).Returns(call =>

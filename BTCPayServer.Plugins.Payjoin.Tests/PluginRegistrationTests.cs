@@ -202,6 +202,7 @@ public class PluginRegistrationTests
         var serializer = JsonSerializer.Create(network.NBXplorerNetwork.Serializer.Settings);
         var handler = Substitute.For<IPaymentMethodHandler>();
         handler.PaymentMethodId.Returns(paymentMethodId);
+        ((IHandler<PaymentMethodId>)handler).Id.Returns(paymentMethodId);
         handler.Serializer.Returns(serializer);
         handler.ParsePaymentMethodConfig(Arg.Any<JToken>()).Returns(call =>
             ((JToken)call[0]).ToObject<DerivationSchemeSettings>(serializer)!);
