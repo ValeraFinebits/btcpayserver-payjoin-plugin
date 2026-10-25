@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NBitcoin;
 using NBitcoin.RPC;
+using Newtonsoft.Json.Linq;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
@@ -25,7 +26,7 @@ internal sealed class PayjoinOriginalTransactionValidator(ExplorerClientProvider
             var client = clients.GetExplorerClient(PayjoinConstants.BitcoinCode);
             if (client is null) return new(OriginalTransactionVerdict.Unavailable, "Bitcoin explorer is unavailable");
             if (!await IsReadyAsync(client, cancellationToken).ConfigureAwait(false))
-                return new(OriginalTransactionVerdict.Unavailable, "Bitcoin explorer or node is not synchronized");
+                return new(OriginalTransactionVerdict.Unavailable, "Bitcoin explorer or node is not ready");
             var transaction = Transaction.Load(original, Network.Main);
             var result = await client.BroadcastAsync(transaction, testMempoolAccept: true, cancellationToken).ConfigureAwait(false);
             if (result is null) return new(OriginalTransactionVerdict.Unavailable, "Missing mempool acceptance response");
@@ -65,7 +66,15 @@ internal sealed class PayjoinOriginalTransactionValidator(ExplorerClientProvider
     private static async Task<bool> IsReadyAsync(NBXplorer.ExplorerClient client, CancellationToken cancellationToken)
     {
         var status = await client.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-        return status?.IsFullySynched == true && status.BitcoinStatus?.IsSynched == true &&
-            status.BitcoinStatus.Blocks == status.BitcoinStatus.Headers;
+        if (status?.IsFullySynched != true || status.BitcoinStatus?.IsSynched != true ||
+            status.BitcoinStatus.Blocks != status.BitcoinStatus.Headers)
+            return false;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        var response = await client.RPCClient.SendCommandAsync(
+            new RPCRequest("getmempoolinfo", []), timeout.Token).ConfigureAwait(false);
+        return response?.Result is JObject result && result["loaded"] is { Type: JTokenType.Boolean } loaded &&
+            loaded.Value<bool>();
     }
 }

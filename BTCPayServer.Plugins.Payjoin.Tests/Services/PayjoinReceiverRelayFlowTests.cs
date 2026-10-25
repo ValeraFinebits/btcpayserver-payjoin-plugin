@@ -20,15 +20,17 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 public class PayjoinReceiverRelayFlowTests
 {
     [Theory]
-    [InlineData("UncheckedOriginalPayload", false)]
-    [InlineData("UncheckedOriginalPayload", true)]
-    [InlineData("WantsOutputs", false)]
-    [InlineData("WantsOutputs", true)]
-    [InlineData("WantsFeeRange", false)]
-    [InlineData("WantsFeeRange", true)]
-    [InlineData("ProvisionalProposal", false)]
-    [InlineData("ProvisionalProposal", true)]
-    public async Task RealValidatorReadinessPreservesCurrentAttemptAndResumesTheSameOriginal(string phase, bool losesReadiness)
+    [InlineData("UncheckedOriginalPayload", false, false)]
+    [InlineData("UncheckedOriginalPayload", true, false)]
+    [InlineData("WantsOutputs", false, false)]
+    [InlineData("WantsOutputs", true, false)]
+    [InlineData("WantsFeeRange", false, false)]
+    [InlineData("WantsFeeRange", true, false)]
+    [InlineData("ProvisionalProposal", false, false)]
+    [InlineData("ProvisionalProposal", true, false)]
+    [InlineData("UncheckedOriginalPayload", false, true)]
+    [InlineData("WantsFeeRange", false, true)]
+    public async Task RealValidatorReadinessPreservesCurrentAttemptAndResumesTheSameOriginal(string phase, bool losesReadiness, bool mempoolLoading)
     {
         using var fixture = new ReceiverFixture(atomicBootstrap: true);
         await fixture.PostOriginalAsync();
@@ -47,11 +49,18 @@ public class PayjoinReceiverRelayFlowTests
             ? payload.Inner.ExtractTxToCheckBroadcastSuitability() : history.FallbackTx()!;
         var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
         Assert.Null(bridge!.ExpectedFinalTransactionId);
+        PayjoinReceiverInputReservationData? reservation = null;
+        using (var database = fixture.Factory.CreateContext())
+            if (contributed) reservation = Assert.Single(database.ReceiverInputReservations);
         var requests = fixture.Transport.Responses.Count;
         var outputs = fixture.Outputs.Calls;
         using var explorer = new PayjoinOriginalTransactionValidatorTests.ExplorerFixture("{\"success\":false,\"rpcCode\":-25,\"rpcCodeMessage\":\"missing-inputs\"}");
-        if (losesReadiness) explorer.Handler.Statuses.Enqueue(PayjoinOriginalTransactionValidatorTests.ExplorerHandler.Ready);
-        explorer.Handler.Statuses.Enqueue("{}");
+        if (mempoolLoading) explorer.Handler.MempoolResults.Enqueue("{\"loaded\":false}");
+        else
+        {
+            if (losesReadiness) explorer.Handler.Statuses.Enqueue(PayjoinOriginalTransactionValidatorTests.ExplorerHandler.Ready);
+            explorer.Handler.Statuses.Enqueue("{}");
+        }
         await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
         var held = fixture.Session();
         Assert.Equal(before.SessionInstanceId, held.SessionInstanceId);
@@ -64,6 +73,19 @@ public class PayjoinReceiverRelayFlowTests
         Assert.Equal(0, fixture.Inputs.Calls);
         Assert.Equal(0, fixture.ProposalSigner.Calls);
         Assert.Equal(requests, fixture.Transport.Responses.Count);
+        if (mempoolLoading) Assert.Equal(1, explorer.Handler.MempoolReads);
+        if (contributed)
+        {
+            using var database = fixture.Factory.CreateContext();
+            var retained = Assert.Single(database.ReceiverInputReservations);
+            Assert.Equal(reservation!.Id, retained.Id);
+            Assert.Equal(reservation.TransactionId, retained.TransactionId);
+            Assert.Equal(reservation.OutputIndex, retained.OutputIndex);
+            Assert.Equal(reservation.ReservedAt, retained.ReservedAt);
+            Assert.Equal(reservation.ExpiresAt, retained.ExpiresAt);
+            Assert.True(held.TryGetContributedInput(out var retainedOutpoint));
+            Assert.Equal(new OutPoint(uint256.Parse(reservation.TransactionId), (uint)reservation.OutputIndex), retainedOutpoint);
+        }
         explorer.Handler.Response = "{\"success\":true}";
         var outpoint = new OutPoint(uint256.One, 0);
         fixture.Inputs.PersistedCoins = [new ReceivedCoin { OutPoint = outpoint }];
@@ -72,6 +94,7 @@ public class PayjoinReceiverRelayFlowTests
         Assert.Equal(before.SessionInstanceId, fixture.Session().SessionInstanceId);
         Assert.Equal(before.PayjoinUri, fixture.Session().PayjoinUri);
         Assert.Equal(losesReadiness ? 2 : 1, explorer.Handler.Originals.Count);
+        if (mempoolLoading) Assert.Equal(2, explorer.Handler.MempoolReads);
         Assert.All(explorer.Handler.Originals, bytes => Assert.Equal(original, bytes));
         Assert.Equal(0, fixture.Inputs.ContributionCalls);
         if (contributed)

@@ -48,6 +48,9 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
     private static readonly Action<ILogger, string, string, Exception?> LogPayjoinReceiverAmountRejected =
         LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(19, nameof(LogPayjoinReceiverAmountRejected)),
             "Payjoin receiver stopped for {InvoiceId}: {Reason}.");
+    private static readonly Action<ILogger, string, string, Exception?> LogPayjoinReceiverOriginalCheckUnavailable =
+        LoggerMessage.Define<string, string>(LogLevel.Debug, new EventId(20, nameof(LogPayjoinReceiverOriginalCheckUnavailable)),
+            "Original transaction check unavailable for {InvoiceId}; deferred for retry: {Reason}");
 
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IPayjoinReceiverSessionGuard _sessionGuard;
@@ -183,7 +186,7 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
                 stoppingToken.ThrowIfCancellationRequested();
                 if (validation.Verdict == OriginalTransactionVerdict.Unavailable)
                 {
-                    LogPayjoinReceiverAmountRejected(_logger, session.InvoiceId, "original broadcast check: " + validation.Reason, null);
+                    LogPayjoinReceiverOriginalCheckUnavailable(_logger, session.InvoiceId, validation.Reason, null);
                     return;
                 }
                 var refreshed = await PayjoinReceiverSessionGuard.RefreshAfterExternalCheckAsync(
