@@ -186,6 +186,7 @@ public class PayjoinWalletOwnershipIntegrationTests : UnitTestBase
                     var resolver = Assert.IsType<PayjoinInputOwnershipResolver>(result.Resolver);
                     Assert.Equal(PayjoinInputOwnership.Owned, resolver.GetOwnership(input.PrevOut));
                 }
+                await Task.Delay(PayjoinOwnershipLookupStateStore.RetryDelay, token).ConfigureAwait(true);
                 historyRemoved = true;
             });
         var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
