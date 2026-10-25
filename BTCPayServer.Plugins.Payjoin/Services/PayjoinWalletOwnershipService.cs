@@ -37,7 +37,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
             "Payjoin ownership lookup deferred for {InvoiceId}; the receiver session remains active.");
     private static readonly Action<ILogger, string, Exception?> LogLookupExhausted =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(2, nameof(LogLookupExhausted)),
-            "Payjoin ownership lookup budget exhausted for {InvoiceId}; no further passes will run for this proposal.");
+            "Payjoin ownership SDK-operation budget exceeded for {InvoiceId}; no further passes will run for this proposal.");
     private static readonly Action<ILogger, Exception?> LogLookupCapacityUnavailable =
         LoggerMessage.Define(LogLevel.Warning, new EventId(3, nameof(LogLookupCapacityUnavailable)),
             "Payjoin ownership lookup state capacity is unavailable; new proposals will retry on a later tick.");
@@ -92,8 +92,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
         if (wallet is null) return Unavailable(PayjoinOwnershipLookupStatus.Deferred);
         var key = new PayjoinOwnershipProposalKey(pass.Session, session.PayjoinUri,
             originalTransaction.TransactionId, wallet.AccountDerivation.ToString());
-        status = _states.TryBegin(pass, key, out var state, out var newlyExhausted);
-        if (newlyExhausted) LogLookupExhausted(_logger, session.InvoiceId, null);
+        status = _states.TryBegin(pass, key, out var state);
         if (state is null) return Unavailable(status);
 
         try
@@ -148,37 +147,21 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
             if (!await QueryAsync(pass, token => client.IsTrackedAsync(
                 new NBXplorer.Models.DerivationSchemeTrackedSource(accountDerivation), token), cancellationToken).ConfigureAwait(false))
                 return new PayjoinInputOwnershipResolver(inputs);
-        }
-        catch (Exception ex) when (PayjoinWalletContext.IsLookupUnavailable(ex, cancellationToken))
-        {
-            return new PayjoinInputOwnershipResolver(inputs);
-        }
+            foreach (var input in inputs.Keys)
+                if (state?.OwnedInputs.Contains(input) == true) inputs[input] = PayjoinInputOwnership.Owned;
 
-        foreach (var input in inputs.Keys)
-            if (state?.OwnedInputs.Contains(input) == true) inputs[input] = PayjoinInputOwnership.Owned;
-
-        foreach (var transactionInputs in inputs.Keys.Where(input => inputs[input] != PayjoinInputOwnership.Owned).GroupBy(outpoint => outpoint.Hash))
-        {
-            // Authenticate the exact prevout; sender-supplied witness UTXO data and derivation-scoped
-            // transaction history are not sufficient ownership evidence.
-            NBXplorer.Models.TransactionResult? funding;
-            try
+            foreach (var transactionInputs in inputs.Keys.Where(input => inputs[input] != PayjoinInputOwnership.Owned).GroupBy(outpoint => outpoint.Hash))
             {
-                funding = await QueryAsync(pass, token => client.GetTransactionAsync(transactionInputs.Key, token),
+                // Authenticate the exact prevout; sender-supplied witness UTXO data and derivation-scoped
+                // transaction history are not sufficient ownership evidence.
+                var funding = await QueryAsync(pass, token => client.GetTransactionAsync(transactionInputs.Key, token),
                     cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (PayjoinWalletContext.IsLookupUnavailable(ex, cancellationToken))
-            {
-                continue;
-            }
-            var transaction = funding?.Transaction;
-            if ((funding?.TransactionHash is { } fundingId && fundingId != transactionInputs.Key) ||
-                (transaction is not null && transaction.GetHash() != transactionInputs.Key))
-                continue;
+                var transaction = funding?.Transaction;
+                if ((funding?.TransactionHash is { } fundingId && fundingId != transactionInputs.Key) ||
+                    (transaction is not null && transaction.GetHash() != transactionInputs.Key))
+                    continue;
 
-            foreach (var input in transactionInputs)
-            {
-                try
+                foreach (var input in transactionInputs)
                 {
                     var prevout = transaction is null
                         ? await TryGetUnspentOutputAsync(client, input, pass, cancellationToken).ConfigureAwait(false)
@@ -187,17 +170,10 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
 
                     if (!scriptOwnership.TryGetValue(prevout.ScriptPubKey, out var ownership))
                     {
-                        try
-                        {
-                            ownership = state?.OwnedScripts.Contains(prevout.ScriptPubKey) == true
-                                ? PayjoinInputOwnership.Owned
-                                : await GetScriptOwnershipAsync(client, accountDerivation,
-                                    prevout.ScriptPubKey, pass, cancellationToken).ConfigureAwait(false);
-                        }
-                        catch (Exception ex) when (PayjoinWalletContext.IsLookupUnavailable(ex, cancellationToken))
-                        {
-                            ownership = PayjoinInputOwnership.Unknown;
-                        }
+                        ownership = state?.OwnedScripts.Contains(prevout.ScriptPubKey) == true
+                            ? PayjoinInputOwnership.Owned
+                            : await GetScriptOwnershipAsync(client, accountDerivation,
+                                prevout.ScriptPubKey, pass, cancellationToken).ConfigureAwait(false);
                         scriptOwnership.Add(prevout.ScriptPubKey, ownership);
                     }
 
@@ -208,11 +184,12 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
                         state?.OwnedScripts.Add(prevout.ScriptPubKey);
                     }
                 }
-                catch (Exception ex) when (PayjoinWalletContext.IsLookupUnavailable(ex, cancellationToken))
-                {
-                    // Retry unavailable evidence on a later bounded pass.
-                }
             }
+        }
+        catch (Exception ex) when (pass is null && PayjoinWalletContext.IsLookupUnavailable(ex, cancellationToken))
+        {
+            // Stop at the dependency failure. The standalone resolver retains Unknown evidence;
+            // admitted passes propagate the error to the retry policy without spending the rest of their budget.
         }
 
         return new PayjoinInputOwnershipResolver(inputs);

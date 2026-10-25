@@ -16,6 +16,8 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
 public class PayjoinOwnershipLookupBudgetTests
 {
+    private static readonly int[] ExpectedBackoffSeconds = [30, 60, 120, 240, 300, 300];
+
     [Fact]
     public async Task ProposalFromIssue192FitsWithinTheBound()
     {
@@ -115,26 +117,48 @@ public class PayjoinOwnershipLookupBudgetTests
         Assert.Equal(0, fixture.Handler.Active);
     }
 
-    [Fact]
-    public async Task DependencyFailuresHaveBackoffAndAFiniteRetryCount()
+    [Theory]
+    [InlineData("http")]
+    [InlineData("503")]
+    [InlineData("deadline")]
+    [InlineData("incomplete")]
+    public async Task TemporaryFailuresRecoverAfterMoreThanThreePassesWithCappedBackoff(string failure)
     {
         var logger = new RecordingLogger();
-        using var fixture = new LookupFixture(logger: logger);
-        fixture.Handler.RespondAsync = (_, _) => throw new HttpRequestException("NBXplorer is unavailable.");
-        var original = fixture.CreateOriginal(1);
-        for (var attempt = 1; attempt <= PayjoinOwnershipLookupStateStore.MaxPasses; attempt++)
+        using var fixture = new LookupFixture(lookupTimeout: TimeSpan.FromMilliseconds(100), logger: logger);
+        fixture.Handler.RespondAsync = async (request, token) =>
         {
-            Assert.Null(await fixture.ResolveAsync(original));
-            Assert.Equal(attempt, fixture.Handler.Calls.Count);
-            Assert.Null(await fixture.ResolveAsync(original));
-            Assert.Equal(attempt, fixture.Handler.Calls.Count);
-            fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+            if (failure == "http") throw new HttpRequestException("NBXplorer is unavailable.");
+            if (failure == "503") return ServiceUnavailable();
+            if (failure == "deadline") await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            if (request.RequestUri!.AbsolutePath.Contains("/scripts/", StringComparison.Ordinal)) return fixture.JsonResponse(null);
+            return await fixture.DefaultResponseAsync(request, token).ConfigureAwait(false);
+        };
+        var original = fixture.CreateOriginal(1);
+        foreach (var delaySeconds in ExpectedBackoffSeconds)
+        {
+            var failed = await fixture.LookupAsync(original);
+            Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, failed.Status);
+            Assert.Null(failed.Resolver);
+            var requests = fixture.Handler.Calls.Count;
+            var logs = logger.Entries.Count;
+            Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
+            fixture.Clock.Advance(TimeSpan.FromSeconds(delaySeconds) - TimeSpan.FromMilliseconds(1));
+            Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
+            Assert.Equal(requests, fixture.Handler.Calls.Count);
+            Assert.Equal(logs, logger.Entries.Count);
+            Assert.Equal(0, fixture.Handler.Active);
+            fixture.Clock.Advance(TimeSpan.FromMilliseconds(1));
         }
-
-        fixture.Clock.Advance(TimeSpan.FromMinutes(10));
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original)).Status);
-        Assert.Equal(PayjoinOwnershipLookupStateStore.MaxPasses, fixture.Handler.Calls.Count);
-        Assert.Single(logger.Entries, entry => entry.EventId.Id == 2);
+        var requestsPerFailure = failure == "incomplete" ? 3 : 1;
+        Assert.Equal(ExpectedBackoffSeconds.Length * requestsPerFailure, fixture.Handler.Calls.Count);
+        fixture.Handler.RespondAsync = fixture.DefaultResponseAsync;
+        var resolver = await fixture.ResolveAsync(original);
+        Assert.NotNull(resolver);
+        Assert.Equal(PayjoinInputOwnership.Foreign, resolver.GetOwnership(original.InputOutpoints[0]));
+        Assert.Equal(ExpectedBackoffSeconds.Length * requestsPerFailure + 3, fixture.Handler.Calls.Count);
+        Assert.Equal(ExpectedBackoffSeconds.Length, logger.Entries.Count);
+        Assert.DoesNotContain(logger.Entries, entry => entry.EventId.Id == 2);
     }
 
     [Fact]
@@ -168,11 +192,13 @@ public class PayjoinOwnershipLookupBudgetTests
         var resolver = await fixture.ResolveAsync(original);
         Assert.NotNull(resolver);
         Assert.Equal(PayjoinInputOwnership.Foreign, resolver.GetOwnership(original.InputOutpoints[0]));
+        Assert.Null(await fixture.ResolveAsync(original));
+        fixture.Clock.Advance(2 * PayjoinOwnershipLookupStateStore.RetryDelay);
         Assert.NotNull(await fixture.ResolveAsync(original));
 
-        Assert.Equal(PayjoinOwnershipLookupStateStore.MaxPasses,
+        Assert.Equal(3,
             fixture.Handler.Calls.Count(path => path.Contains("/scripts/", StringComparison.Ordinal)));
-        Assert.Equal(PayjoinOwnershipLookupStateStore.MaxPasses,
+        Assert.Equal(3,
             fixture.Handler.Calls.Count(path => path.Contains("/transactions/", StringComparison.Ordinal)));
     }
 
@@ -185,6 +211,8 @@ public class PayjoinOwnershipLookupBudgetTests
         Assert.NotNull(resolver);
         Assert.Equal(PayjoinInputOwnership.Owned, resolver.GetOwnership(original.InputOutpoints[0]));
 
+        Assert.Null(await fixture.ResolveAsync(original));
+        fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
         resolver = await fixture.ResolveAsync(original);
 
         Assert.NotNull(resolver);
@@ -194,9 +222,42 @@ public class PayjoinOwnershipLookupBudgetTests
     }
 
     [Fact]
-    public async Task ShutdownCancellationReleasesItsSlotWithoutResettingThePassCount()
+    public async Task PartialDependencyFailureStopsBeforeTheBudgetAndKeepsProvenOwnedInputs()
     {
-        using var fixture = new LookupFixture();
+        var logger = new RecordingLogger();
+        using var fixture = new LookupFixture(logger: logger);
+        var owned = fixture.CreateOriginal(2, owned: true);
+        var foreign = fixture.CreateOriginal((PayjoinWalletOwnershipService.MaxRequestsPerPass - 1) / 2);
+        var original = owned with { InputOutpoints = [.. owned.InputOutpoints, .. foreign.InputOutpoints] };
+        var failedTransaction = foreign.InputOutpoints[0].Hash.ToString();
+        fixture.Handler.RespondAsync = (request, token) => request.RequestUri!.AbsolutePath.Contains(failedTransaction, StringComparison.Ordinal)
+            ? throw new HttpRequestException("Temporary funding lookup failure.")
+            : fixture.DefaultResponseAsync(request, token);
+
+        Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
+        Assert.Equal(5, fixture.Handler.Calls.Count);
+        Assert.Single(logger.Entries, entry => entry.EventId.Id == 1);
+        Assert.DoesNotContain(logger.Entries, entry => entry.EventId.Id == 2);
+        fixture.Handler.RespondAsync = fixture.DefaultResponseAsync;
+        Assert.Null(await fixture.ResolveAsync(original));
+        Assert.Equal(5, fixture.Handler.Calls.Count);
+        fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+
+        var resolver = await fixture.ResolveAsync(original);
+
+        Assert.NotNull(resolver);
+        Assert.All(owned.InputOutpoints, input => Assert.Equal(PayjoinInputOwnership.Owned, resolver.GetOwnership(input)));
+        Assert.All(foreign.InputOutpoints, input => Assert.Equal(PayjoinInputOwnership.Foreign, resolver.GetOwnership(input)));
+        Assert.Equal(5 + 1 + 2 * foreign.InputOutpoints.Count, fixture.Handler.Calls.Count);
+        foreach (var input in owned.InputOutpoints)
+            Assert.Single(fixture.Handler.Calls, path => path.Contains(input.Hash.ToString(), StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ShutdownCancellationPropagatesAndReleasesItsSlotWithoutResettingBackoff()
+    {
+        var logger = new RecordingLogger();
+        using var fixture = new LookupFixture(logger: logger);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Handler.RespondAsync = async (request, token) =>
@@ -214,12 +275,19 @@ public class PayjoinOwnershipLookupBudgetTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resolving);
         fixture.Handler.RespondAsync = fixture.DefaultResponseAsync;
 
-        Assert.NotNull(await fixture.ResolveAsync(original));
+        Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
+        Assert.Single(fixture.Handler.Calls);
+        Assert.NotNull(await fixture.ResolveAsync(original, fixture.CreateSession("another")));
+        fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
         Assert.NotNull(await fixture.ResolveAsync(original));
         var requests = fixture.Handler.Calls.Count;
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original)).Status);
+        fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
         Assert.Equal(requests, fixture.Handler.Calls.Count);
+        fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+        Assert.NotNull(await fixture.ResolveAsync(original));
         Assert.Equal(0, fixture.Handler.Active);
+        Assert.Empty(logger.Entries);
     }
 
     [Fact]
@@ -262,11 +330,7 @@ public class PayjoinOwnershipLookupBudgetTests
         using var fixture = new LookupFixture();
         fixture.Handler.RespondAsync = (_, _) => throw new HttpRequestException("Unavailable.");
         var original = fixture.CreateOriginal(1);
-        for (var index = 0; index < PayjoinOwnershipLookupStateStore.MaxPasses; index++)
-        {
-            Assert.Null(await fixture.ResolveAsync(original));
-            fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
-        }
+        Assert.Null(await fixture.ResolveAsync(original));
         fixture.Handler.RespondAsync = fixture.DefaultResponseAsync;
         Assert.Null(await fixture.ResolveAsync(original));
         var replacement = fixture.CreateSession(fixture.Session.InvoiceId);
@@ -276,37 +340,54 @@ public class PayjoinOwnershipLookupBudgetTests
         Assert.NotNull(await fixture.ResolveAsync(original));
     }
 
-    [Fact]
-    public async Task FullCacheDoesNotEvictAndResetAnExistingRetryBudget()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FullCacheDoesNotEvictAndResetBackoffOrAnExhaustedBudget(bool budgetExceeded)
     {
         var logger = new RecordingLogger();
         using var fixture = new LookupFixture(logger: logger);
-        var original = fixture.CreateOriginal(0);
-        for (var pass = 0; pass < PayjoinOwnershipLookupStateStore.MaxPasses; pass++)
-            Assert.NotNull(await fixture.ResolveAsync(original));
+        var original = fixture.CreateOriginal(budgetExceeded ? PayjoinWalletOwnershipService.MaxRequestsPerPass / 2 : 1);
+        if (!budgetExceeded) fixture.Handler.RespondAsync = (_, _) => throw new HttpRequestException("Unavailable.");
+        var status = budgetExceeded ? PayjoinOwnershipLookupStatus.Exhausted : PayjoinOwnershipLookupStatus.Deferred;
+        Assert.Equal(status, (await fixture.LookupAsync(original)).Status);
+        fixture.Handler.RespondAsync = fixture.DefaultResponseAsync;
         for (var index = 1; index < PayjoinOwnershipLookupStateStore.MaxCachedProposals; index++)
-            Assert.NotNull(await fixture.ResolveAsync(original, fixture.CreateSession($"other-{index}")));
+            Assert.NotNull(await fixture.ResolveAsync(fixture.CreateOriginal(0), fixture.CreateSession($"other-{index}")));
         var requests = fixture.Handler.Calls.Count;
 
         Assert.Equal(PayjoinOwnershipLookupStatus.CapacityUnavailable, (await fixture.LookupAsync(original, fixture.CreateSession("over-capacity"))).Status);
         Assert.Equal(PayjoinOwnershipLookupStatus.CapacityUnavailable, (await fixture.LookupAsync(original, fixture.CreateSession("another-over-capacity"))).Status);
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original)).Status);
+        Assert.Equal(status, (await fixture.LookupAsync(original)).Status);
         Assert.Equal(requests, fixture.Handler.Calls.Count);
         Assert.Single(logger.Entries, entry => entry.EventId.Id == 3);
+        fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+        if (budgetExceeded)
+        {
+            Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original)).Status);
+            Assert.Equal(requests, fixture.Handler.Calls.Count);
+            Assert.Single(logger.Entries, entry => entry.EventId.Id == 2);
+        }
+        else
+        {
+            Assert.NotNull(await fixture.ResolveAsync(original));
+            Assert.Equal(requests + 3, fixture.Handler.Calls.Count);
+        }
     }
 
-    [Fact]
-    public async Task AdvancingAttemptVersionDoesNotResetTheGenerationBudget()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AdvancingAttemptVersionDoesNotResetBackoffOrTheGenerationBudget(bool budgetExceeded)
     {
         using var fixture = new LookupFixture();
         using var database = new SessionStoreFixture();
         var store = database.CreateStore(fixture.States);
         fixture.IsSessionCurrent = store.IsCurrentSession;
         var session = store.GetOrCreateSession("versioned", "receiver", "store", fixture.Clock.GetUtcNow().AddHours(1), ["bootstrap"]);
-        var original = fixture.CreateOriginal(1);
-        for (var pass = 0; pass < PayjoinOwnershipLookupStateStore.MaxPasses; pass++)
-            Assert.NotNull(await fixture.ResolveAsync(original, session));
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, session)).Status);
+        var original = fixture.CreateOriginal(budgetExceeded ? PayjoinWalletOwnershipService.MaxRequestsPerPass / 2 : 1);
+        Assert.Equal(budgetExceeded ? PayjoinOwnershipLookupStatus.Exhausted : PayjoinOwnershipLookupStatus.Ready,
+            (await fixture.LookupAsync(original, session)).Status);
         var requests = fixture.Handler.Calls.Count;
         using (var context = database.CreateDbContext())
         {
@@ -318,60 +399,69 @@ public class PayjoinOwnershipLookupBudgetTests
         Assert.Equal(session.SessionInstanceId, advanced.SessionInstanceId);
         Assert.Equal(session.AttemptVersion + 1, advanced.AttemptVersion);
 
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, advanced)).Status);
+        Assert.Equal(budgetExceeded ? PayjoinOwnershipLookupStatus.Exhausted : PayjoinOwnershipLookupStatus.Deferred,
+            (await fixture.LookupAsync(original, advanced)).Status);
         Assert.Equal(requests, fixture.Handler.Calls.Count);
+        if (!budgetExceeded)
+        {
+            fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+            Assert.NotNull(await fixture.ResolveAsync(original, advanced));
+        }
     }
 
     [Fact]
-    public async Task ThirdFullPassMaySucceedButAFourthPassCannotStart()
+    public async Task FullPassesRemainRetryableAfterTheThirdFailure()
     {
         using var fixture = new LookupFixture();
         var budget = PayjoinWalletOwnershipService.MaxRequestsPerPass;
         var original = fixture.CreateOriginal((budget - 1) / 2);
         fixture.MissingFunding.Add(original.InputOutpoints[0].Hash);
+        const int failedPasses = 4;
         fixture.Handler.RespondAsync = (request, token) => fixture.Handler.Calls.Count % budget == 0
-            && fixture.Handler.Calls.Count / budget < PayjoinOwnershipLookupStateStore.MaxPasses
+            && fixture.Handler.Calls.Count / budget <= failedPasses
                 ? throw new HttpRequestException("Temporary final-operation failure.")
                 : fixture.DefaultResponseAsync(request, token);
-        for (var pass = 0; pass < PayjoinOwnershipLookupStateStore.MaxPasses - 1; pass++)
+        for (var pass = 0; pass < failedPasses; pass++)
         {
             Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
             Assert.Equal((pass + 1) * budget, fixture.Handler.Calls.Count);
-            fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+            fixture.Clock.Advance(TimeSpan.FromSeconds(ExpectedBackoffSeconds[pass]));
         }
 
         Assert.Equal(PayjoinOwnershipLookupStatus.Ready, (await fixture.LookupAsync(original)).Status);
-        Assert.Equal(PayjoinOwnershipLookupStateStore.MaxPasses * budget, fixture.Handler.Calls.Count);
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original)).Status);
-        Assert.Equal(PayjoinOwnershipLookupStateStore.MaxPasses * budget, fixture.Handler.Calls.Count);
+        Assert.Equal((failedPasses + 1) * budget, fixture.Handler.Calls.Count);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
+        Assert.Equal((failedPasses + 1) * budget, fixture.Handler.Calls.Count);
+        fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.MaxRetryDelay);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Ready, (await fixture.LookupAsync(original)).Status);
+        Assert.Equal((failedPasses + 2) * budget, fixture.Handler.Calls.Count);
     }
 
     [Fact]
-    public async Task SuccessfulPassExhaustionIsLoggedOnceAcrossTicksAndConcurrentCalls()
+    public async Task SuccessfulPassesHaveCooldownWithoutExhaustionOrTickLogging()
     {
         var logger = new RecordingLogger();
         using var fixture = new LookupFixture(logger: logger);
         var original = fixture.CreateOriginal(1);
-        for (var pass = 0; pass < PayjoinOwnershipLookupStateStore.MaxPasses; pass++)
-            Assert.Equal(PayjoinOwnershipLookupStatus.Ready, (await fixture.LookupAsync(original)).Status);
-        Assert.Empty(logger.Entries);
-        var requests = fixture.Handler.Calls.Count;
-        var loaded = new TaskCompletionSource<PayjoinWalletOwnershipService.WalletContext?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.LoadWallet = () => loaded.Task;
-        var concurrent = Enumerable.Range(0, 16).Select(_ => fixture.LookupAsync(original)).ToArray();
-        loaded.SetResult(fixture.Wallet);
-        Assert.All(await Task.WhenAll(concurrent), result => Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, result.Status));
-        fixture.LoadWallet = null;
-        for (var tick = 0; tick < 3; tick++)
+        foreach (var delaySeconds in ExpectedBackoffSeconds)
         {
-            fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
-            Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original)).Status);
+            Assert.Equal(PayjoinOwnershipLookupStatus.Ready, (await fixture.LookupAsync(original)).Status);
+            var requests = fixture.Handler.Calls.Count;
+            var loaded = new TaskCompletionSource<PayjoinWalletOwnershipService.WalletContext?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            fixture.LoadWallet = () => loaded.Task;
+            var concurrent = Enumerable.Range(0, PayjoinReceiverSessionProcessor.MaxConcurrentReceiverSessions)
+                .Select(_ => fixture.LookupAsync(original)).ToArray();
+            loaded.SetResult(fixture.Wallet);
+            Assert.All(await Task.WhenAll(concurrent), result => Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, result.Status));
+            fixture.LoadWallet = null;
+            fixture.Clock.Advance(TimeSpan.FromSeconds(delaySeconds) - TimeSpan.FromMilliseconds(1));
+            Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
+            Assert.Equal(requests, fixture.Handler.Calls.Count);
+            fixture.Clock.Advance(TimeSpan.FromMilliseconds(1));
         }
-
-        Assert.Equal(requests, fixture.Handler.Calls.Count);
-        var entry = Assert.Single(logger.Entries);
-        Assert.Equal(LogLevel.Warning, entry.Level);
-        Assert.Equal(2, entry.EventId.Id);
+        Assert.NotNull(await fixture.ResolveAsync(original));
+        Assert.Equal((ExpectedBackoffSeconds.Length + 1) * 3, fixture.Handler.Calls.Count);
+        Assert.Empty(logger.Entries);
     }
 
     [Fact]
@@ -403,6 +493,106 @@ public class PayjoinOwnershipLookupBudgetTests
 
         Assert.Equal(sessions.Length * 3, fixture.Handler.Calls.Count);
         Assert.Equal(PayjoinOwnershipLookupStateStore.MaxConcurrentPasses, fixture.Handler.MaxActive);
+    }
+
+    [Fact]
+    public async Task BusySlotsDoNotStartOrIncreaseBackoff()
+    {
+        using var fixture = new LookupFixture();
+        var original = fixture.CreateOriginal(1);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        fixture.Handler.RespondAsync = async (request, token) =>
+        {
+            if (Interlocked.Increment(ref calls) == PayjoinOwnershipLookupStateStore.MaxConcurrentPasses) started.TrySetResult();
+            await release.Task.WaitAsync(token).ConfigureAwait(false);
+            return await fixture.DefaultResponseAsync(request, token).ConfigureAwait(false);
+        };
+        var running = Enumerable.Range(0, PayjoinOwnershipLookupStateStore.MaxConcurrentPasses)
+            .Select(index => fixture.LookupAsync(original, fixture.CreateSession($"running-{index}"))).ToArray();
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var waiting = fixture.CreateSession("waiting");
+        for (var tick = 0; tick < 10; tick++)
+            Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original, waiting)).Status);
+        Assert.Equal(PayjoinOwnershipLookupStateStore.MaxConcurrentPasses, fixture.Handler.Calls.Count);
+        release.TrySetResult();
+        Assert.All(await Task.WhenAll(running), result => Assert.Equal(PayjoinOwnershipLookupStatus.Ready, result.Status));
+        Assert.NotNull(await fixture.ResolveAsync(original, waiting));
+        var requests = fixture.Handler.Calls.Count;
+        Assert.Null(await fixture.ResolveAsync(original, waiting));
+        Assert.Equal(requests, fixture.Handler.Calls.Count);
+        fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.RetryDelay);
+        Assert.NotNull(await fixture.ResolveAsync(original, waiting));
+        Assert.Equal(requests + 3, fixture.Handler.Calls.Count);
+        Assert.Equal(0, fixture.Handler.Active);
+    }
+
+    [Fact]
+    public async Task RetryingOldProposalsStillAdmitALaterHealthyInvoiceInTheSameStore()
+    {
+        using var fixture = new LookupFixture(lookupTimeout: TimeSpan.FromMilliseconds(300));
+        using var database = new SessionStoreFixture();
+        var store = database.CreateStore(fixture.States);
+        var blockedCount = PayjoinReceiverSessionProcessor.MaxConcurrentReceiverSessions;
+        for (var index = 0; index < blockedCount; index++)
+            store.GetOrCreateSession($"blocked-{index}", string.Empty, "store", fixture.Clock.GetUtcNow().AddHours(1), ["bootstrap"]);
+        var blocked = fixture.CreateOriginal(1);
+        var healthy = fixture.CreateOriginal(1);
+        var blockedTransaction = blocked.InputOutpoints[0].Hash.ToString();
+        fixture.Handler.RespondAsync = async (request, token) =>
+        {
+            if (request.RequestUri!.AbsolutePath.Contains(blockedTransaction, StringComparison.Ordinal))
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            return await fixture.DefaultResponseAsync(request, token).ConfigureAwait(false);
+        };
+        var guard = new OwnershipGuard(fixture.Service, blocked, healthy);
+        var processor = new PayjoinReceiverSessionProcessor(store, guard, null!, null!, null!,
+            database.CreateBridgeService(), null!, null!, NullLogger<PayjoinReceiverSessionProcessor>.Instance);
+        var rounds = (blockedCount + PayjoinOwnershipLookupStateStore.MaxConcurrentPasses - 1)
+            / PayjoinOwnershipLookupStateStore.MaxConcurrentPasses;
+        const int retryCycles = 4;
+        for (var cycle = 0; cycle < retryCycles; cycle++)
+        {
+            for (var tick = 0; tick < rounds; tick++)
+                await processor.ProcessTickAsync(TestContext.Current.CancellationToken)
+                    .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.Equal((cycle + 1) * blockedCount,
+                fixture.Handler.Calls.Count(path => path.Contains(blockedTransaction, StringComparison.Ordinal)));
+            fixture.Clock.Advance(PayjoinOwnershipLookupStateStore.MaxRetryDelay);
+        }
+        store.GetOrCreateSession("healthy", string.Empty, "store", fixture.Clock.GetUtcNow().AddHours(1), ["bootstrap"]);
+        for (var tick = 0; tick <= rounds && !guard.HealthyCompleted; tick++)
+        {
+            await processor.ProcessTickAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            fixture.Clock.Advance(TimeSpan.FromSeconds(1));
+        }
+
+        Assert.True(guard.HealthyCompleted);
+        Assert.Equal(PayjoinOwnershipLookupStateStore.MaxConcurrentPasses, fixture.Handler.MaxActive);
+        Assert.Equal(0, fixture.Handler.Active);
+        Assert.Equal(blockedCount + 1, store.GetSessions().Count);
+    }
+
+    [Fact]
+    public async Task SessionExpiryStopsRetriesWithoutExtendingItsDeadline()
+    {
+        using var fixture = new LookupFixture();
+        var original = fixture.CreateOriginal(1);
+        fixture.Handler.RespondAsync = (_, _) => Task.FromResult(ServiceUnavailable());
+        for (var pass = 0; pass < 4; pass++)
+        {
+            Assert.Equal(PayjoinOwnershipLookupStatus.Deferred, (await fixture.LookupAsync(original)).Status);
+            fixture.Clock.Advance(TimeSpan.FromSeconds(ExpectedBackoffSeconds[pass]));
+        }
+        var requests = fixture.Handler.Calls.Count;
+        fixture.Clock.Advance(fixture.Session.MonitoringExpiresAt - fixture.Clock.GetUtcNow());
+        fixture.Handler.RespondAsync = fixture.DefaultResponseAsync;
+
+        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original)).Status);
+        Assert.Equal(requests, fixture.Handler.Calls.Count);
+        Assert.NotNull(await fixture.ResolveAsync(original, fixture.CreateSession(fixture.Session.InvoiceId)));
     }
 
     [Theory]
@@ -467,12 +657,16 @@ public class PayjoinOwnershipLookupBudgetTests
         Assert.NotEqual(old.SessionInstanceId, replacement.SessionInstanceId);
         Assert.NotNull(await fixture.ResolveAsync(original, replacement));
         Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, old)).Status);
-        for (var pass = 1; pass < PayjoinOwnershipLookupStateStore.MaxPasses; pass++)
+        foreach (var delaySeconds in ExpectedBackoffSeconds)
+        {
+            Assert.Null(await fixture.ResolveAsync(original, replacement));
+            fixture.Clock.Advance(TimeSpan.FromSeconds(delaySeconds));
             Assert.NotNull(await fixture.ResolveAsync(original, replacement));
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, replacement)).Status);
+            Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, old)).Status);
+        }
         var other = store.GetOrCreateSession("healthy", "receiver", "another-store", fixture.Clock.GetUtcNow().AddHours(1), ["bootstrap"]);
         Assert.NotNull(await fixture.ResolveAsync(original, other));
-        Assert.Equal(3 * (PayjoinOwnershipLookupStateStore.MaxPasses + 1), fixture.Handler.Calls.Count);
+        Assert.Equal(3 * (ExpectedBackoffSeconds.Length + 2), fixture.Handler.Calls.Count);
     }
 
     [Fact]
@@ -514,9 +708,13 @@ public class PayjoinOwnershipLookupBudgetTests
         Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await oldLookup.ConfigureAwait(true)).Status);
         Assert.Equal(3, fixture.Handler.Calls.Count);
         fixture.States.Forget(PayjoinOwnershipSessionKey.From(fixture.Session));
-        for (var pass = 1; pass < PayjoinOwnershipLookupStateStore.MaxPasses; pass++)
+        foreach (var delaySeconds in ExpectedBackoffSeconds)
+        {
+            Assert.Null(await fixture.ResolveAsync(original, replacement));
+            fixture.Clock.Advance(TimeSpan.FromSeconds(delaySeconds));
             Assert.NotNull(await fixture.ResolveAsync(original, replacement));
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, replacement)).Status);
+        }
+        Assert.Equal(3 * (ExpectedBackoffSeconds.Length + 1), fixture.Handler.Calls.Count);
     }
 
     [Fact]
@@ -545,6 +743,11 @@ public class PayjoinOwnershipLookupBudgetTests
         Assert.NotNull(await fixture.ResolveAsync(original, fixture.CreateSession("healthy")));
         Assert.Equal(0, fixture.Handler.Active);
     }
+
+    private static HttpResponseMessage ServiceUnavailable() => new(HttpStatusCode.ServiceUnavailable)
+    {
+        Content = new StringContent("{\"httpCode\":503,\"code\":\"unavailable\",\"message\":\"Indexer is starting.\"}", Encoding.UTF8, "application/json")
+    };
 
     internal sealed class LookupFixture : IDisposable
     {

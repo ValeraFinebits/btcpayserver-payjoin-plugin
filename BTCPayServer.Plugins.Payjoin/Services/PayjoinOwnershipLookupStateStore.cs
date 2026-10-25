@@ -36,10 +36,10 @@ internal sealed record PayjoinOwnershipProposalKey(
 
 internal sealed class PayjoinOwnershipLookupStateStore
 {
-    internal const int MaxPasses = 3;
     internal const int MaxConcurrentPasses = 4;
     internal const int MaxCachedProposals = 1024;
     internal static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(30);
+    internal static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 
     private readonly object _sync = new();
     private readonly TimeProvider _clock;
@@ -66,12 +66,11 @@ internal sealed class PayjoinOwnershipLookupStateStore
     }
 
     internal PayjoinOwnershipLookupStatus TryBegin(LookupPass pass, PayjoinOwnershipProposalKey key,
-        out ProposalLookupState? state, out bool newlyExhausted)
+        out ProposalLookupState? state)
     {
         lock (_sync)
         {
             state = null;
-            newlyExhausted = false;
             PruneExpired();
             if (IsRetiredCore(pass)) return PayjoinOwnershipLookupStatus.Exhausted;
             _proposals.TryGetValue(key, out var existing);
@@ -79,12 +78,6 @@ internal sealed class PayjoinOwnershipLookupStateStore
             {
                 if (existing.Running) return PayjoinOwnershipLookupStatus.Deferred;
                 if (existing.Exhausted) return PayjoinOwnershipLookupStatus.Exhausted;
-                if (existing.PassesStarted >= MaxPasses)
-                {
-                    existing.Exhausted = true;
-                    newlyExhausted = true;
-                    return PayjoinOwnershipLookupStatus.Exhausted;
-                }
                 if (existing.RetryAfter > _clock.GetUtcNow()) return PayjoinOwnershipLookupStatus.Deferred;
             }
             if (_runningPasses >= MaxConcurrentPasses) return PayjoinOwnershipLookupStatus.Deferred;
@@ -95,7 +88,6 @@ internal sealed class PayjoinOwnershipLookupStateStore
                 _proposals.Add(key, existing);
             }
             existing.Running = true;
-            existing.PassesStarted++;
             _runningPasses++;
             pass.Proposal = existing;
             state = existing;
@@ -109,12 +101,11 @@ internal sealed class PayjoinOwnershipLookupStateStore
         {
             if (IsRetiredCore(pass)) return PayjoinOwnershipLookupStatus.Exhausted;
             var state = pass.Proposal!;
-            if (budgetExceeded || state.PassesStarted >= MaxPasses)
+            if (budgetExceeded)
             {
                 state.Exhausted = true;
                 return PayjoinOwnershipLookupStatus.Exhausted;
             }
-            state.RetryAfter = _clock.GetUtcNow() + RetryDelay;
             return PayjoinOwnershipLookupStatus.Deferred;
         }
     }
@@ -163,6 +154,12 @@ internal sealed class PayjoinOwnershipLookupStateStore
             {
                 pass.Proposal.Running = false;
                 _runningPasses--;
+                if (!IsRetiredCore(pass) && !pass.Proposal.Exhausted)
+                {
+                    pass.Proposal.RetryAfter = _clock.GetUtcNow() + pass.Proposal.NextRetryDelay;
+                    pass.Proposal.NextRetryDelay = TimeSpan.FromSeconds(Math.Min(
+                        pass.Proposal.NextRetryDelay.TotalSeconds * 2, MaxRetryDelay.TotalSeconds));
+                }
             }
             if (_proposals.Count < MaxCachedProposals && _calls.Count < MaxCachedProposals) _capacityReported = false;
         }
@@ -190,8 +187,8 @@ internal sealed class PayjoinOwnershipLookupStateStore
         internal DateTimeOffset ExpiresAt { get; } = expiresAt;
         internal bool Running { get; set; }
         internal bool Exhausted { get; set; }
-        internal int PassesStarted { get; set; }
         internal DateTimeOffset RetryAfter { get; set; }
+        internal TimeSpan NextRetryDelay { get; set; } = RetryDelay;
         internal HashSet<OutPoint> OwnedInputs { get; } = new();
         internal HashSet<Script> OwnedScripts { get; } = new();
     }
