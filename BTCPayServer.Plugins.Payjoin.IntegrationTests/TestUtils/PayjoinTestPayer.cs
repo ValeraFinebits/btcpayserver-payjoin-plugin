@@ -14,6 +14,7 @@ internal sealed class PayjoinTestPayer
 {
     private static readonly TimeSpan ProposalPollDelay = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan RelayRequestTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ProposalPollRequestTimeout = TimeSpan.FromSeconds(45);
     private const int MaxProposalPollAttempts = 100;
     private const int RecommendedFeeContributionRate = 250;
     private const decimal ExplicitFeeRateSatoshiPerByte = 1.0m;
@@ -24,6 +25,7 @@ internal sealed class PayjoinTestPayer
     private readonly BTCPayNetwork _network;
     private readonly ExplorerClient _explorerClient;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly PayjoinTestRelaySender _relaySender;
     private readonly BTCPayWalletProvider _walletProvider;
     private readonly bool _useReservedSenderChangeAddress;
     private readonly bool _mineBlockAfterBroadcast;
@@ -53,6 +55,7 @@ internal sealed class PayjoinTestPayer
         _network = network;
         _explorerClient = tester.PayTester.GetService<ExplorerClientProvider>().GetExplorerClient(network);
         _httpClientFactory = tester.PayTester.GetService<IHttpClientFactory>();
+        _relaySender = new PayjoinTestRelaySender(payer.StoreId, ProposalPollDelay);
         _walletProvider = tester.PayTester.GetService<BTCPayWalletProvider>();
         _useReservedSenderChangeAddress = useReservedSenderChangeAddress;
         _mineBlockAfterBroadcast = mineBlockAfterBroadcast;
@@ -261,6 +264,8 @@ internal sealed class PayjoinTestPayer
             ohttpRelayUrls,
             relayUrl => withReplyKey.CreateV2PostRequest(relayUrl.ToString()),
             requestResponse => requestResponse.Request,
+            RelayRequestTimeout,
+            retryTransientFailures: false,
             cancellationToken).ConfigureAwait(false);
         using var postRequestContext = postContext;
         using var withReplyTransition = withReplyKey.ProcessResponse(postResponse, postContext.OhttpCtx);
@@ -315,6 +320,8 @@ internal sealed class PayjoinTestPayer
                     ohttpRelayUrls,
                     relayUrl => current.CreatePollRequest(relayUrl.ToString()),
                     requestResponse => requestResponse.Request,
+                    ProposalPollRequestTimeout,
+                    retryTransientFailures: true,
                     cancellationToken).ConfigureAwait(false);
                 using var pollRequestContext = pollRequest;
                 using var pollTransition = current.ProcessResponse(pollResponse, pollRequest.OhttpCtx);
@@ -356,45 +363,18 @@ internal sealed class PayjoinTestPayer
         return proposalPsbtBase64;
     }
 
-    private async Task<(byte[] Response, TContext Context)> SendViaRelaysAsync<TContext>(
+    private Task<(byte[] Response, TContext Context)> SendViaRelaysAsync<TContext>(
         IReadOnlyList<SystemUri> relayUrls,
         Func<SystemUri, TContext> createContext,
         Func<TContext, Request> getRequest,
+        TimeSpan requestTimeout,
+        bool retryTransientFailures,
         CancellationToken cancellationToken)
         where TContext : IDisposable
     {
-        ArgumentNullException.ThrowIfNull(relayUrls);
-        ArgumentNullException.ThrowIfNull(createContext);
-        ArgumentNullException.ThrowIfNull(getRequest);
-
-        Exception? lastError = null;
-        foreach (var relayUrl in relayUrls)
-        {
-            var context = createContext(relayUrl);
-            try
-            {
-                var request = getRequest(context);
-                var response = await SendRequestAsync(request, cancellationToken).ConfigureAwait(false);
-                return (response, context);
-            }
-            catch (HttpRequestException ex)
-            {
-                context.Dispose();
-                lastError = ex;
-            }
-            catch (InvalidOperationException ex)
-            {
-                context.Dispose();
-                lastError = ex;
-            }
-            catch
-            {
-                context.Dispose();
-                throw;
-            }
-        }
-
-        throw new InvalidOperationException($"All configured OHTTP relays failed for payer store '{_payer.StoreId}'. LastError='{lastError?.Message}'", lastError);
+        return _relaySender.SendAsync(relayUrls, createContext,
+            (context, token) => SendRequestAsync(getRequest(context), requestTimeout, token),
+            retryTransientFailures, cancellationToken);
     }
 
     private InvalidOperationException CreateSenderResponseFailure(SenderPersistedException ex, global::Payjoin.ResponseException senderResponse)
@@ -425,7 +405,7 @@ internal sealed class PayjoinTestPayer
         };
     }
 
-    private async Task<byte[]> SendRequestAsync(Request request, CancellationToken cancellationToken)
+    private async Task<byte[]> SendRequestAsync(Request request, TimeSpan requestTimeout, CancellationToken cancellationToken)
     {
         using var message = new HttpRequestMessage(HttpMethod.Post, request.Url)
         {
@@ -435,22 +415,12 @@ internal sealed class PayjoinTestPayer
 
         var client = _httpClientFactory.CreateClient(nameof(PayjoinTestPayer));
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(RelayRequestTimeout);
+        timeoutCts.CancelAfter(requestTimeout);
 
-        HttpResponseMessage response;
-        byte[] responseBody;
         try
         {
-            response = await client.SendAsync(message, timeoutCts.Token).ConfigureAwait(false);
-            responseBody = await response.Content.ReadAsByteArrayAsync(timeoutCts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new InvalidOperationException($"Payjoin HTTP request timed out after {RelayRequestTimeout.TotalSeconds:0} seconds. RequestUrl='{request.Url}', RequestContentType='{request.ContentType}'.", ex);
-        }
-
-        using (response)
-        {
+            using var response = await client.SendAsync(message, timeoutCts.Token).ConfigureAwait(false);
+            var responseBody = await response.Content.ReadAsByteArrayAsync(timeoutCts.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 throw CreateHttpRequestFailure(request, response, responseBody);
@@ -458,15 +428,20 @@ internal sealed class PayjoinTestPayer
 
             return responseBody;
         }
+        catch (OperationCanceledException ex) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new HttpRequestException($"Payjoin HTTP request timed out after {requestTimeout.TotalSeconds:0} seconds. RequestUrl='{request.Url}', RequestContentType='{request.ContentType}'.", ex);
+        }
     }
 
-    private static InvalidOperationException CreateHttpRequestFailure(Request request, HttpResponseMessage response, byte[] responseBody)
+    private static HttpRequestException CreateHttpRequestFailure(Request request, HttpResponseMessage response, byte[] responseBody)
     {
         var responseContentType = response.Content.Headers.ContentType?.ToString() ?? "<none>";
         var diagnosticBody = FormatResponseBody(responseBody, responseContentType);
 
-        return new InvalidOperationException(
-            $"Payjoin HTTP request failed. RequestUrl='{request.Url}', RequestContentType='{request.ContentType}', ResponseStatusCode={(int)response.StatusCode} ({response.StatusCode}), ResponseContentType='{responseContentType}', ResponseBody='{diagnosticBody}'.");
+        return new HttpRequestException(
+            $"Payjoin HTTP request failed. RequestUrl='{request.Url}', RequestContentType='{request.ContentType}', ResponseStatusCode={(int)response.StatusCode} ({response.StatusCode}), ResponseContentType='{responseContentType}', ResponseBody='{diagnosticBody}'.",
+            null, response.StatusCode);
     }
 
     private static string FormatResponseBody(byte[] responseBody, string responseContentType)
