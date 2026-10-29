@@ -114,7 +114,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
     public async Task ConcurrentReceiverSessionsAllowOnlyOneSuccessfulPaymentWhenSingleReceiverInputExists()
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester(newDb: true);
+        using var tester = CreateServerTester(newDb: true, timeout: PayjoinIntegrationTestSupport.TestTimeout);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
         var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
@@ -140,28 +140,29 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceIdOne, cts.Token).ConfigureAwait(true);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceIdTwo, cts.Token).ConfigureAwait(true);
 
-        var paymentTaskOne = PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
-            tester,
-            payerOne,
-            network,
-            merchant.StoreId,
-            new Uri(bip21ResponseOne.Bip21, UriKind.Absolute),
-            preProposalPollDelay: null,
-            mineBlockAfterBroadcast: false,
-            cts.Token);
-        var paymentTaskTwo = PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
-            tester,
-            payerTwo,
-            network,
-            merchant.StoreId,
-            new Uri(bip21ResponseTwo.Bip21, UriKind.Absolute),
-            preProposalPollDelay: null,
-            mineBlockAfterBroadcast: false,
-            cts.Token);
+        var payments = new (string InvoiceId, Func<CancellationToken, Task<string>> PayAsync)[]
+        {
+            (invoiceIdOne, token => PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
+                tester,
+                payerOne,
+                network,
+                merchant.StoreId,
+                new Uri(bip21ResponseOne.Bip21, UriKind.Absolute),
+                preProposalPollDelay: null,
+                mineBlockAfterBroadcast: false,
+                token)),
+            (invoiceIdTwo, token => PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
+                tester,
+                payerTwo,
+                network,
+                merchant.StoreId,
+                new Uri(bip21ResponseTwo.Bip21, UriKind.Absolute),
+                preProposalPollDelay: null,
+                mineBlockAfterBroadcast: false,
+                token))
+        };
 
-        var paymentResults = await Task.WhenAll(
-            CapturePaymentOutcomeAsync(paymentTaskOne),
-            CapturePaymentOutcomeAsync(paymentTaskTwo)).ConfigureAwait(true);
+        var paymentResults = await RunContentionPaymentsAsync(tester, payments, expectedSuccessCount: 1, cts.Token).ConfigureAwait(true);
 
         Assert.Single(paymentResults, result => result.Succeeded);
         Assert.Single(paymentResults, result => !result.Succeeded);
@@ -197,7 +198,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         int concurrentSessionCount)
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester($"{nameof(ConcurrentReceiverSessionsUnderContentionRespectAvailableReceiverInputs)}-{receiverInputCount}-{concurrentSessionCount}", newDb: true);
+        using var tester = CreateServerTester($"{nameof(ConcurrentReceiverSessionsUnderContentionRespectAvailableReceiverInputs)}-{receiverInputCount}-{concurrentSessionCount}", newDb: true, timeout: PayjoinIntegrationTestSupport.TestTimeout);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
         var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
@@ -223,28 +224,26 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceContext.InvoiceId, cts.Token).ConfigureAwait(true);
         }
 
-        var paymentTasks = invoiceContexts
-            .Zip(payers, (invoiceContext, payer) => PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
-                tester,
-                payer,
-                network,
-                merchant.StoreId,
-                new Uri(invoiceContext.Bip21Response.Bip21, UriKind.Absolute),
-                TimeSpan.FromSeconds(5),
-                mineBlockAfterBroadcast: false,
-                cts.Token))
+        var payments = invoiceContexts
+            .Zip(payers, (invoiceContext, payer) =>
+            {
+                Func<CancellationToken, Task<string>> payAsync = token => PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
+                    tester,
+                    payer,
+                    network,
+                    merchant.StoreId,
+                    new Uri(invoiceContext.Bip21Response.Bip21, UriKind.Absolute),
+                    TimeSpan.FromSeconds(5),
+                    mineBlockAfterBroadcast: false,
+                    token);
+                return (invoiceContext.InvoiceId, PayAsync: payAsync);
+            })
             .ToArray();
 
-        var paymentResults = await Task.WhenAll(paymentTasks.Select(CapturePaymentOutcomeAsync)).ConfigureAwait(true);
+        var expectedSuccessCount = Math.Min(receiverInputCount, concurrentSessionCount);
+        var paymentResults = await RunContentionPaymentsAsync(tester, payments, expectedSuccessCount, cts.Token).ConfigureAwait(true);
         await MineSingleBlockAsync(tester, network, cts.Token).ConfigureAwait(true);
 
-        var expectedSuccessCount = Math.Min(receiverInputCount, concurrentSessionCount);
-        var actualSuccessCount = paymentResults.Count(result => result.Succeeded);
-        if (actualSuccessCount != expectedSuccessCount)
-        {
-            var diagnostics = await DescribeReceiverDiagnosticsAsync(tester, invoiceContexts.Select(invoiceContext => invoiceContext.InvoiceId)).ConfigureAwait(true);
-            Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{diagnostics}");
-        }
         Assert.Equal(paymentResults.Length - expectedSuccessCount, paymentResults.Count(result => !result.Succeeded));
 
         var successfulIndexes = paymentResults
@@ -280,7 +279,7 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
         int concurrentSessionCount)
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
-        using var tester = CreateServerTester($"{nameof(ConcurrentContentionDoesNotPoisonSubsequentPayjoinBatch)}-{receiverInputCount}-{concurrentSessionCount}", newDb: true);
+        using var tester = CreateServerTester($"{nameof(ConcurrentContentionDoesNotPoisonSubsequentPayjoinBatch)}-{receiverInputCount}-{concurrentSessionCount}", newDb: true, timeout: PayjoinIntegrationTestSupport.TestTimeout);
         await tester.StartAsync().WaitAsync(cts.Token).ConfigureAwait(true);
 
         var network = tester.NetworkProvider.GetNetwork<BTCPayNetwork>(PayjoinConstants.BitcoinCode);
@@ -327,18 +326,38 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             secondWave.SuccessfulPaymentCount);
     }
 
-    private static Task<PaymentOutcome> CapturePaymentOutcomeAsync(Task<string> paymentTask)
+    private static async Task<PaymentOutcome[]> RunContentionPaymentsAsync(
+        ServerTester tester,
+        IReadOnlyList<(string InvoiceId, Func<CancellationToken, Task<string>> PayAsync)> payments,
+        int expectedSuccessCount,
+        CancellationToken cancellationToken)
     {
-        return paymentTask.ContinueWith(completedTask =>
+        var invoiceIds = payments.Select(payment => payment.InvoiceId).ToArray();
+        var sessionStore = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
+        PaymentOutcome[] paymentResults;
+        try
         {
-            return completedTask.Status switch
-            {
-                TaskStatus.RanToCompletion => new PaymentOutcome(true, completedTask.Result, null),
-                TaskStatus.Faulted => new PaymentOutcome(false, null, completedTask.Exception?.GetBaseException() ?? new InvalidOperationException("Competing payment failed without an observable exception.")),
-                TaskStatus.Canceled => new PaymentOutcome(false, null, new TaskCanceledException(completedTask)),
-                _ => new PaymentOutcome(false, null, new InvalidOperationException($"Unexpected payment task status '{completedTask.Status}'."))
-            };
-        }, TaskScheduler.Default);
+            paymentResults = await ContentionPaymentBatch.RunAsync(
+                payments,
+                expectedSuccessCount,
+                invoiceId => sessionStore.TryGetSession(invoiceId, out _),
+                cancellationToken).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
+        {
+            var diagnostics = await DescribeReceiverDiagnosticsAsync(tester, invoiceIds).ConfigureAwait(true);
+            Assert.Fail($"Contention payments exceeded the test cancellation budget.{Environment.NewLine}{exception}{Environment.NewLine}{diagnostics}");
+            throw;
+        }
+
+        var actualSuccessCount = paymentResults.Count(result => result.Succeeded);
+        if (actualSuccessCount != expectedSuccessCount)
+        {
+            var diagnostics = await DescribeReceiverDiagnosticsAsync(tester, invoiceIds).ConfigureAwait(true);
+            Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{ContentionPaymentBatch.Describe(invoiceIds, paymentResults)}{Environment.NewLine}{diagnostics}");
+        }
+
+        return paymentResults;
     }
 
     private static async Task MineSingleBlockAsync(ServerTester tester, BTCPayNetwork network, CancellationToken cancellationToken)
@@ -369,28 +388,26 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, invoiceContext.InvoiceId, cancellationToken).ConfigureAwait(true);
         }
 
-        var paymentTasks = invoiceContexts
-            .Zip(payers, (invoiceContext, payer) => PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
-                tester,
-                payer,
-                network,
-                merchant.StoreId,
-                new Uri(invoiceContext.Bip21Response.Bip21, UriKind.Absolute),
-                TimeSpan.FromSeconds(5),
-                mineBlockAfterBroadcast: false,
-                cancellationToken))
+        var payments = invoiceContexts
+            .Zip(payers, (invoiceContext, payer) =>
+            {
+                Func<CancellationToken, Task<string>> payAsync = token => PayjoinIntegrationTestSupport.PayInvoiceViaExternalPayjoinPayerAsync(
+                    tester,
+                    payer,
+                    network,
+                    merchant.StoreId,
+                    new Uri(invoiceContext.Bip21Response.Bip21, UriKind.Absolute),
+                    TimeSpan.FromSeconds(5),
+                    mineBlockAfterBroadcast: false,
+                    token);
+                return (invoiceContext.InvoiceId, PayAsync: payAsync);
+            })
             .ToArray();
 
-        var paymentResults = await Task.WhenAll(paymentTasks.Select(CapturePaymentOutcomeAsync)).ConfigureAwait(true);
+        var expectedSuccessCount = Math.Min(availableReceiverInputCount, concurrentSessionCount);
+        var paymentResults = await RunContentionPaymentsAsync(tester, payments, expectedSuccessCount, cancellationToken).ConfigureAwait(true);
         await MineSingleBlockAsync(tester, network, cancellationToken).ConfigureAwait(true);
 
-        var expectedSuccessCount = Math.Min(availableReceiverInputCount, concurrentSessionCount);
-        var actualSuccessCount = paymentResults.Count(result => result.Succeeded);
-        if (actualSuccessCount != expectedSuccessCount)
-        {
-            var diagnostics = await DescribeReceiverDiagnosticsAsync(tester, invoiceContexts.Select(invoiceContext => invoiceContext.InvoiceId)).ConfigureAwait(true);
-            Assert.Fail($"Expected {expectedSuccessCount} successful payjoin payments but observed {actualSuccessCount}.{Environment.NewLine}{diagnostics}");
-        }
         Assert.Equal(paymentResults.Length - expectedSuccessCount, paymentResults.Count(result => !result.Succeeded));
 
         var successfulIndexes = paymentResults
@@ -484,8 +501,6 @@ public class PayjoinPluginConcurrencyIntegrationTests : UnitTestBase
             Assert.NotEmpty(session.GetEvents());
         }
     }
-
-    private sealed record PaymentOutcome(bool Succeeded, string? TransactionId, Exception? Exception);
 
     private sealed record ContentionWaveResult(int SuccessfulPaymentCount);
 }
