@@ -1,22 +1,25 @@
-﻿using BTCPayServer.Models.InvoicingModels;
+using BTCPayServer.Models.InvoicingModels;
 using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
 using BTCPayServer.Logging;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Plugins.Payjoin.Models;
-using BTCPayServer.Services;
 using BTCPayServer.Services.Invoices;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.Abstractions;
+using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.Routing;
+using Microsoft.AspNetCore.Routing;
 using NBXplorer;
 using NBXplorer.DerivationStrategy;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using NSubstitute;
 using BTCPayServer.Plugins.Payjoin.Services;
 using NBitcoin;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests;
@@ -30,7 +33,7 @@ public class PayjoinCheckoutModelAssemblyTests
     private static readonly string ReceiverAddress = CreateRegtestAddress();
     private static readonly string Destination = ReceiverAddress;
     private static readonly string PayjoinUri = $"bitcoin:{ReceiverAddress}?amount=0.1&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj";
-    private static readonly string PlainUrl = $"bitcoin:{ReceiverAddress}?amount=0.10000000&lightning=lnbcrt123";
+    private static readonly string PlainUrl = $"bitcoin:{ReceiverAddress}?amount=0.10000000&pj=http://localhost/BTC/pj&pjos=1&ark=Mixed%2fCase&lightning=lnbcrt123&label=Store%20Name&message=Order%2f123&pop=https%3a%2f%2fexample.com%2fproof&custom=Keep%2fCase";
 
     private static string CreateRegtestAddress()
     {
@@ -84,6 +87,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var method = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
         var handler = Substitute.For<IPaymentMethodHandler>();
         handler.PaymentMethodId.Returns(method);
+        ((IHandler<PaymentMethodId>)handler).Id.Returns(method);
         handler.Serializer.Returns(serializer);
         Exception? profileError = null;
         handler.ParsePaymentMethodConfig(Arg.Any<JToken>()).Returns(call =>
@@ -97,19 +101,21 @@ public class PayjoinCheckoutModelAssemblyTests
         var invoice = new InvoiceEntity { Id = InvoiceId, StoreId = store.Id, Status = InvoiceStatus.New, Currency = "BTC", Price = DueBtc };
         var prompt = new PaymentPrompt { Currency = "BTC", Destination = Destination, Divisibility = 8, Details = new JObject() };
         invoice.SetPaymentPrompt(method, prompt);
+        invoice.UpdateTotals();
         var urls = Substitute.For<IUrlHelper>();
         urls.Action(Arg.Any<UrlActionContext>()).Returns(PaymentUrlEndpoint);
-        var link = Substitute.For<IPaymentLinkExtension>();
-        link.PaymentMethodId.Returns(method);
-        link.GetPaymentLink(Arg.Any<PaymentPrompt>(), Arg.Any<IUrlHelper>()).Returns(PlainUrl);
         var logger = Substitute.For<ILogger<PayjoinBitcoinCheckoutModelExtension>>();
         logger.IsEnabled(Arg.Any<LogLevel>()).Returns(true);
-        var extension = new PayjoinBitcoinCheckoutModelExtension(networks, [link], new DisplayFormatter(null!), reader, logger);
+        var handlers = new PaymentMethodHandlerDictionary([handler]);
+        var extension = new PayjoinBitcoinCheckoutModelExtension(networks, handlers, reader, logger);
         CheckoutModel Render()
         {
             var model = CreateModel();
+            model.Status = "New";
             model.Address = Destination;
             extension.ModifyCheckoutModel(new CheckoutModelContext(model, store, blob, invoice, urls, prompt, handler));
+            var action = new ActionContext(new DefaultHttpContext(), new RouteData(), new ActionDescriptor());
+            extension.OnResultExecuting(new ResultExecutingContext(action, [], new JsonResult(model), new object()));
             return model;
         }
 
@@ -134,10 +140,11 @@ public class PayjoinCheckoutModelAssemblyTests
             var rendered = Render();
             Assert.Equal(bootstrap, rendered.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinV2EnabledKey].ToObject<bool>());
             Assert.Equal(publish, HasPayjoinUrl(rendered));
+            Assert.Equal(bootstrap && !publish, rendered.AdditionalData[PayjoinBitcoinCheckoutModelExtension.CanBootstrapKey].ToObject<bool>());
             Assert.Equal(PlainUrl, rendered.InvoiceBitcoinUrl);
             Assert.Equal(plainQr, rendered.InvoiceBitcoinUrlQR);
             Assert.Equal(PlainUrl, rendered.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey].ToObject<string>());
-            Assert.Equal(plainQr, rendered.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlQrKey].ToObject<string>());
+            Assert.Equal(PlainUrl, rendered.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlQrKey].ToObject<string>());
             Assert.Equal(PaymentUrlEndpoint, rendered.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinPaymentUrlEndpointKey].ToObject<string>());
             if (failure is "json" or "format")
             {
@@ -162,7 +169,7 @@ public class PayjoinCheckoutModelAssemblyTests
         Assert.Equal(enabled, HasPayjoinUrl(recovered));
         if (enabled)
         {
-            Assert.Equal(PayjoinBip21.MergePayjoinIntoPaymentUrl(PlainUrl, PayjoinUri),
+            Assert.Equal(PayjoinUri,
                 recovered.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey].ToObject<string>());
         }
         Assert.True(sessions.TryGetSession(InvoiceId, out var restored));
@@ -179,11 +186,15 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, CreateReaderWithServableSession(fixture));
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.Equal(
-            $"bitcoin:{ReceiverAddress}?amount=0.10000000&pjos=0&pj=https%3A%2F%2Fexample.com%2Fpj&lightning=lnbcrt123",
+            PayjoinUri,
             model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlKey].ToObject<string>());
+        Assert.Equal(PayjoinUri, model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinBitcoinUrlQrKey].Value<string>());
+        Assert.Equal(PlainUrl, model.InvoiceBitcoinUrl);
+        Assert.Equal(PlainUrl, model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlKey].Value<string>());
+        Assert.Equal(PlainUrl, model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PlainBitcoinUrlQrKey].Value<string>());
         Assert.True(model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinV2EnabledKey].ToObject<bool>());
     }
 
@@ -194,7 +205,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, false, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, CreateReaderWithServableSession(fixture));
+            model, false, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.False(HasPayjoinUrl(model));
         Assert.False(model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.PayjoinV2EnabledKey].ToObject<bool>());
@@ -210,7 +221,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, null, InvoiceId, Destination, DueBtc, CreateReaderWithServableSession(fixture));
+            model, true, null, InvoiceId, Destination, DueBtc, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.Empty(model.AdditionalData);
     }
@@ -224,7 +235,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, Destination, due, CreateReaderWithServableSession(fixture));
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, due, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.False(HasPayjoinUrl(model));
     }
@@ -236,7 +247,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, null, DueBtc, CreateReaderWithServableSession(fixture));
+            model, true, PaymentUrlEndpoint, InvoiceId, null, DueBtc, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.False(HasPayjoinUrl(model));
     }
@@ -248,7 +259,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, Destination, null, CreateReaderWithServableSession(fixture));
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, null, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.False(HasPayjoinUrl(model));
     }
@@ -260,7 +271,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, new PayjoinSessionUriReader(fixture.CreateStore()));
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, Network.RegTest, new PayjoinSessionUriReader(fixture.CreateStore()));
 
         Assert.False(HasPayjoinUrl(model));
         Assert.Equal(
@@ -276,7 +287,7 @@ public class PayjoinCheckoutModelAssemblyTests
         model.InvoiceBitcoinUrl = $"bitcoin:{ReceiverAddress}?amount=0.06000000&lightning=lnbcrt123";
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, Destination, 0.06m, CreateReaderWithServableSession(fixture));
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, 0.06m, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.False(HasPayjoinUrl(model));
     }
@@ -291,13 +302,13 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, new PayjoinSessionUriReader(fixture.CreateStore()));
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, Network.RegTest, new PayjoinSessionUriReader(fixture.CreateStore()));
 
         Assert.False(HasPayjoinUrl(model));
     }
 
     [Fact]
-    public void MergedUrlTheParserRejectsIsNotPublishedEvenThoughItCarriesAPjSegment()
+    public void InvalidBaseAddressPublishesNoPayjoinUrl()
     {
         using var fixture = new SessionStoreFixture();
         var model = new CheckoutModel
@@ -307,12 +318,8 @@ public class PayjoinCheckoutModelAssemblyTests
         };
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, CreateReaderWithServableSession(fixture));
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, Network.RegTest, CreateReaderWithServableSession(fixture));
 
-        Assert.Contains(
-            "pj=",
-            PayjoinBip21.MergePayjoinIntoPaymentUrl(model.InvoiceBitcoinUrl, PayjoinUri),
-            StringComparison.Ordinal);
         Assert.False(HasPayjoinUrl(model));
     }
 
@@ -323,7 +330,7 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = new CheckoutModel { InvoiceBitcoinUrl = string.Empty, InvoiceBitcoinUrlQR = string.Empty };
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, CreateReaderWithServableSession(fixture));
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.False(HasPayjoinUrl(model));
     }
@@ -335,8 +342,24 @@ public class PayjoinCheckoutModelAssemblyTests
         var model = CreateModel();
 
         PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
-            model, true, PaymentUrlEndpoint, InvoiceId, "bcrt1qsomewhereelse", DueBtc, CreateReaderWithServableSession(fixture));
+            model, true, PaymentUrlEndpoint, InvoiceId, "bcrt1qsomewhereelse", DueBtc, Network.RegTest, CreateReaderWithServableSession(fixture));
 
         Assert.False(HasPayjoinUrl(model));
+    }
+
+    [Theory]
+    [InlineData("amount=0.2")]
+    [InlineData("amount=0.1&amount=0.1")]
+    [InlineData("amount=0.1&req-unknown=1")]
+    [InlineData("amount=0.1#fragment")]
+    public void IncompatibleUnifiedPaymentNeitherBootstrapsNorPublishesASession(string query)
+    {
+        using var fixture = new SessionStoreFixture();
+        var model = CreateModel();
+        model.InvoiceBitcoinUrl = $"bitcoin:{ReceiverAddress}?{query}";
+        PayjoinBitcoinCheckoutModelExtension.ApplyPayjoinCheckoutModel(
+            model, true, PaymentUrlEndpoint, InvoiceId, Destination, DueBtc, Network.RegTest, CreateReaderWithServableSession(fixture));
+        Assert.False(HasPayjoinUrl(model));
+        Assert.False(model.AdditionalData[PayjoinBitcoinCheckoutModelExtension.CanBootstrapKey].Value<bool>());
     }
 }
