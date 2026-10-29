@@ -20,6 +20,541 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 public class PayjoinReceiverRelayFlowTests
 {
     [Theory]
+    [InlineData("UncheckedOriginalPayload", false, false)]
+    [InlineData("UncheckedOriginalPayload", true, false)]
+    [InlineData("WantsOutputs", false, false)]
+    [InlineData("WantsOutputs", true, false)]
+    [InlineData("WantsFeeRange", false, false)]
+    [InlineData("WantsFeeRange", true, false)]
+    [InlineData("ProvisionalProposal", false, false)]
+    [InlineData("ProvisionalProposal", true, false)]
+    [InlineData("UncheckedOriginalPayload", false, true)]
+    [InlineData("WantsFeeRange", false, true)]
+    public async Task RealValidatorReadinessPreservesCurrentAttemptAndResumesTheSameOriginal(string phase, bool losesReadiness, bool mempoolLoading)
+    {
+        using var fixture = new ReceiverFixture(atomicBootstrap: true);
+        await fixture.PostOriginalAsync();
+        fixture.Validator.Verdict = phase == "UncheckedOriginalPayload" ? OriginalTransactionVerdict.Unavailable : OriginalTransactionVerdict.Accepted;
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var contributed = phase is "WantsFeeRange" or "ProvisionalProposal";
+        if (contributed) fixture.ContributeToCurrentAttempt(phase);
+        using (var replay = fixture.Replay())
+        using (var history = replay.SessionHistory())
+        using (var uri = history.PjUri()) fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, uri.AsString());
+        var before = fixture.Session();
+        byte[] original;
+        using (var replay = fixture.Replay())
+        using (var state = replay.State())
+        using (var history = replay.SessionHistory()) original = state is ReceiveSession.UncheckedOriginalPayload payload
+            ? payload.Inner.ExtractTxToCheckBroadcastSuitability() : history.FallbackTx()!;
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        Assert.Null(bridge!.ExpectedFinalTransactionId);
+        PayjoinReceiverInputReservationData? reservation = null;
+        using (var database = fixture.Factory.CreateContext())
+            if (contributed) reservation = Assert.Single(database.ReceiverInputReservations);
+        var requests = fixture.Transport.Responses.Count;
+        var outputs = fixture.Outputs.Calls;
+        using var explorer = new PayjoinOriginalTransactionValidatorTests.ExplorerFixture("{\"success\":false,\"rpcCode\":-25,\"rpcCodeMessage\":\"missing-inputs\"}");
+        if (mempoolLoading) explorer.Handler.MempoolResults.Enqueue("{\"loaded\":false}");
+        else
+        {
+            if (losesReadiness) explorer.Handler.Statuses.Enqueue(PayjoinOriginalTransactionValidatorTests.ExplorerHandler.Ready);
+            explorer.Handler.Statuses.Enqueue("{}");
+        }
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        var held = fixture.Session();
+        Assert.Equal(before.SessionInstanceId, held.SessionInstanceId);
+        Assert.Equal(before.AttemptVersion, held.AttemptVersion);
+        Assert.Equal(before.MonitoringExpiresAt, held.MonitoringExpiresAt);
+        Assert.Equal(before.PayjoinUri, held.PayjoinUri);
+        Assert.Equal(before.GetEvents(), held.GetEvents());
+        Assert.Equal(bridge, await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None));
+        Assert.Equal(outputs, fixture.Outputs.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(requests, fixture.Transport.Responses.Count);
+        if (mempoolLoading) Assert.Equal(1, explorer.Handler.MempoolReads);
+        if (contributed)
+        {
+            using var database = fixture.Factory.CreateContext();
+            var retained = Assert.Single(database.ReceiverInputReservations);
+            Assert.Equal(reservation!.Id, retained.Id);
+            Assert.Equal(reservation.TransactionId, retained.TransactionId);
+            Assert.Equal(reservation.OutputIndex, retained.OutputIndex);
+            Assert.Equal(reservation.ReservedAt, retained.ReservedAt);
+            Assert.Equal(reservation.ExpiresAt, retained.ExpiresAt);
+            Assert.True(held.TryGetContributedInput(out var retainedOutpoint));
+            Assert.Equal(new OutPoint(uint256.Parse(reservation.TransactionId), (uint)reservation.OutputIndex), retainedOutpoint);
+        }
+        explorer.Handler.Response = "{\"success\":true}";
+        var outpoint = new OutPoint(uint256.One, 0);
+        fixture.Inputs.PersistedCoins = [new ReceivedCoin { OutPoint = outpoint }];
+        fixture.ProposalSigner.Signer = fixture.ContributedInputSigner;
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(before.SessionInstanceId, fixture.Session().SessionInstanceId);
+        Assert.Equal(before.PayjoinUri, fixture.Session().PayjoinUri);
+        Assert.Equal(losesReadiness ? 2 : 1, explorer.Handler.Originals.Count);
+        if (mempoolLoading) Assert.Equal(2, explorer.Handler.MempoolReads);
+        Assert.All(explorer.Handler.Originals, bytes => Assert.Equal(original, bytes));
+        Assert.Equal(0, fixture.Inputs.ContributionCalls);
+        if (contributed)
+        {
+            Assert.Equal(outpoint, Assert.Single(fixture.Inputs.PersistedLookups));
+            Assert.Equal(1, fixture.ProposalSigner.Calls);
+            Assert.Equal(requests + 1, fixture.Transport.Responses.Count);
+            using var replay = fixture.Replay();
+            using var state = replay.State();
+            Assert.IsType<ReceiveSession.Monitor>(state);
+        }
+        else Assert.Equal(outputs + 1, fixture.Outputs.Calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnreadyCoreDoesNotOverrideCloseOrCleanupDeadline(bool close)
+    {
+        using var fixture = new ReceiverFixture(atomicBootstrap: true);
+        await fixture.PostOriginalAsync();
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var before = fixture.Session();
+        using var explorer = new PayjoinOriginalTransactionValidatorTests.ExplorerFixture("{\"success\":true}");
+        explorer.Handler.Statuses.Enqueue("{}");
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        if (close) fixture.Store.RequestClose("invoice", Client.Models.InvoiceStatus.Expired, before.SessionInstanceId);
+        else
+        {
+            using var db = fixture.Factory.CreateContext();
+            db.ReceiverSessions.Single().MonitoringExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+            db.SaveChanges();
+        }
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        Assert.False(fixture.Store.TryGetSession("invoice", out _));
+        Assert.Empty(explorer.Handler.Originals);
+        Assert.Equal(1, explorer.Handler.StatusReads);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+    }
+
+    [Theory]
+    [InlineData("advance")]
+    [InlineData("replace")]
+    public async Task PreparedBackfillCannotWriteThroughAnObsoleteOwner(string change)
+    {
+        using var fixture = new ReceiverFixture();
+        using var proposal = await fixture.PrepareProposalAsync(contributeReceiver: true);
+        await SeedCommittedBridgeAsync(fixture);
+        var before = fixture.Session();
+        PayjoinReceiverSessionState? winner = null;
+        fixture.Factory.BeforeNextSaveChanges = () =>
+        {
+            if (change == "advance") fixture.Store.Owner("invoice").Save("{\"concurrent\":true}");
+            else
+            {
+                Assert.True(fixture.Store.RemoveSession("invoice", before.SessionInstanceId));
+                fixture.Store.GetOrCreateSession("invoice", before.ReceiverAddress, "store", before.MonitoringExpiresAt, before.GetEvents());
+            }
+            winner = fixture.Session();
+        };
+
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+
+        Assert.NotNull(winner);
+        Assert.Equal(winner.SessionInstanceId, fixture.Session().SessionInstanceId);
+        Assert.Equal(winner.GetEvents(), fixture.Events());
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        Assert.Null(bridge!.ExpectedFinalTransactionId);
+        Assert.Null(bridge.FailureMessage);
+        Assert.Equal(0, fixture.Validator.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+    }
+
+    [Theory]
+    [InlineData("pin")]
+    [InlineData("original")]
+    [InlineData("settlement")]
+    public async Task ContradictoryPreparedDataCannotBecomeAnAccountingExpectation(string conflict)
+    {
+        using var fixture = new ReceiverFixture();
+        using var proposal = await fixture.PrepareProposalAsync(contributeReceiver: true);
+        await SeedCommittedBridgeAsync(fixture);
+        fixture.Factory.SeedBridgeFields("invoice", bridge =>
+        {
+            if (conflict == "pin") bridge.EffectiveInvoiceValueSats++;
+            else if (conflict == "original") bridge.FallbackValueSats++;
+            else bridge.ExpectedFinalValueSats = 123_456;
+        });
+        fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, "bitcoin:conflicting-prepared");
+        var before = fixture.Session();
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(before.GetEvents(), fixture.Events());
+        Assert.Equal(before.PayjoinUri, fixture.Session().PayjoinUri);
+        var after = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        Assert.Null(after!.ExpectedFinalTransactionId);
+        Assert.Equal(PayjoinAccountingBridgeStatus.Failed, after.Status);
+        Assert.Equal(0, fixture.Validator.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+    }
+
+    [Theory]
+    [InlineData("close", "Accepted", false)]
+    [InlineData("close", "Rejected", false)]
+    [InlineData("close", "Accepted", true)]
+    [InlineData("close", "Rejected", true)]
+    [InlineData("cleanup", "Accepted", false)]
+    [InlineData("cleanup", "Rejected", false)]
+    [InlineData("cleanup", "Accepted", true)]
+    [InlineData("cleanup", "Rejected", true)]
+    [InlineData("native", "Accepted", false)]
+    [InlineData("native", "Rejected", false)]
+    [InlineData("native", "Accepted", true)]
+    [InlineData("native", "Rejected", true)]
+    public async Task PreparedExpectationIsRecoveredBeforeBroadcastAwaitCanCloseNegotiation(string termination, string verdict, bool expectedAlreadySaved)
+    {
+        using var fixture = new ReceiverFixture(nativeLifetimeSeconds: termination == "native" ? 4UL : null);
+        using var proposal = await fixture.PrepareProposalAsync(contributeReceiver: true);
+        await SeedCommittedBridgeAsync(fixture);
+        var transaction = PSBT.Parse(proposal.Psbt(), Network.RegTest).GetGlobalTransaction();
+        if (expectedAlreadySaved)
+            await fixture.Finalizer.EnsureExpectedFinalTransactionAsync(new(fixture.Store.Owner("invoice"), "store", "invoice", "BTC"), proposal, CancellationToken.None);
+        var originalBridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, "bitcoin:prepared-uri");
+        Assert.True(fixture.Store.TryReserveContributedInput(fixture.Store.Owner("invoice"), "store", new OutPoint(uint256.One, 0), DateTimeOffset.UtcNow.AddMinutes(10)));
+        var before = fixture.Session();
+        var requests = fixture.Transport.Responses.Count;
+        PayjoinAccountingBridgeState? recovered = null;
+        fixture.Validator.Verdict = Enum.Parse<OriginalTransactionVerdict>(verdict);
+        fixture.Validator.BeforeResult = async () =>
+        {
+            recovered = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None).ConfigureAwait(false);
+            Assert.Equal(transaction.GetHash().ToString(), recovered!.ExpectedFinalTransactionId);
+            Assert.Equal(0, recovered.ExpectedFinalOutputIndex);
+            Assert.Equal(transaction.Outputs[0].Value.Satoshi, recovered.ExpectedFinalValueSats);
+            if (expectedAlreadySaved) Assert.Equal(originalBridge, recovered);
+            switch (termination)
+            {
+                case "close": fixture.Store.RequestClose("invoice", Client.Models.InvoiceStatus.Expired, before.SessionInstanceId); break;
+                case "cleanup":
+                    using (var db = fixture.Factory.CreateContext())
+                    {
+                        db.ReceiverSessions.Single().MonitoringExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+                        db.SaveChanges();
+                    }
+                    break;
+                case "native":
+                    var expired = false;
+                    var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+                    while (!expired && DateTimeOffset.UtcNow < deadline)
+                    {
+                        try { using var replay = fixture.Replay(); }
+                        catch (ReceiverReplayException ex) when (ex.IsExpired()) { ex.Dispose(); expired = true; }
+                        if (!expired) await Task.Delay(30).ConfigureAwait(false);
+                    }
+                    Assert.True(expired);
+                    Assert.True(fixture.Session().MonitoringExpiresAt > DateTimeOffset.UtcNow);
+                    break;
+            }
+        };
+
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+
+        Assert.Equal(1, fixture.Validator.Calls);
+        var held = fixture.Session();
+        Assert.Equal(before.SessionInstanceId, held.SessionInstanceId);
+        Assert.Equal(before.GetEvents(), held.GetEvents());
+        Assert.Equal(before.PayjoinUri, held.PayjoinUri);
+        Assert.Equal(recovered, await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None));
+        Assert.Contains(await fixture.BridgeService.GetPendingReconciliationAsync(DateTimeOffset.UtcNow, CancellationToken.None), b => b.InvoiceId == "invoice");
+        Assert.Equal(0, fixture.Outputs.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(requests, fixture.Transport.Responses.Count);
+        using var database = fixture.Factory.CreateContext();
+        Assert.Single(database.ReceiverInputReservations);
+    }
+
+    [Theory]
+    [InlineData("UncheckedOriginalPayload")]
+    [InlineData("WantsOutputs")]
+    [InlineData("PayjoinProposal")]
+    public async Task NativeExpiryDuringBroadcastAwaitCannotResumeNegotiation(string phase)
+    {
+        using var fixture = new ReceiverFixture(nativeLifetimeSeconds: 4);
+        var signed = phase == "PayjoinProposal";
+        if (phase != "UncheckedOriginalPayload")
+        {
+            using var proposal = await fixture.PrepareProposalAsync(contributeReceiver: signed);
+            fixture.RestoreState(phase);
+            if (signed)
+            {
+                await SeedCommittedBridgeAsync(fixture);
+                await fixture.Finalizer.EnsureExpectedFinalTransactionAsync(new(fixture.Store.Owner("invoice"), "store", "invoice", "BTC"), proposal, CancellationToken.None);
+            }
+        }
+        else await fixture.PostOriginalAsync();
+        var originalHistory = fixture.Events();
+        var originalBridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Rejected;
+        fixture.Validator.BeforeResult = async () =>
+        {
+            var expired = false;
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            while (!expired && DateTimeOffset.UtcNow < deadline)
+            {
+                try { using var snapshot = fixture.Replay(); }
+                catch (ReceiverReplayException ex) when (ex.IsExpired()) { ex.Dispose(); expired = true; }
+                if (!expired) await Task.Delay(30).ConfigureAwait(false);
+            }
+            Assert.True(expired);
+            Assert.True(fixture.Session().MonitoringExpiresAt > DateTimeOffset.UtcNow);
+        };
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(0, fixture.Outputs.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(signed, fixture.Store.TryGetSession("invoice", out var held));
+        Assert.Equal(originalBridge, await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None));
+        if (signed)
+        {
+            Assert.Equal(originalHistory, held!.GetEvents());
+            Assert.Contains(await fixture.BridgeService.GetPendingReconciliationAsync(DateTimeOffset.UtcNow, CancellationToken.None), b => b.InvoiceId == "invoice");
+        }
+    }
+
+    [Theory]
+    [InlineData("WantsFeeRange")]
+    [InlineData("ProvisionalProposal")]
+    public async Task ExplorerRecoveryAfterContributionResumesTheSameReservedOutpoint(string phase)
+    {
+        using var fixture = new ReceiverFixture();
+        using var prepared = await fixture.PrepareProposalAsync(contributeReceiver: true);
+        fixture.RestoreState(phase);
+        await SeedCommittedBridgeAsync(fixture);
+        var outpoint = new OutPoint(uint256.One, 0);
+        Assert.True(fixture.Store.TryReserveContributedInput(fixture.Store.Owner("invoice"), "store", outpoint, DateTimeOffset.UtcNow.AddMinutes(10)));
+        fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, "bitcoin:reserved-attempt");
+        var saved = fixture.Session();
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Unavailable;
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(saved.GetEvents(), fixture.Events());
+        Assert.Empty(fixture.Inputs.PersistedLookups);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Accepted;
+        fixture.Inputs.PersistedCoins = [new ReceivedCoin { OutPoint = outpoint }];
+        fixture.ProposalSigner.Signer = fixture.ContributedInputSigner;
+        await fixture.RecreateProcessor().ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(saved.SessionInstanceId, fixture.Session().SessionInstanceId);
+        Assert.Equal(saved.PayjoinUri, fixture.Session().PayjoinUri);
+        Assert.Equal(outpoint, Assert.Single(fixture.Inputs.PersistedLookups));
+        Assert.Equal(0, fixture.Inputs.ContributionCalls);
+        Assert.Equal(1, fixture.ProposalSigner.Calls);
+        Assert.Equal(2, fixture.Validator.Calls);
+        using var replay = fixture.Replay();
+        using var state = replay.State();
+        Assert.IsType<ReceiveSession.Monitor>(state);
+    }
+
+    [Theory]
+    [InlineData("MaybeInputsOwned")]
+    [InlineData("MaybeInputsSeen")]
+    [InlineData("OutputsUnknown")]
+    [InlineData("WantsOutputs")]
+    [InlineData("WantsInputs")]
+    [InlineData("WantsFeeRange")]
+    [InlineData("ProvisionalProposal")]
+    public async Task RejectedUnpreparedReplayRetainsItsJournalForRecovery(string phase)
+    {
+        using var fixture = new ReceiverFixture();
+        using var prepared = await fixture.PrepareProposalAsync();
+        fixture.RestoreState(phase);
+        var events = fixture.Events();
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Rejected;
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        Assert.Equal(PayjoinAccountingBridgeStatus.Failed, bridge!.Status);
+        Assert.Equal(events, fixture.Events());
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(0, fixture.Outputs.Calls);
+    }
+
+    [Theory]
+    [InlineData("MaybeInputsOwned")]
+    [InlineData("MaybeInputsSeen")]
+    [InlineData("OutputsUnknown")]
+    [InlineData("WantsOutputs")]
+    [InlineData("WantsInputs")]
+    [InlineData("WantsFeeRange")]
+    [InlineData("ProvisionalProposal")]
+    [InlineData("PayjoinProposal")]
+    public async Task ReplayRechecksOriginalAndRetainsEverythingWhileExplorerIsUnavailable(string phase)
+    {
+        using var fixture = new ReceiverFixture();
+        using var proposal = await fixture.PrepareProposalAsync(contributeReceiver: true);
+        fixture.RestoreState(phase);
+        await SeedCommittedBridgeAsync(fixture);
+        var contributed = phase is "WantsFeeRange" or "ProvisionalProposal" or "PayjoinProposal";
+        if (contributed) Assert.True(fixture.Store.TryReserveContributedInput(fixture.Store.Owner("invoice"), "store",
+            new OutPoint(uint256.One, 0), DateTimeOffset.UtcNow.AddMinutes(10)));
+        fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, "bitcoin:preserved-uri");
+        var before = fixture.Session();
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        var requests = fixture.Transport.Responses.Count;
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Unavailable;
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(1, fixture.Validator.Calls);
+        Assert.Equal(before.GetEvents(), fixture.Session().GetEvents());
+        Assert.Equal(before.PayjoinUri, fixture.Session().PayjoinUri);
+        Assert.Equal(before.AttemptVersion + (phase == "PayjoinProposal" ? 1 : 0), fixture.Session().AttemptVersion);
+        Assert.Equal(before.SessionInstanceId, fixture.Session().SessionInstanceId);
+        var after = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        if (phase == "PayjoinProposal")
+        {
+            Assert.Equal(PSBT.Parse(proposal.Psbt(), Network.RegTest).GetGlobalTransaction().GetHash().ToString(), after!.ExpectedFinalTransactionId);
+            Assert.Equal(bridge!.FallbackValueSats, after.FallbackValueSats);
+            Assert.Equal(bridge.EffectiveInvoiceValueSats, after.EffectiveInvoiceValueSats);
+            Assert.Contains(await fixture.BridgeService.GetPendingReconciliationAsync(DateTimeOffset.UtcNow, CancellationToken.None), b => b.InvoiceId == "invoice");
+        }
+        else Assert.Equal(bridge, after);
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(requests, fixture.Transport.Responses.Count);
+        using var database = fixture.Factory.CreateContext();
+        Assert.Equal(contributed ? 1 : 0, database.ReceiverInputReservations.Count());
+        if (contributed)
+        {
+            var reservation = Assert.Single(database.ReceiverInputReservations);
+            Assert.Equal(uint256.One.ToString(), reservation.TransactionId);
+            Assert.Equal(0, reservation.OutputIndex);
+        }
+    }
+
+    [Theory]
+    [InlineData("Unavailable")]
+    [InlineData("AlreadyKnown")]
+    [InlineData("Rejected")]
+    public async Task NewPayloadCannotAdvanceWithoutBroadcastApproval(string verdict)
+    {
+        using var fixture = new ReceiverFixture();
+        await fixture.PostOriginalAsync();
+        fixture.Validator.Verdict = Enum.Parse<OriginalTransactionVerdict>(verdict);
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        using var replay = fixture.Replay();
+        using var state = replay.State();
+        Assert.Equal(verdict == "Rejected" ? "HasReplyableError" : "UncheckedOriginalPayload", state.GetType().Name);
+        Assert.Equal(0, fixture.Outputs.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(bridge, await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None));
+        Assert.Equal(1, fixture.Validator.Calls);
+    }
+
+    [Fact]
+    public async Task BroadcastCheckRecoveryContinuesTheSamePayloadWithoutASecondRpcInTheChain()
+    {
+        using var fixture = new ReceiverFixture();
+        await fixture.PostOriginalAsync();
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Unavailable;
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var before = fixture.Session();
+        fixture.Store.StorePayjoinUri("invoice", before.ReceiverAddress, "bitcoin:same-uri");
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Accepted;
+        fixture.Outputs.Result = new(PayjoinReceiverOutputBuilder.OutputBuildStatus.RetryableFailure);
+        await fixture.RecreateProcessor().ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(2, fixture.Validator.Calls);
+        Assert.Equal(before.SessionInstanceId, fixture.Session().SessionInstanceId);
+        Assert.Equal("bitcoin:same-uri", fixture.Session().PayjoinUri);
+        Assert.Equal(1, fixture.Outputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RejectedPreparedOriginalBackfillsExpectationWithoutRepostingOrFailingAccounting(bool expectedAlreadySaved)
+    {
+        using var fixture = new ReceiverFixture();
+        using var proposal = await fixture.PrepareProposalAsync(contributeReceiver: true);
+        await SeedCommittedBridgeAsync(fixture);
+        var transaction = PSBT.Parse(proposal.Psbt(), Network.RegTest).GetGlobalTransaction();
+        if (expectedAlreadySaved)
+            await fixture.Finalizer.EnsureExpectedFinalTransactionAsync(new(fixture.Store.Owner("invoice"), "store", "invoice", "BTC"), proposal, CancellationToken.None);
+        var events = fixture.Events();
+        var requests = fixture.Transport.Responses.Count;
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Rejected;
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        Assert.Equal(PayjoinAccountingBridgeStatus.PendingFinalTransaction, bridge!.Status);
+        Assert.Equal(transaction.GetHash().ToString(), bridge.ExpectedFinalTransactionId);
+        Assert.Null(bridge.FailureMessage);
+        Assert.Equal(events, fixture.Events());
+        Assert.Equal(requests, fixture.Transport.Responses.Count);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Contains(await fixture.BridgeService.GetPendingReconciliationAsync(DateTimeOffset.UtcNow, CancellationToken.None), b => b.InvoiceId == "invoice");
+    }
+
+    [Theory]
+    [InlineData(false, "close")]
+    [InlineData(true, "close")]
+    [InlineData(false, "replace")]
+    [InlineData(true, "replace")]
+    [InlineData(false, "advance")]
+    [InlineData(true, "advance")]
+    [InlineData(false, "expiry")]
+    [InlineData(true, "expiry")]
+    [InlineData(false, "failed")]
+    [InlineData(true, "failed")]
+    public async Task ExternalBroadcastAwaitCannotAuthorizeAnObsoleteAttempt(bool replay, string change)
+    {
+        using var fixture = new ReceiverFixture();
+        if (replay)
+        {
+            using var prepared = await fixture.PrepareProposalAsync();
+            fixture.RestoreState("WantsOutputs");
+        }
+        else await fixture.PostOriginalAsync();
+        PayjoinReceiverSessionState? winner = null;
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Rejected;
+        fixture.Validator.BeforeResult = async () =>
+        {
+            var current = fixture.Session();
+            switch (change)
+            {
+                case "close": fixture.Store.RequestClose("invoice", Client.Models.InvoiceStatus.Expired, current.SessionInstanceId); break;
+                case "replace":
+                    Assert.True(fixture.Store.RemoveSession("invoice", current.SessionInstanceId));
+                    fixture.Store.GetOrCreateSession("invoice", current.ReceiverAddress, "store", current.MonitoringExpiresAt, current.GetEvents());
+                    break;
+                case "advance": fixture.Store.Owner("invoice").Save("{\"concurrent\":true}"); break;
+                case "expiry":
+                    using (var db = fixture.Factory.CreateContext())
+                    {
+                        db.ReceiverSessions.Single().MonitoringExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+                        db.SaveChanges();
+                    }
+                    break;
+                default: await fixture.BridgeService.MarkFailedAsync("invoice", "concurrent failure", CancellationToken.None).ConfigureAwait(false); break;
+            }
+            winner = fixture.Session();
+        };
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(0, fixture.Outputs.Calls);
+        Assert.Equal(0, fixture.Inputs.Calls);
+        Assert.Equal(0, fixture.ProposalSigner.Calls);
+        if (change is "replace" or "advance" or "failed")
+        {
+            Assert.Equal(winner!.SessionInstanceId, fixture.Session().SessionInstanceId);
+            Assert.Equal(winner.GetEvents(), fixture.Events());
+        }
+        if (change != "failed")
+            Assert.NotEqual(PayjoinAccountingBridgeStatus.Failed, (await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None))!.Status);
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -1297,6 +1832,7 @@ public class PayjoinReceiverRelayFlowTests
         public Initialized Receiver { get; }
         public PayjoinAccountingBridgeService BridgeService { get; }
         public BTCPayNetworkProvider Networks { get; }
+        public RecordingOriginalValidator Validator { get; } = new();
         public RecordingOutputs Outputs { get; } = new();
         public RecordingInputs Inputs { get; } = new();
         public FaultingWallet Wallet { get; } = new();
@@ -1305,7 +1841,8 @@ public class PayjoinReceiverRelayFlowTests
         private BitcoinAddress Address => _key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
 
         public ReceiverFixture(TimeSpan? quarantineDuration = null, TimeProvider? timeProvider = null,
-            ulong? pin = 50_000, IPayjoinWalletOwnershipService? walletOwnership = null)
+            ulong? pin = 50_000, ulong? nativeLifetimeSeconds = null, IPayjoinWalletOwnershipService? walletOwnership = null,
+            bool atomicBootstrap = false)
         {
             Services.WaitForServicesReady();
             Transport = new LocalMailroomHandler(Services);
@@ -1316,22 +1853,25 @@ public class PayjoinReceiverRelayFlowTests
             using var keys = Services.FetchOhttpKeys();
             using var builder = new ReceiverBuilder(Address.ToString(), Services.DirectoryUrl(), keys);
             using var pinnedBuilder = pin.HasValue ? builder.WithAmount(pin.Value) : null;
-            using var bootstrap = (pinnedBuilder ?? builder).Build();
+            using var timedBuilder = nativeLifetimeSeconds.HasValue ? (pinnedBuilder ?? builder).WithExpiration(nativeLifetimeSeconds.Value) : null;
+            using var bootstrap = (timedBuilder ?? pinnedBuilder ?? builder).Build();
             var capture = new CapturingReceiverSessionPersister();
             Receiver = bootstrap.Save(capture);
-            Store.GetOrCreateSession("invoice", Address.ToString(), "store", DateTimeOffset.UtcNow.AddMinutes(20), capture.Events);
+            var expiresAt = DateTimeOffset.UtcNow.AddMinutes(20);
+            var bridgeRequest = new CreatePayjoinAccountingBridgeRequest("invoice", "store", "BTC", PaymentTypes.CHAIN.GetPaymentMethodId("BTC").ToString(),
+                expiresAt, EffectiveInvoiceValueSats: 50_000);
+            Store.GetOrCreateSession("invoice", Address.ToString(), "store", expiresAt, capture.Events,
+                atomicBootstrap ? bridgeRequest : null);
             UseRelays(Transport.HealthyRelay);
             var httpFactory = Substitute.For<IHttpClientFactory>();
             httpFactory.CreateClient(Arg.Any<string>()).Returns(_http);
             var sender = new PayjoinReceiverRelayRequestSender(_settings, Manager, new PayjoinReceiverRelayClient(httpFactory));
             _sender = sender;
             StateProcessor = new PayjoinReceiverStateProcessor(Store, sender, walletOwnership ?? Wallet,
-                new PayjoinSeenInputStore(Factory), Manager);
+                new PayjoinSeenInputStore(Factory), Manager, Validator, new ReplayingGuard(Store, Address.ScriptPubKey.ToBytes()));
             var bridge = new PayjoinAccountingBridgeService(Factory, new PayjoinSessionBuildLock());
             BridgeService = bridge;
-            Factory.SeedBridgeAsync(new CreatePayjoinAccountingBridgeRequest("invoice", "store", "BTC",
-                PaymentTypes.CHAIN.GetPaymentMethodId("BTC").ToString(), DateTimeOffset.UtcNow.AddMinutes(20),
-                EffectiveInvoiceValueSats: 50_000), CancellationToken.None).GetAwaiter().GetResult();
+            if (!atomicBootstrap) Factory.SeedBridgeAsync(bridgeRequest, CancellationToken.None).GetAwaiter().GetResult();
             var nbx = new NBXplorerNetworkProvider(ChainName.Regtest);
             var network = new BTCPayNetwork { CryptoCode = "BTC", NBXplorerNetwork = nbx.GetFromCryptoCode("BTC") };
             var networks = new BTCPayNetworkProvider([network], nbx, new Logs());
@@ -1339,17 +1879,43 @@ public class PayjoinReceiverRelayFlowTests
             ProposalSigner = new RecordingProposalSigner(Signer);
             Finalizer = new PayjoinReceiverProposalFinalizer(sender, ProposalSigner, bridge, Store, networks);
             Processor = new PayjoinReceiverSessionProcessor(Store, new ReplayingGuard(Store, Address.ScriptPubKey.ToBytes()),
-                StateProcessor, Outputs, Inputs, bridge, Finalizer, networks, NullLogger<PayjoinReceiverSessionProcessor>.Instance);
+                StateProcessor, Outputs, Inputs, bridge, Finalizer, networks, NullLogger<PayjoinReceiverSessionProcessor>.Instance, Validator);
         }
 
-        public PayjoinReceiverSessionProcessor RecreateProcessor()
+        public PayjoinReceiverSessionProcessor RecreateProcessor(IPayjoinOriginalTransactionValidator? validator = null)
         {
+            validator ??= Validator;
             var store = new PayjoinReceiverSessionStore(Factory, new SqliteUniqueConstraintViolationDetector(), Manager);
             var bridge = new PayjoinAccountingBridgeService(Factory, new PayjoinSessionBuildLock());
-            var stateProcessor = new PayjoinReceiverStateProcessor(store, _sender, Wallet, new PayjoinSeenInputStore(Factory), Manager);
+            var stateProcessor = new PayjoinReceiverStateProcessor(store, _sender, Wallet, new PayjoinSeenInputStore(Factory), Manager, validator, new ReplayingGuard(store, Address.ScriptPubKey.ToBytes()));
             var finalizer = new PayjoinReceiverProposalFinalizer(_sender, ProposalSigner, bridge, store, Networks);
             return new PayjoinReceiverSessionProcessor(store, new ReplayingGuard(store, Address.ScriptPubKey.ToBytes()),
-                stateProcessor, Outputs, Inputs, bridge, finalizer, Networks, NullLogger<PayjoinReceiverSessionProcessor>.Instance);
+                stateProcessor, Outputs, Inputs, bridge, finalizer, Networks, NullLogger<PayjoinReceiverSessionProcessor>.Instance, validator);
+        }
+
+        public void ContributeToCurrentAttempt(string phase)
+        {
+            var owner = Store.CreatePersister(Session());
+            using var replay = PayjoinMethods.ReplayReceiverEventLog(owner);
+            using var state = replay.State();
+            var wantsOutputs = Assert.IsType<ReceiveSession.WantsOutputs>(state).Inner;
+            using var transition = wantsOutputs.CommitOutputs();
+            var capture = new CapturingReceiverSessionPersister();
+            using var wantsInputs = transition.Save(capture);
+            Store.CommitReceiverOutputs(owner, capture.Events, new PayjoinReceiverOutputBuilder.OutputReplacement(
+                [new global::Payjoin.TxOut(50_000, Address.ScriptPubKey.ToBytes())], Address.ScriptPubKey.ToBytes(), 50_000, null));
+            var outpoint = new OutPoint(uint256.One, 0);
+            Assert.True(Store.TryReserveContributedInput(owner, "store", outpoint, Session().MonitoringExpiresAt));
+            using var pair = InputPair.NewP2wpkh(new global::Payjoin.TxOut(60_000, _receiverInputKey.PubKey.WitHash.ScriptPubKey.ToBytes()),
+                new global::Payjoin.OutPoint(outpoint.Hash.ToString(), outpoint.N));
+            using var contribution = wantsInputs.ContributeInputs([pair]);
+            using var commit = contribution.CommitInputs();
+            using var fees = commit.Save(owner);
+            if (phase == "ProvisionalProposal")
+            {
+                using var apply = fees.ApplyFeeRange(null, null);
+                using var provisional = apply.Save(owner);
+            }
         }
 
         public Task RecordFallbackAsync(string transactionId, long index, long value, long pin, string? script, CancellationToken token)
@@ -1515,9 +2081,29 @@ public class PayjoinReceiverRelayFlowTests
     {
         public Task<PayjoinReceiverSessionGuardResult?> TryPrepareAsync(PayjoinReceiverSessionState session, CancellationToken cancellationToken)
         {
+            var lifecycle = new PayjoinReceiverSessionGuard(store, null!, null!, NullLogger<PayjoinReceiverSessionGuard>.Instance);
+            if (lifecycle.TryExpireSession(session)) return Task.FromResult<PayjoinReceiverSessionGuardResult?>(null);
             var persister = store.CreatePersister(session);
-            var replay = PayjoinMethods.ReplayReceiverEventLog(persister);
-            return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(session, persister, script, replay, replay.State(), _ => false));
+            ReplayResult replay;
+            try { replay = PayjoinMethods.ReplayReceiverEventLog(persister); }
+            catch (ReceiverReplayException ex) when (ex.IsExpired())
+            {
+                ex.Dispose();
+                store.RemoveSession(session.InvoiceId, session.SessionInstanceId, persister.AttemptVersion);
+                return Task.FromResult<PayjoinReceiverSessionGuardResult?>(null);
+            }
+            var state = replay.State();
+            if (lifecycle.TryRemoveCloseRequestedSession(session, state))
+            {
+                state.Dispose();
+                replay.Dispose();
+                return Task.FromResult<PayjoinReceiverSessionGuardResult?>(null);
+            }
+            return Task.FromResult<PayjoinReceiverSessionGuardResult?>(new PayjoinReceiverSessionGuardResult(session, persister, script, replay, state, row =>
+            {
+                store.RemoveSession(row.InvoiceId, row.SessionInstanceId, row.AttemptVersion);
+                return true;
+            }));
         }
     }
 
