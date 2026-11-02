@@ -14,6 +14,7 @@ namespace BTCPayServer.Plugins.Payjoin.Controllers;
 
 [Route("~/stores/{storeId}/payjoin")]
 [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanViewStoreSettings)]
+[PayjoinExceptionFilter(PayjoinErrorShape.Redirect)]
 public class UIStorePayjoinController : Controller
 {
     private readonly IPayjoinStoreSettingsRepository _settingsRepository;
