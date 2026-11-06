@@ -110,6 +110,86 @@ public class PayjoinReceiverRelayFlowTests
     }
 
     [Theory]
+    [InlineData("WantsOutputs")]
+    [InlineData("WantsFeeRange")]
+    public async Task RejectedReplayResumesTheSameOriginalWhenTheFeeRejectionClears(string phase)
+    {
+        using var fixture = new ReceiverFixture(atomicBootstrap: true);
+        await fixture.PostOriginalAsync();
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        var contributed = phase == "WantsFeeRange";
+        if (contributed) fixture.ContributeToCurrentAttempt(phase);
+        using (var replay = fixture.Replay())
+        using (var history = replay.SessionHistory())
+        using (var uri = history.PjUri()) fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, uri.AsString());
+        var before = fixture.Session();
+        byte[] original;
+        using (var replay = fixture.Replay())
+        using (var history = replay.SessionHistory()) original = history.FallbackTx()!;
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        Assert.Null(bridge!.ExpectedFinalTransactionId);
+        Assert.Null(bridge.FailureMessage);
+        PayjoinReceiverInputReservationData? reservation = null;
+        using (var database = fixture.Factory.CreateContext())
+            if (contributed) reservation = Assert.Single(database.ReceiverInputReservations);
+        var requests = fixture.Transport.Responses.Count;
+        var outputs = fixture.Outputs.Calls;
+        using var explorer = new PayjoinOriginalTransactionValidatorTests.ExplorerFixture(
+            "{\"success\":false,\"rpcCode\":-26,\"rpcCodeMessage\":\"RPC_VERIFY_REJECTED\",\"rpcMessage\":\"mempool min fee not met\"}");
+        var rejection = await explorer.Validator.ValidateAsync(original, CancellationToken.None);
+        Assert.Equal(OriginalTransactionVerdict.Rejected, rejection.Verdict);
+        Assert.Equal("mempool min fee not met", rejection.Reason);
+
+        for (var tick = 0; tick < 2; tick++)
+        {
+            await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+            var after = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+            Assert.Equal(bridge.Status, after!.Status);
+            Assert.Null(after.FailureMessage);
+            Assert.Equal(bridge, after);
+            var held = fixture.Session();
+            Assert.Equal(before.SessionInstanceId, held.SessionInstanceId);
+            Assert.Equal(before.AttemptVersion, held.AttemptVersion);
+            Assert.Equal(before.MonitoringExpiresAt, held.MonitoringExpiresAt);
+            Assert.Equal(before.PayjoinUri, held.PayjoinUri);
+            Assert.Equal(before.GetEvents(), held.GetEvents());
+            Assert.Contains(fixture.Store.GetSessions(), session => session.SessionInstanceId == before.SessionInstanceId);
+            Assert.Equal(outputs, fixture.Outputs.Calls);
+            Assert.Equal(0, fixture.Inputs.Calls);
+            Assert.Equal(0, fixture.ProposalSigner.Calls);
+            Assert.Equal(requests, fixture.Transport.Responses.Count);
+            if (contributed)
+            {
+                using var database = fixture.Factory.CreateContext();
+                Assert.Equivalent(reservation, Assert.Single(database.ReceiverInputReservations), strict: true);
+                Assert.True(held.TryGetContributedInput(out var outpoint));
+                Assert.Equal(new OutPoint(uint256.One, 0), outpoint);
+            }
+        }
+
+        explorer.Handler.Response = "{\"success\":true}";
+        var receiverOutpoint = new OutPoint(uint256.One, 0);
+        fixture.Inputs.PersistedCoins = [new ReceivedCoin { OutPoint = receiverOutpoint }];
+        fixture.ProposalSigner.Signer = fixture.ContributedInputSigner;
+        await fixture.RecreateProcessor(explorer.Validator).ProcessTickAsync(CancellationToken.None);
+        Assert.Equal(before.SessionInstanceId, fixture.Session().SessionInstanceId);
+        Assert.Equal(before.PayjoinUri, fixture.Session().PayjoinUri);
+        Assert.Equal(4, explorer.Handler.Originals.Count);
+        Assert.All(explorer.Handler.Originals, bytes => Assert.Equal(original, bytes));
+        Assert.Equal(0, fixture.Inputs.ContributionCalls);
+        if (contributed)
+        {
+            Assert.Equal(receiverOutpoint, Assert.Single(fixture.Inputs.PersistedLookups));
+            Assert.Equal(1, fixture.ProposalSigner.Calls);
+            Assert.Equal(requests + 1, fixture.Transport.Responses.Count);
+            using var replay = fixture.Replay();
+            using var state = replay.State();
+            Assert.IsType<ReceiveSession.Monitor>(state);
+        }
+        else Assert.Equal(outputs + 1, fixture.Outputs.Calls);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task UnreadyCoreDoesNotOverrideCloseOrCleanupDeadline(bool close)
@@ -364,20 +444,108 @@ public class PayjoinReceiverRelayFlowTests
     [InlineData("WantsInputs")]
     [InlineData("WantsFeeRange")]
     [InlineData("ProvisionalProposal")]
-    public async Task RejectedUnpreparedReplayRetainsItsJournalForRecovery(string phase)
+    public async Task RejectedUnpreparedReplayRetainsThePendingAttemptForRetry(string phase)
     {
         using var fixture = new ReceiverFixture();
         using var prepared = await fixture.PrepareProposalAsync();
         fixture.RestoreState(phase);
-        var events = fixture.Events();
-        fixture.Validator.Verdict = OriginalTransactionVerdict.Rejected;
-        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        using (var replay = fixture.Replay())
+        using (var history = replay.SessionHistory())
+        using (var uri = history.PjUri()) fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, uri.AsString());
+        var before = fixture.Session();
         var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
-        Assert.Equal(PayjoinAccountingBridgeStatus.Failed, bridge!.Status);
-        Assert.Equal(events, fixture.Events());
+        Assert.True(bridge!.Status is PayjoinAccountingBridgeStatus.PendingFallback or PayjoinAccountingBridgeStatus.PendingFinalTransaction);
+        Assert.Null(bridge.ExpectedFinalTransactionId);
+        Assert.Null(bridge.FailureMessage);
+        var requests = fixture.Transport.Responses.Count;
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Rejected;
+        for (var tick = 0; tick < 2; tick++)
+        {
+            await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+            Assert.Equal(bridge, await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None));
+            var held = fixture.Session();
+            Assert.Equal(before.SessionInstanceId, held.SessionInstanceId);
+            Assert.Equal(before.AttemptVersion, held.AttemptVersion);
+            Assert.Equal(before.PayjoinUri, held.PayjoinUri);
+            Assert.Equal(before.GetEvents(), held.GetEvents());
+            Assert.Equal(before.MonitoringExpiresAt, held.MonitoringExpiresAt);
+            Assert.Contains(fixture.Store.GetSessions(), session => session.SessionInstanceId == before.SessionInstanceId);
+            Assert.Equal(0, fixture.Inputs.Calls);
+            Assert.Equal(0, fixture.ProposalSigner.Calls);
+            Assert.Equal(0, fixture.Outputs.Calls);
+            Assert.Equal(requests, fixture.Transport.Responses.Count);
+        }
+        Assert.Equal(2, fixture.Validator.Calls);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task RejectedReplayStillEndsAtCloseOrMonitoringExpiry(bool contributed, bool close)
+    {
+        using var fixture = new ReceiverFixture(atomicBootstrap: true);
+        await fixture.PostOriginalAsync();
+        await fixture.Processor.ProcessTickAsync(CancellationToken.None);
+        if (contributed) fixture.ContributeToCurrentAttempt("WantsFeeRange");
+        using (var replay = fixture.Replay())
+        using (var history = replay.SessionHistory())
+        using (var uri = history.PjUri()) fixture.Store.StorePayjoinUri("invoice", fixture.Session().ReceiverAddress, uri.AsString());
+        var before = fixture.Session();
+        var bridge = await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None);
+        Assert.Null(bridge!.ExpectedFinalTransactionId);
+        Assert.Null(bridge.FailureMessage);
+        PayjoinReceiverInputReservationData? reservation = null;
+        using (var database = fixture.Factory.CreateContext())
+            if (contributed) reservation = Assert.Single(database.ReceiverInputReservations);
+        var requests = fixture.Transport.Responses.Count;
+        var outputs = fixture.Outputs.Calls;
+        var checks = fixture.Validator.Calls;
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Rejected;
+        for (var tick = 0; tick < 2; tick++)
+        {
+            await fixture.RecreateProcessor().ProcessTickAsync(CancellationToken.None);
+            var held = fixture.Session();
+            Assert.Equal(before.SessionInstanceId, held.SessionInstanceId);
+            Assert.Equal(before.AttemptVersion, held.AttemptVersion);
+            Assert.Equal(before.PayjoinUri, held.PayjoinUri);
+            Assert.Equal(before.GetEvents(), held.GetEvents());
+            Assert.Equal(before.MonitoringExpiresAt, held.MonitoringExpiresAt);
+            Assert.Equal(bridge, await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None));
+            if (contributed)
+            {
+                using var database = fixture.Factory.CreateContext();
+                Assert.Equivalent(reservation, Assert.Single(database.ReceiverInputReservations), strict: true);
+                Assert.True(held.TryGetContributedInput(out var outpoint));
+                Assert.Equal(new OutPoint(uint256.One, 0), outpoint);
+            }
+        }
+        Assert.Equal(checks + 2, fixture.Validator.Calls);
+        if (close) fixture.Store.RequestClose("invoice", Client.Models.InvoiceStatus.Expired, before.SessionInstanceId);
+        else
+        {
+            using var database = fixture.Factory.CreateContext();
+            database.ReceiverSessions.Single().MonitoringExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+            database.SaveChanges();
+        }
+
+        await fixture.RecreateProcessor().ProcessTickAsync(CancellationToken.None);
+
+        Assert.False(fixture.Store.TryGetSession("invoice", out _));
+        Assert.Null(fixture.Store.GetServablePayjoinUri("invoice", before.ReceiverAddress));
+        Assert.Empty(fixture.Events());
+        Assert.Empty(fixture.Store.GetSessions());
+        Assert.Equal(bridge, await fixture.BridgeService.TryGetByInvoiceIdAsync("invoice", CancellationToken.None));
+        Assert.Equal(checks + 2, fixture.Validator.Calls);
+        Assert.Equal(outputs, fixture.Outputs.Calls);
         Assert.Equal(0, fixture.Inputs.Calls);
         Assert.Equal(0, fixture.ProposalSigner.Calls);
-        Assert.Equal(0, fixture.Outputs.Calls);
+        Assert.Equal(requests, fixture.Transport.Responses.Count);
+        using var verified = fixture.Factory.CreateContext();
+        Assert.Empty(verified.ReceiverSessions);
+        Assert.Empty(verified.ReceiverSessionEvents);
+        Assert.Empty(verified.ReceiverInputReservations);
     }
 
     [Theory]
