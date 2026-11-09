@@ -5,9 +5,22 @@ updates:
     schedule:
       interval: "weekly"
     groups:
-      nuget-dependencies:
+      # Other packages (including NBXplorer.Client) stay in individual PRs.
+      roslyn:
         patterns:
-          - "*"
+          - "Microsoft.CodeAnalysis.*"
+      entity-framework:
+        patterns:
+          - "Microsoft.EntityFrameworkCore.*"
+          - "Npgsql.EntityFrameworkCore.*"
+      xunit:
+        patterns:
+          - "xunit.*"
+      test-tooling:
+        patterns:
+          - "Microsoft.NET.Test.Sdk"
+          - "coverlet.*"
+          - "NSubstitute"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "gitsubmodule"
@@ -24,3 +37,6 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action"
+      core-actions:
+        patterns:
+          - "actions/*"
