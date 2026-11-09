@@ -20,7 +20,7 @@
 
   <ItemGroup Label="xUnit">
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
-    <PackageVersion Include="xunit.v3" Version="4.0.2" />
+    <PackageVersion Include="xunit.v3" Version="4.0.3" />
   </ItemGroup>
 
   <ItemGroup Label="Test tooling">
