@@ -23,6 +23,7 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddUIExtension("checkout-end", "PayJoinBitcoinCheckoutEnd");
         applicationBuilder.AddSingleton<IPayjoinInvoiceEventPublisher, PayjoinInvoiceEventPublisher>();
         applicationBuilder.AddSingleton<IPayjoinInvoiceEventWriter, PayjoinInvoiceEventWriter>();
+        applicationBuilder.AddUIExtension("onchain-wallet-send", "PayjoinWalletSendExtension");
         applicationBuilder.AddSingleton<PayjoinAvailabilityService>();
         applicationBuilder.AddSingleton<PayjoinSessionUriReader>();
         applicationBuilder.AddScoped<PayjoinBitcoinCheckoutModelExtension>();
@@ -78,6 +79,14 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddSingleton<IPayjoinInvoiceLookup, PayjoinInvoiceLookup>();
         applicationBuilder.AddSingleton<PayjoinInvoicePaymentUrlService>();
         applicationBuilder.AddSingleton<IPayjoinInvoicePaymentUrlService>(provider => provider.GetRequiredService<PayjoinInvoicePaymentUrlService>());
+        applicationBuilder.AddSingleton(provider => new PayjoinSenderSessionStore(
+            provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
+            provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>()));
+        applicationBuilder.AddSingleton<PayjoinSenderService>();
+        applicationBuilder.AddSingleton<PayjoinSenderSignatureHandler>();
+        applicationBuilder.AddSingleton<PayjoinSenderSigningRequestService>();
+        applicationBuilder.AddSingleton<IPayjoinSenderSessionProcessor, PayjoinSenderSessionProcessor>();
+        applicationBuilder.AddHostedService<PayjoinSenderPoller>();
         applicationBuilder.AddHostedService<PluginMigrationRunner>();
         applicationBuilder.AddHostedService<PayjoinInvoiceEventHostedService>();
         applicationBuilder.AddHostedService(provider => new PayjoinReceiverPoller(
