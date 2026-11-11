@@ -42,6 +42,12 @@ jobs:
       - name: Set up BTCPay integration test environment
         uses: ./.github/actions/prepare-integration-test-env
 
+      - name: Increase inotify instance limit
+        run: |
+          if [ "$(sysctl -n fs.inotify.max_user_instances)" -lt 1024 ]; then
+            sudo sysctl -w fs.inotify.max_user_instances=1024
+          fi
+
       - name: Run integration tests
         env:
           XUNIT_EXPLICIT_MODE: ${{ github.event_name == 'pull_request' && 'off' || 'on' }}
