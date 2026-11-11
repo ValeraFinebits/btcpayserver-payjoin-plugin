@@ -14,6 +14,6 @@ internal sealed record BitcoindNodeOptions
     public TimeSpan SyncTimeout { get; init; } = TimeSpan.FromMinutes(1);
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(250);
     public Money FundingAmount { get; init; } = Money.Coins(0.15m);
-    public string? DockerNetwork { get; init; }
-    public string PrimaryNodeEndpoint { get; init; } = "host.docker.internal:39388";
+    public string? DockerNetwork { get; init; } = "btcpayservertests_default";
+    public string PrimaryNodeEndpoint { get; init; } = "bitcoind:39388";
 }
