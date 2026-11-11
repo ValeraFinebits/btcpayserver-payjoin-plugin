@@ -29,6 +29,46 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
 
     [Fact]
     [Trait("Integration", "Integration")]
+    public async Task InvalidOriginalSignatureIsRejectedByCoreBeforeReceiverContribution()
+    {
+        await RunScenarioAsync("invalid-signature", null, invalidOriginalSignature: true).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
+    public async Task PublishedOriginalIsRecognizedAndSettlesWithoutReceiverContribution()
+    {
+        await RunScenarioAsync("already-published", null, originalAlreadyPublished: true).ConfigureAwait(true);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [Trait("Integration", "Integration")]
+    public async Task RejectedOriginalReplayKeepsPreparedSettlementAccounting(bool missingExpectation, bool disableOutputSubstitution)
+    {
+        await RunScenarioAsync("rejected-prepared-replay", null, disableOutputSubstitution: disableOutputSubstitution,
+            rejectedReplayMissingExpectation: missingExpectation).ConfigureAwait(true);
+    }
+
+    [Theory]
+    [InlineData("close", false)]
+    [InlineData("close", true)]
+    [InlineData("cleanup", false)]
+    [InlineData("cleanup", true)]
+    [InlineData("native", false)]
+    [InlineData("native", true)]
+    [Trait("Integration", "Integration")]
+    public async Task PreparedReplayBackfillsBeforeExpiryDuringOriginalCheckAndSettles(string termination, bool disableOutputSubstitution)
+    {
+        await RunScenarioAsync("prepared-await-" + termination, null, disableOutputSubstitution: disableOutputSubstitution,
+            rejectedReplayMissingExpectation: true, preparedCheckTermination: termination).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Integration", "Integration")]
     public async Task UnavailableContributedInputResumesSameAttemptAndCreditsOnlySenderAmount()
     {
         await RunScenarioAsync("contributed-input-recovery", null, unavailableContributedInput: true).ConfigureAwait(true);
@@ -375,7 +415,9 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
     }
 
     private async Task RunScenarioAsync(string name, Money? amountOverride, bool changeDueAfterSessionCreation = false, bool expireBeforeBroadcast = false, bool disableOutputSubstitution = false,
-        bool nativeExpiryBeforeBroadcast = false, bool loadFailureBeforeBroadcast = false, bool unavailableContributedInput = false)
+        bool nativeExpiryBeforeBroadcast = false, bool loadFailureBeforeBroadcast = false, bool unavailableContributedInput = false,
+        bool invalidOriginalSignature = false, bool originalAlreadyPublished = false, bool? rejectedReplayMissingExpectation = null,
+        string? preparedCheckTermination = null)
     {
         using var cts = new CancellationTokenSource(PayjoinIntegrationTestSupport.TestTimeout);
         using var tester = CreateScenarioTester(name);
@@ -388,7 +430,7 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
         await PayjoinIntegrationTestSupport.EnablePayjoinAsync(tester, context.Merchant.StoreId, cancellationToken: cts.Token).ConfigureAwait(true);
         var paymentContext = await PayjoinInvoiceTestHelper.PreparePayjoinInvoiceAsync(
             tester, context.Merchant, context.Network, cts.Token).ConfigureAwait(true);
-        if (nativeExpiryBeforeBroadcast)
+        if (nativeExpiryBeforeBroadcast || preparedCheckTermination == "native")
             paymentContext = await ReplaceWithShortNativeSessionAsync(tester, context.Merchant.StoreId, paymentContext, 60, cts.Token).ConfigureAwait(true);
         await PayjoinReceiverTestHelper.AssertReceiverSessionEventuallyCreatedAsync(tester, paymentContext.InvoiceId, cts.Token).ConfigureAwait(true);
         Assert.NotEmpty(paymentContext.ReceiverOutpointsBeforePayment);
@@ -396,6 +438,10 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
         var controlledPoller = new OutputFailurePoller(tester, null) { Enabled = false };
         await using var controlledPollerScope = controlledPoller.ConfigureAwait(false);
         if (inputOutage is not null) await controlledPoller.StartAsync(cts.Token, inputOutage, inputOutage).ConfigureAwait(true);
+        var broadcastChecks = new RecordingBroadcastValidator(tester.PayTester.GetService<IPayjoinOriginalTransactionValidator>());
+        var receiverActions = invalidOriginalSignature || originalAlreadyPublished ? new ContributedInputOutage(tester) : null;
+        if (receiverActions is not null)
+            await controlledPoller.StartAsync(cts.Token, receiverActions, receiverActions, broadcastChecks).ConfigureAwait(true);
         if (changeDueAfterSessionCreation)
         {
             var partialTx = await tester.ExplorerNode.SendToAddressAsync(
@@ -417,7 +463,20 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
         var originalPrepared = new TaskCompletionSource<Transaction>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var senderCancellation = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
         var payjoinPayer = new PayjoinTestPayer(tester, payer, context.Network, mineBlockAfterBroadcast: false, disableOutputSubstitution: disableOutputSubstitution);
-        if (expireBeforeBroadcast || nativeExpiryBeforeBroadcast || loadFailureBeforeBroadcast)
+        if (invalidOriginalSignature || originalAlreadyPublished)
+        {
+            payjoinPayer.BeforeOriginalPostAsync = async (psbt, token) =>
+            {
+                if (invalidOriginalSignature)
+                {
+                    var pushes = psbt.Inputs[0].FinalScriptWitness!.Pushes.Select(push => push.ToArray()).ToArray();
+                    pushes[0][10] ^= 1;
+                    psbt.Inputs[0].FinalScriptWitness = new WitScript(pushes);
+                }
+                else await tester.ExplorerNode.SendRawTransactionAsync(psbt.ExtractTransaction(), cancellationToken: token).ConfigureAwait(false);
+            };
+        }
+        if (expireBeforeBroadcast || nativeExpiryBeforeBroadcast || loadFailureBeforeBroadcast || rejectedReplayMissingExpectation.HasValue)
         {
             payjoinPayer.BeforeBroadcastAsync = async (finalTransaction, token) =>
             {
@@ -439,6 +498,70 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
                 Assert.Equal(finalTransaction.GetHash().ToString(), bridge.ExpectedFinalTransactionId);
                 Assert.True((await tester.ExplorerNode.TestMempoolAcceptAsync(finalTransaction, cancellationToken: token).ConfigureAwait(false)).IsAllowed);
                 var recovered = RecoverSignedProposal(events, context.Network.NBitcoinNetwork);
+                if (rejectedReplayMissingExpectation.HasValue)
+                {
+                    await controlledPoller.StartAsync(token, validator: broadcastChecks).ConfigureAwait(false);
+                    await controlledPoller.DisposeAsync().ConfigureAwait(false);
+                    var prefix = Enumerable.Range(1, events.Length).First(count =>
+                    {
+                        using var replay = global::Payjoin.PayjoinMethods.ReplayReceiverEventLog(new PrefixPersister(events[..count]));
+                        using var state = replay.State();
+                        return state is global::Payjoin.ReceiveSession.PayjoinProposal;
+                    });
+                    using (var db = tester.PayTester.GetService<PayjoinPluginDbContextFactory>().CreateContext())
+                    {
+                        db.ReceiverSessionEvents.RemoveRange(db.ReceiverSessionEvents.Where(e => e.InvoiceId == held.InvoiceId && e.Sequence > prefix));
+                        var row = db.ReceiverSessions.Single(s => s.InvoiceId == held.InvoiceId);
+                        row.AttemptVersion++;
+                        if (rejectedReplayMissingExpectation.Value)
+                        {
+                            var data = db.AccountingBridges.Single(b => b.InvoiceId == held.InvoiceId);
+                            data.ExpectedFinalTransactionId = null;
+                            data.ExpectedFinalOutputIndex = null;
+                            data.ExpectedFinalValueSats = null;
+                        }
+                        await db.SaveChangesAsync(token).ConfigureAwait(false);
+                    }
+                    broadcastChecks.Reject = preparedCheckTermination != "native";
+                    if (preparedCheckTermination is not null)
+                    {
+                        broadcastChecks.BeforeResult = async () =>
+                        {
+                            var armed = await tester.PayTester.GetService<IPayjoinAccountingBridgeService>().TryGetByInvoiceIdAsync(held.InvoiceId, token).ConfigureAwait(false);
+                            Assert.Equal(bridge.ExpectedFinalTransactionId, armed!.ExpectedFinalTransactionId);
+                            Assert.Equal(bridge.ExpectedFinalOutputIndex, armed.ExpectedFinalOutputIndex);
+                            Assert.Equal(bridge.ExpectedFinalValueSats, armed.ExpectedFinalValueSats);
+                            if (preparedCheckTermination == "close")
+                                sessions.RequestClose(held.InvoiceId, InvoiceStatus.Expired, held.SessionInstanceId);
+                            else if (preparedCheckTermination == "cleanup")
+                            {
+                                using var db = tester.PayTester.GetService<PayjoinPluginDbContextFactory>().CreateContext();
+                                db.ReceiverSessions.Single(s => s.InvoiceId == held.InvoiceId).MonitoringExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+                                await db.SaveChangesAsync(token).ConfigureAwait(false);
+                            }
+                            else await WaitForNativeExpiryAsync(events[..prefix], token).ConfigureAwait(false);
+                        };
+                    }
+                    await controlledPoller.StartAsync(token, validator: broadcastChecks).ConfigureAwait(false);
+                    await AsyncPolling.WaitUntilAsync(preparedCheckTermination == "native" ? TimeSpan.FromSeconds(90) : OutcomeTimeout, PollInterval, async _ =>
+                    {
+                        var current = await tester.PayTester.GetService<IPayjoinAccountingBridgeService>().TryGetByInvoiceIdAsync(held.InvoiceId, token).ConfigureAwait(false);
+                        var verdict = broadcastChecks.Reject ? OriginalTransactionVerdict.Rejected : OriginalTransactionVerdict.Accepted;
+                        return broadcastChecks.Results.Any(r => r.Verdict == verdict) && current?.ExpectedFinalTransactionId == finalTransaction.GetHash().ToString();
+                    }, null, _ => "Prepared expectation was not retained/backfilled", token).ConfigureAwait(false);
+                    var replayHeld = sessions.GetAttempt(held.InvoiceId, held.SessionInstanceId);
+                    Assert.Equal(events[..prefix], replayHeld.GetEvents());
+                    Assert.Equal(uri, replayHeld.PayjoinUri);
+                    var currentBridge = await tester.PayTester.GetService<IPayjoinAccountingBridgeService>().TryGetByInvoiceIdAsync(held.InvoiceId, token).ConfigureAwait(false);
+                    Assert.Null(currentBridge!.FailureMessage);
+                    Assert.Equal(PayjoinAccountingBridgeStatus.PendingFinalTransaction, currentBridge.Status);
+                    Assert.Equal(bridge.ExpectedFinalOutputIndex, currentBridge.ExpectedFinalOutputIndex);
+                    Assert.Equal(bridge.ExpectedFinalValueSats, currentBridge.ExpectedFinalValueSats);
+                    Assert.Contains(await tester.PayTester.GetService<IPayjoinAccountingBridgeService>().GetPendingReconciliationAsync(DateTimeOffset.UtcNow, token).ConfigureAwait(false), b => b.InvoiceId == held.InvoiceId);
+                    TestLogs.LogInformation($"Prepared check termination={preparedCheckTermination ?? "none"}; URI and all {prefix} events retained; expected={currentBridge.ExpectedFinalTransactionId}:{currentBridge.ExpectedFinalOutputIndex}, value={currentBridge.ExpectedFinalValueSats}; reconciliation eligible");
+                    TestLogs.LogInformation($"Rejected original replay: invoice={held.InvoiceId}; backfill={rejectedReplayMissingExpectation.Value}; expected={currentBridge.ExpectedFinalTransactionId}; events={prefix}; noRepost=true; failure=null; reconciliation=pending");
+                    return;
+                }
                 if (loadFailureBeforeBroadcast)
                 {
                     string connectionString;
@@ -536,6 +659,57 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
             TestLogs.LogInformation($"Evidence {name}: invoice {paymentContext.InvoiceId}, original hex {original.ToHex()}");
             AssertSenderPaymentMatches(original, paymentContext, amountOverride ?? Money.Coins(paymentContext.ExpectedDue));
             Assert.DoesNotContain(original.Inputs, input => paymentContext.ReceiverOutpointsBeforePayment.Contains(input.PrevOut.ToString()));
+            if (invalidOriginalSignature || originalAlreadyPublished)
+            {
+                if (invalidOriginalSignature)
+                {
+                    var coreVerdict = await tester.ExplorerNode.TestMempoolAcceptAsync(original, cancellationToken: cts.Token).ConfigureAwait(true);
+                    Assert.False(coreVerdict.IsAllowed);
+                    await AsyncPolling.WaitUntilAsync(OutcomeTimeout, PollInterval,
+                        _ => Task.FromResult(broadcastChecks.Results.Any(r => r.Verdict == OriginalTransactionVerdict.Rejected)), null,
+                        _ => "NBXplorer did not return an explicit signature rejection", cts.Token).ConfigureAwait(true);
+                    var observed = Assert.Single(broadcastChecks.Results, r => r.Verdict == OriginalTransactionVerdict.Rejected);
+                    Assert.NotEmpty(observed.Reason);
+                    await AsyncPolling.WaitUntilAsync(OutcomeTimeout, PollInterval, _ =>
+                    {
+                        var sessions = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
+                        if (!sessions.TryGetSession(paymentContext.InvoiceId, out var saved)) return Task.FromResult(true);
+                        using var replay = global::Payjoin.PayjoinMethods.ReplayReceiverEventLog(PayjoinReceiverSessionStore.Snapshot(saved!));
+                        using var state = replay.State();
+                        return Task.FromResult(state is global::Payjoin.ReceiveSession.HasReplyableError or global::Payjoin.ReceiveSession.ReceiverPendingFallback or global::Payjoin.ReceiveSession.Closed);
+                    }, null, _ => "Invalid original did not persist its native rejection", cts.Token).ConfigureAwait(true);
+                    var rejectionBridge = await tester.PayTester.GetService<IPayjoinAccountingBridgeService>().TryGetByInvoiceIdAsync(paymentContext.InvoiceId, cts.Token).ConfigureAwait(true);
+                    Assert.Null(rejectionBridge!.ExpectedFinalTransactionId);
+                    Assert.Null(rejectionBridge.FailureMessage);
+                    Assert.False(payTask.IsCompletedSuccessfully);
+                    var signatureUnpaidInvoice = await tester.PayTester.GetService<InvoiceRepository>().GetInvoice(paymentContext.InvoiceId).ConfigureAwait(true);
+                    Assert.Empty(AccountedPayments(signatureUnpaidInvoice, paymentContext.PaymentMethodId));
+                    Assert.Equal(InvoiceStatus.New, signatureUnpaidInvoice.GetInvoiceState().Status);
+                    TestLogs.LogInformation($"Core original rejection: invoice={paymentContext.InvoiceId}; original={original.GetHash()}; reason={observed.Reason}; contributions=0; signing=0; proposalPosts=0; credit=0");
+                }
+                else
+                {
+                    OriginalTransactionValidation? known = null;
+                    await AsyncPolling.WaitUntilAsync(OutcomeTimeout, PollInterval, async _ =>
+                    {
+                        known = await tester.PayTester.GetService<IPayjoinOriginalTransactionValidator>().ValidateAsync(original.ToBytes(), cts.Token).ConfigureAwait(false);
+                        return known.Verdict == OriginalTransactionVerdict.AlreadyKnown;
+                    }, null, _ => $"Exact published original not observed: {known}", cts.Token).ConfigureAwait(true);
+                    await tester.ExplorerNode.GenerateAsync(1, cts.Token).ConfigureAwait(true);
+                    var settled = await WaitForInvoiceAsync(tester, paymentContext.InvoiceId, invoice => invoice.GetInvoiceState().Status == InvoiceStatus.Settled, cts.Token).ConfigureAwait(true);
+                    var credit = Assert.Single(AccountedPayments(settled, paymentContext.PaymentMethodId));
+                    Assert.Equal(InvoicePrice, credit.Value);
+                    TestLogs.LogInformation($"Known original settled: invoice={paymentContext.InvoiceId}; original={original.GetHash()}; credit={credit.Value}; state=Settled; contributions=0; signing=0; proposalPosts=0");
+                }
+                Assert.Equal(0, receiverActions!.Contributions);
+                Assert.Equal(0, receiverActions.Finalizations);
+                Assert.Equal(0, receiverActions.Posts);
+                Assert.Equal(0, controlledPoller.TotalCalls);
+                AssertNoReceiverReservations(tester, paymentContext.InvoiceId);
+                foreach (var outpoint in paymentContext.ReceiverOutpointsBeforePayment.Select(OutPoint.Parse))
+                    Assert.NotNull(await tester.ExplorerNode.GetTxOutAsync(outpoint.Hash, checked((int)outpoint.N), true, cts.Token).ConfigureAwait(true));
+                return;
+            }
             if (amountOverride is null)
             {
                 if (inputOutage is not null)
@@ -901,22 +1075,31 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
         private PayjoinReceiverPoller? _poller;
         public bool Enabled { get; set; } = true;
         public int Calls { get; private set; }
+        public int TotalCalls { get; private set; }
         public PayjoinAccountingBridgeState? Attached { get; private set; }
 
-        public async Task StartAsync(CancellationToken token, IPayjoinReceiverInputSelector? inputs = null, IPayjoinReceiverProposalFinalizer? finalizer = null)
+        public async Task StartAsync(CancellationToken token, IPayjoinReceiverInputSelector? inputs = null,
+            IPayjoinReceiverProposalFinalizer? finalizer = null, IPayjoinOriginalTransactionValidator? validator = null)
         {
             var existing = tester.PayTester.GetService<IEnumerable<Microsoft.Extensions.Hosting.IHostedService>>().OfType<PayjoinReceiverPoller>().Single();
             await existing.StopAsync(token).ConfigureAwait(false);
             var sessions = tester.PayTester.GetService<PayjoinReceiverSessionStore>();
             var bridges = tester.PayTester.GetService<IPayjoinAccountingBridgeService>();
             var payments = tester.PayTester.GetService<IPayjoinAccountingPaymentService>();
+            validator ??= tester.PayTester.GetService<IPayjoinOriginalTransactionValidator>();
+            var stateProcessor = new PayjoinReceiverStateProcessor(sessions,
+                tester.PayTester.GetService<IPayjoinReceiverRelayRequestSender>(),
+                tester.PayTester.GetService<IPayjoinWalletOwnershipService>(),
+                tester.PayTester.GetService<PayjoinSeenInputStore>(), tester.PayTester.GetService<PayjoinMailroomManager>(),
+                validator, tester.PayTester.GetService<IPayjoinReceiverSessionGuard>());
             var processor = new PayjoinReceiverSessionProcessor(sessions,
                 tester.PayTester.GetService<IPayjoinReceiverSessionGuard>(),
-                tester.PayTester.GetService<IPayjoinReceiverStateProcessor>(), this,
+                stateProcessor, this,
                 inputs ?? tester.PayTester.GetService<IPayjoinReceiverInputSelector>(), bridges,
                 finalizer ?? tester.PayTester.GetService<IPayjoinReceiverProposalFinalizer>(),
                 tester.PayTester.GetService<BTCPayNetworkProvider>(),
-                tester.PayTester.GetService<ILogger<PayjoinReceiverSessionProcessor>>());
+                tester.PayTester.GetService<ILogger<PayjoinReceiverSessionProcessor>>(),
+                validator);
             _poller = new PayjoinReceiverPoller(sessions, processor, bridges, payments,
                 tester.PayTester.GetService<ILogger<PayjoinReceiverPoller>>());
             await _poller.StartAsync(token).ConfigureAwait(false);
@@ -925,6 +1108,7 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
         public async Task<PayjoinReceiverOutputBuilder.OutputBuildResult> TryCreateSettlementOutputsAsync(string storeId, string invoiceId,
             byte[] receiverScript, bool preserveReceiverScript, long? pinnedSettlementAmountSats, CancellationToken cancellationToken)
         {
+            TotalCalls++;
             if (!Enabled) return await tester.PayTester.GetService<IPayjoinReceiverOutputBuilder>().TryCreateSettlementOutputsAsync(
                 storeId, invoiceId, receiverScript, preserveReceiverScript, pinnedSettlementAmountSats, cancellationToken).ConfigureAwait(false);
             Calls++;
@@ -950,6 +1134,7 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
         public volatile bool Available;
         public int Contributions { get; private set; }
         public int Finalizations { get; private set; }
+        public int Posts { get; private set; }
         public ConcurrentQueue<string> Lookups { get; } = new();
 
         public Task<ReceiverInputContributionResult> TryContributeInputsAsync(global::Payjoin.WantsInputs proposal, string storeId,
@@ -980,7 +1165,30 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
         }
 
         public Task EnsureExpectedFinalTransactionAsync(PayjoinReceiverProposalFinalizationContext context, global::Payjoin.IPayjoinProposal proposal, CancellationToken token) => _finalizer.EnsureExpectedFinalTransactionAsync(context, proposal, token);
-        public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, global::Payjoin.IPayjoinProposal proposal, CancellationToken token) => _finalizer.PostAsync(context, proposal, token);
+        public Task PostAsync(PayjoinReceiverProposalFinalizationContext context, global::Payjoin.IPayjoinProposal proposal, CancellationToken token)
+        {
+            Posts++;
+            return _finalizer.PostAsync(context, proposal, token);
+        }
+    }
+
+    private sealed class RecordingBroadcastValidator(IPayjoinOriginalTransactionValidator inner) : IPayjoinOriginalTransactionValidator
+    {
+        public volatile bool Reject;
+        public Func<Task>? BeforeResult { get; set; }
+        public ConcurrentQueue<OriginalTransactionValidation> Results { get; } = new();
+        public async Task<OriginalTransactionValidation> ValidateAsync(byte[] original, CancellationToken cancellationToken)
+        {
+            var result = Reject ? new OriginalTransactionValidation(OriginalTransactionVerdict.Rejected, "injected replay rejection")
+                : await inner.ValidateAsync(original, cancellationToken).ConfigureAwait(false);
+            if (BeforeResult is { } callback)
+            {
+                BeforeResult = null;
+                await callback().ConfigureAwait(false);
+            }
+            Results.Enqueue(result);
+            return result;
+        }
     }
 
     private sealed class FailingLoadFactory(string connectionString) : PayjoinPluginDbContextFactory(
