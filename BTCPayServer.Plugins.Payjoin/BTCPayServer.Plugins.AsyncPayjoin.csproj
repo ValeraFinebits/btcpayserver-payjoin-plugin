@@ -73,6 +73,7 @@
     <PackageReference Include="Microsoft.CodeAnalysis.Common" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     <PackageReference Include="NBXplorer.Client" />
+    <PackageReference Include="System.Formats.Cbor" />
 	<Compile Include="..\rust-payjoin\payjoin-ffi\csharp\Payjoin.Http.cs" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\Payjoin.Http.cs')" />
     <Compile Include="..\rust-payjoin\payjoin-ffi\csharp\src\payjoin.cs" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\src\payjoin.cs')" />
     <None Include="..\rust-payjoin\payjoin-ffi\csharp\lib\libpayjoin_ffi.so" Condition="Exists('..\rust-payjoin\payjoin-ffi\csharp\lib\libpayjoin_ffi.so')">
