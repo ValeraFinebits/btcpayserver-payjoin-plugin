@@ -8,7 +8,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBXplorer.Models;
-using Newtonsoft.Json.Linq;
 using Payjoin;
 using Xunit;
 
@@ -46,16 +45,6 @@ public class PayjoinFallbackIntegrationTests(ITestOutputHelper output) : UnitTes
                 .Send(address, Money.Satoshis(50_000)).SetChange(senderKey.PubKey.WitHash)
                 .SendFees(Money.Satoshis(1000)).BuildPSBT(true).Finalize();
         }
-        else if (scenario == "non-final")
-        {
-            var height = await tester.ExplorerNode.GetBlockCountAsync(token);
-            var funded = await tester.ExplorerNode.SendCommandAsync("walletcreatefundedpsbt",
-                new JArray(), new JObject { [address.ToString()] = 0.0005m },
-                height + 1, new JObject { ["replaceable"] = true, ["fee_rate"] = 5 }).WaitAsync(token);
-            var signed = await tester.ExplorerNode.SendCommandAsync("walletprocesspsbt", (string)funded.Result["psbt"]!).WaitAsync(token);
-            // Core 32 defaults to PSBTv2; rust-payjoin expects PSBTv0.
-            originalPsbt = PSBT.Parse((string)signed.Result["psbt"]!, Network.RegTest).ToPSBTv0().Finalize();
-        }
         else if (scenario == "missing-parent")
         {
             using var childKey = new Key();
@@ -79,6 +68,9 @@ public class PayjoinFallbackIntegrationTests(ITestOutputHelper output) : UnitTes
             originalPsbt = (await client.CreatePSBTAsync(account.Merchant.DerivationScheme, new CreatePSBTRequest
             {
                 FeePreference = new FeePreference { ExplicitFeeRate = new FeeRate(5m) },
+                LockTime = scenario == "non-final"
+                    ? new LockTime((uint)(await tester.ExplorerNode.GetBlockCountAsync(token) + 1))
+                    : null,
                 Destinations = { new CreatePSBTDestination { Destination = address, Amount = Money.Satoshis(50_000) } }
             }, token)).PSBT;
             originalPsbt = await account.Merchant.Sign(originalPsbt);
