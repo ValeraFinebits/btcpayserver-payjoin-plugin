@@ -5,7 +5,7 @@ using System.Linq;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
 
-internal enum PayjoinOwnershipLookupStatus { Ready, Deferred, Exhausted, CapacityUnavailable }
+internal enum PayjoinOwnershipLookupStatus { Ready, Deferred, Exhausted, Retired, CapacityUnavailable }
 
 internal sealed record PayjoinOwnershipLookupResult
 {
@@ -57,7 +57,7 @@ internal sealed class PayjoinOwnershipLookupStateStore
         {
             pass = null;
             PruneExpired();
-            if (session.MonitoringExpiresAt <= _clock.GetUtcNow()) return PayjoinOwnershipLookupStatus.Exhausted;
+            if (session.MonitoringExpiresAt <= _clock.GetUtcNow()) return PayjoinOwnershipLookupStatus.Retired;
             if (_calls.Count >= MaxCachedProposals) return PayjoinOwnershipLookupStatus.CapacityUnavailable;
             pass = new LookupPass(this, PayjoinOwnershipSessionKey.From(session), session.MonitoringExpiresAt);
             _calls.Add(pass);
@@ -72,7 +72,7 @@ internal sealed class PayjoinOwnershipLookupStateStore
         {
             state = null;
             PruneExpired();
-            if (IsRetiredCore(pass)) return PayjoinOwnershipLookupStatus.Exhausted;
+            if (IsRetiredCore(pass)) return PayjoinOwnershipLookupStatus.Retired;
             _proposals.TryGetValue(key, out var existing);
             if (existing is not null)
             {
@@ -99,7 +99,7 @@ internal sealed class PayjoinOwnershipLookupStateStore
     {
         lock (_sync)
         {
-            if (IsRetiredCore(pass)) return PayjoinOwnershipLookupStatus.Exhausted;
+            if (IsRetiredCore(pass)) return PayjoinOwnershipLookupStatus.Retired;
             var state = pass.Proposal!;
             if (budgetExceeded)
             {

@@ -37,7 +37,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
             "Payjoin ownership lookup deferred for {InvoiceId}; the receiver session remains active.");
     private static readonly Action<ILogger, string, Exception?> LogLookupExhausted =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(2, nameof(LogLookupExhausted)),
-            "Payjoin ownership SDK-operation budget exceeded for {InvoiceId}; no further passes will run for this proposal.");
+            "Payjoin ownership SDK-operation budget exceeded for {InvoiceId}; the receiver will cancel negotiation and handle the Original fallback.");
     private static readonly Action<ILogger, Exception?> LogLookupCapacityUnavailable =
         LoggerMessage.Define(LogLevel.Warning, new EventId(3, nameof(LogLookupCapacityUnavailable)),
             "Payjoin ownership lookup state capacity is unavailable; new proposals will retry on a later tick.");
@@ -85,7 +85,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
         if (!_isSessionCurrent(pass.Session) || _states.IsRetired(pass))
         {
             _states.Forget(pass.Session);
-            return Unavailable(PayjoinOwnershipLookupStatus.Exhausted);
+            return Unavailable(PayjoinOwnershipLookupStatus.Retired);
         }
         var wallet = await _getWalletContextAsync(session.StoreId, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
@@ -102,7 +102,7 @@ internal sealed class PayjoinWalletOwnershipService : IPayjoinWalletOwnershipSer
             var resolver = await ResolveInputsAsync(wallet.Client, wallet.AccountDerivation,
                 originalTransaction.InputOutpoints, state, pass, deadline.Token).ConfigureAwait(false);
             deadline.Token.ThrowIfCancellationRequested();
-            if (_states.IsRetired(pass)) return Unavailable(PayjoinOwnershipLookupStatus.Exhausted);
+            if (_states.IsRetired(pass)) return Unavailable(PayjoinOwnershipLookupStatus.Retired);
             if (originalTransaction.InputOutpoints.Any(input => resolver.GetOwnership(input) == PayjoinInputOwnership.Unknown))
                 return Fail(pass, session.InvoiceId, new InvalidOperationException("Input ownership evidence remains incomplete."));
             return PayjoinOwnershipLookupResult.Ready(resolver);

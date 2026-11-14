@@ -59,7 +59,8 @@ public class PayjoinSeenInputConcurrencyIntegrationTests(ITestOutputHelper helpe
         var bridge = new PayjoinAccountingBridgeService(fixture.Factory, new PayjoinSessionBuildLock());
         var mailroom = new PayjoinMailroomManager(NullLogger<PayjoinMailroomManager>.Instance, TimeSpan.FromMinutes(1),
             dependencies.FetchKeysAsync);
-        var stateProcessor = new PayjoinReceiverStateProcessor(fixture.Sessions, dependencies, dependencies, fixture.SeenInputs, mailroom);
+        var stateProcessor = new PayjoinReceiverStateProcessor(fixture.Sessions, dependencies, dependencies, fixture.SeenInputs, mailroom,
+            (_, _) => throw new InvalidOperationException("Unexpected fallback broadcast."));
         using var log = new ProcessorLog();
         var processor = new PayjoinReceiverSessionProcessor(fixture.Sessions, guard, stateProcessor, dependencies, dependencies,
             bridge, dependencies, CreateNetworkProvider(ChainName.Regtest), log);
