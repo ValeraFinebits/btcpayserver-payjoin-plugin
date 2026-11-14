@@ -7,6 +7,8 @@ using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Wallets;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
+using NBitcoin.RPC;
+using NBXplorer.Models;
 using NSubstitute;
 using Payjoin;
 using System.Net;
@@ -17,7 +19,7 @@ using Uri = System.Uri;
 
 namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 
-public class PayjoinReceiverRelayFlowTests
+public partial class PayjoinReceiverRelayFlowTests
 {
     [Theory]
     [InlineData("UncheckedOriginalPayload", false, false)]
@@ -930,7 +932,7 @@ public class PayjoinReceiverRelayFlowTests
         lookups.Clock.Advance(PayjoinOwnershipLookupStateStore.MaxRetryDelay);
         lookups.Handler.RespondAsync = lookups.DefaultResponseAsync;
         await fixture.Processor.ProcessTickAsync(CancellationToken.None);
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await lookups.LookupAsync(original, session)).Status);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Retired, (await lookups.LookupAsync(original, session)).Status);
         Assert.Equal(requests, lookups.Handler.Calls.Count);
         Assert.Equal(0, fixture.ProposalSigner.Calls);
     }
@@ -2218,13 +2220,15 @@ public class PayjoinReceiverRelayFlowTests
         public RecordingInputs Inputs { get; } = new();
         public FaultingWallet Wallet { get; } = new();
         public RecordingProposalSigner ProposalSigner { get; }
+        public RecordingFallback Fallback { get; } = new();
         private PassthroughSigner Signer { get; } = new();
         private BitcoinAddress Address => _key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
 
         public ReceiverFixture(TimeSpan? quarantineDuration = null, TimeProvider? timeProvider = null,
             ulong? pin = 50_000, ulong? nativeLifetimeSeconds = null, IPayjoinWalletOwnershipService? walletOwnership = null,
             bool atomicBootstrap = false,
-            PayjoinOwnershipLookupStateStore? ownershipLookups = null)
+            PayjoinOwnershipLookupStateStore? ownershipLookups = null,
+            TimeSpan? fallbackBroadcastTimeout = null)
         {
             Services.WaitForServicesReady();
             Transport = new LocalMailroomHandler(Services);
@@ -2251,7 +2255,8 @@ public class PayjoinReceiverRelayFlowTests
             var sender = new PayjoinReceiverRelayRequestSender(_settings, Manager, new PayjoinReceiverRelayClient(httpFactory));
             _sender = sender;
             StateProcessor = new PayjoinReceiverStateProcessor(Store, sender, walletOwnership ?? Wallet,
-                new PayjoinSeenInputStore(Factory), Manager, Validator, new ReplayingGuard(Store, Address.ScriptPubKey.ToBytes()));
+                new PayjoinSeenInputStore(Factory), Manager, Validator, new ReplayingGuard(Store, Address.ScriptPubKey.ToBytes()), Fallback.BroadcastAsync,
+                Fallback.Log, fallbackBroadcastTimeout: fallbackBroadcastTimeout, timeProvider: timeProvider ?? Fallback.Clock);
             var bridge = new PayjoinAccountingBridgeService(Factory, new PayjoinSessionBuildLock());
             BridgeService = bridge;
             if (!atomicBootstrap) Factory.SeedBridgeAsync(bridgeRequest, CancellationToken.None).GetAwaiter().GetResult();
@@ -2270,7 +2275,8 @@ public class PayjoinReceiverRelayFlowTests
             validator ??= Validator;
             var store = new PayjoinReceiverSessionStore(Factory, new SqliteUniqueConstraintViolationDetector(), Manager);
             var bridge = new PayjoinAccountingBridgeService(Factory, new PayjoinSessionBuildLock());
-            var stateProcessor = new PayjoinReceiverStateProcessor(store, _sender, Wallet, new PayjoinSeenInputStore(Factory), Manager, validator, new ReplayingGuard(store, Address.ScriptPubKey.ToBytes()));
+            var stateProcessor = new PayjoinReceiverStateProcessor(store, _sender, Wallet, new PayjoinSeenInputStore(Factory), Manager, validator, new ReplayingGuard(store, Address.ScriptPubKey.ToBytes()),
+                Fallback.BroadcastAsync, Fallback.Log, timeProvider: Fallback.Clock);
             var finalizer = new PayjoinReceiverProposalFinalizer(_sender, ProposalSigner, bridge, store, Networks);
             return new PayjoinReceiverSessionProcessor(store, new ReplayingGuard(store, Address.ScriptPubKey.ToBytes()),
                 stateProcessor, Outputs, Inputs, bridge, finalizer, Networks, NullLogger<PayjoinReceiverSessionProcessor>.Instance, validator);
@@ -2505,6 +2511,7 @@ public class PayjoinReceiverRelayFlowTests
 
     private sealed class FaultingWallet : IPayjoinWalletOwnershipService
     {
+        public PayjoinOwnershipLookupStatus Status { get; set; } = PayjoinOwnershipLookupStatus.Ready;
         public bool FailInputLookup { get; set; }
         public PayjoinInputOwnership InputOwnership { get; set; } = PayjoinInputOwnership.Foreign;
         public Func<NBitcoin.OutPoint, PayjoinInputOwnership>? InputOwnershipLookup { get; set; }
@@ -2519,6 +2526,7 @@ public class PayjoinReceiverRelayFlowTests
                 await BeforeInputLookup().ConfigureAwait(false);
             }
             if (FailInputLookup) throw new HttpRequestException("injected wallet lookup failure");
+            if (Status != PayjoinOwnershipLookupStatus.Ready) return PayjoinOwnershipLookupResult.Unavailable(Status);
             return PayjoinOwnershipLookupResult.Ready(new PayjoinInputOwnershipResolver(
                 originalTransaction.InputOutpoints.Distinct().ToDictionary(input => input, input => InputOwnershipLookup?.Invoke(input) ?? InputOwnership)));
         }

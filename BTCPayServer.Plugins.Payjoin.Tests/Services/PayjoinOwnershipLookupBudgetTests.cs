@@ -590,7 +590,7 @@ public class PayjoinOwnershipLookupBudgetTests
         fixture.Clock.Advance(fixture.Session.MonitoringExpiresAt - fixture.Clock.GetUtcNow());
         fixture.Handler.RespondAsync = fixture.DefaultResponseAsync;
 
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original)).Status);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Retired, (await fixture.LookupAsync(original)).Status);
         Assert.Equal(requests, fixture.Handler.Calls.Count);
         Assert.NotNull(await fixture.ResolveAsync(original, fixture.CreateSession(fixture.Session.InvoiceId)));
     }
@@ -647,7 +647,7 @@ public class PayjoinOwnershipLookupBudgetTests
         foreach (var session in sessions)
         {
             Assert.True(discard ? store.TryRemoveSessionUnlessNegotiating(session.InvoiceId) : store.RemoveSession(session.InvoiceId));
-            Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, session)).Status);
+            Assert.Equal(PayjoinOwnershipLookupStatus.Retired, (await fixture.LookupAsync(original, session)).Status);
         }
         Assert.Empty(store.GetSessions());
         Assert.Empty(fixture.Handler.Calls);
@@ -656,13 +656,13 @@ public class PayjoinOwnershipLookupBudgetTests
         var replacement = store.GetOrCreateSession(old.InvoiceId, "receiver", "store", fixture.Clock.GetUtcNow().AddHours(1), ["bootstrap"]);
         Assert.NotEqual(old.SessionInstanceId, replacement.SessionInstanceId);
         Assert.NotNull(await fixture.ResolveAsync(original, replacement));
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, old)).Status);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Retired, (await fixture.LookupAsync(original, old)).Status);
         foreach (var delaySeconds in ExpectedBackoffSeconds)
         {
             Assert.Null(await fixture.ResolveAsync(original, replacement));
             fixture.Clock.Advance(TimeSpan.FromSeconds(delaySeconds));
             Assert.NotNull(await fixture.ResolveAsync(original, replacement));
-            Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(original, old)).Status);
+            Assert.Equal(PayjoinOwnershipLookupStatus.Retired, (await fixture.LookupAsync(original, old)).Status);
         }
         var other = store.GetOrCreateSession("healthy", "receiver", "another-store", fixture.Clock.GetUtcNow().AddHours(1), ["bootstrap"]);
         Assert.NotNull(await fixture.ResolveAsync(original, other));
@@ -685,7 +685,7 @@ public class PayjoinOwnershipLookupBudgetTests
         };
         fixture.LoadWallet = () => throw new InvalidOperationException("A retired lookup must not load its wallet.");
 
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await fixture.LookupAsync(fixture.CreateOriginal(1), session)).Status);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Retired, (await fixture.LookupAsync(fixture.CreateOriginal(1), session)).Status);
         Assert.Empty(fixture.Handler.Calls);
         Assert.Empty(store.GetSessions());
     }
@@ -705,7 +705,7 @@ public class PayjoinOwnershipLookupBudgetTests
         Assert.NotEqual(fixture.Session.SessionInstanceId, replacement.SessionInstanceId);
         Assert.NotNull(await fixture.ResolveAsync(original, replacement));
         loaded.TrySetResult(fixture.Wallet);
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await oldLookup.ConfigureAwait(true)).Status);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Retired, (await oldLookup.ConfigureAwait(true)).Status);
         Assert.Equal(3, fixture.Handler.Calls.Count);
         fixture.States.Forget(PayjoinOwnershipSessionKey.From(fixture.Session));
         foreach (var delaySeconds in ExpectedBackoffSeconds)
@@ -737,7 +737,7 @@ public class PayjoinOwnershipLookupBudgetTests
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.True(store.RemoveSession(session.InvoiceId));
         release.TrySetResult();
-        Assert.Equal(PayjoinOwnershipLookupStatus.Exhausted, (await lookup.ConfigureAwait(true)).Status);
+        Assert.Equal(PayjoinOwnershipLookupStatus.Retired, (await lookup.ConfigureAwait(true)).Status);
         fixture.Handler.RespondAsync = fixture.DefaultResponseAsync;
 
         Assert.NotNull(await fixture.ResolveAsync(original, fixture.CreateSession("healthy")));
