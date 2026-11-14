@@ -53,7 +53,8 @@ public class PayjoinFallbackIntegrationTests(ITestOutputHelper output) : UnitTes
                 new JArray(), new JObject { [address.ToString()] = 0.0005m },
                 height + 1, new JObject { ["replaceable"] = true, ["fee_rate"] = 5 }).WaitAsync(token);
             var signed = await tester.ExplorerNode.SendCommandAsync("walletprocesspsbt", (string)funded.Result["psbt"]!).WaitAsync(token);
-            originalPsbt = PSBT.Parse((string)signed.Result["psbt"]!, Network.RegTest).Finalize();
+            // Core 32 defaults to PSBTv2; rust-payjoin expects PSBTv0.
+            originalPsbt = PSBT.Parse((string)signed.Result["psbt"]!, Network.RegTest).ToPSBTv0().Finalize();
         }
         else if (scenario == "missing-parent")
         {
