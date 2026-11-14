@@ -79,7 +79,7 @@ internal sealed class NativeSeenInputTestSupport : IDisposable
         return ownership.Save(persister);
     }
 
-    private async Task<byte[]> SendAsync(Request request, CancellationToken cancellationToken)
+    internal async Task<byte[]> SendAsync(Request request, CancellationToken cancellationToken)
     {
         var url = new Uri(request.Url);
         if (url.Host == "localhost" && url.Port == _relay.Port)

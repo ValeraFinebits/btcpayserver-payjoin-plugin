@@ -94,6 +94,8 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
             if (TryRemoveCloseRequestedSession(session, replayState)) return null;
 
+            _sessionStore.CompleteOwnershipLookupIfFinished(session, replayState);
+
             var result = new PayjoinReceiverSessionGuardResult(
                 session,
                 persister,
@@ -104,7 +106,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
 
             if (fallbackBytes is { Length: > 0 })
             {
-                result.StateContext.OriginalInputOutpoints = PayjoinReceiverStateProcessor.ExtractOriginalInputOutpoints(fallbackBytes);
+                result.StateContext.OriginalTransaction = PayjoinReceiverStateProcessor.ExtractTransactionFacts(fallbackBytes);
             }
 
             replay = null;
