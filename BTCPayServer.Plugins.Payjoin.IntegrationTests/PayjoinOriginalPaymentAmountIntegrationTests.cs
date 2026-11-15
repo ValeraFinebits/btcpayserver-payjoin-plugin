@@ -6,6 +6,7 @@ using BTCPayServer.Plugins.Payjoin.Data;
 using BTCPayServer.Plugins.Payjoin.IntegrationTests.TestUtils;
 using BTCPayServer.Plugins.Payjoin.Services;
 using BTCPayServer.Services.Invoices;
+using BTCPayServer.Services.Wallets;
 using BTCPayServer.Tests;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -1091,7 +1092,9 @@ public sealed class PayjoinOriginalPaymentAmountIntegrationTests : UnitTestBase
                 tester.PayTester.GetService<IPayjoinReceiverRelayRequestSender>(),
                 tester.PayTester.GetService<IPayjoinWalletOwnershipService>(),
                 tester.PayTester.GetService<PayjoinSeenInputStore>(), tester.PayTester.GetService<PayjoinMailroomManager>(),
-                validator, tester.PayTester.GetService<IPayjoinReceiverSessionGuard>());
+                validator, tester.PayTester.GetService<IPayjoinReceiverSessionGuard>(),
+                tester.PayTester.GetService<ExplorerClientProvider>(), tester.PayTester.GetService<BTCPayNetworkProvider>(),
+                tester.PayTester.GetService<ILogger<PayjoinReceiverStateProcessor>>());
             var processor = new PayjoinReceiverSessionProcessor(sessions,
                 tester.PayTester.GetService<IPayjoinReceiverSessionGuard>(),
                 stateProcessor, this,

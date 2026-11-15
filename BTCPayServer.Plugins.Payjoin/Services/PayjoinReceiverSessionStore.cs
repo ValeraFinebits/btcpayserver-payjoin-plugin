@@ -31,13 +31,15 @@ public sealed class PayjoinReceiverSessionStore
     private readonly PayjoinMailroomManager? _mailroomManager;
     private readonly ILogger<PayjoinReceiverSessionStore>? _logger;
     private readonly IPayjoinInvoiceEventPublisher? _invoiceEvents;
+    private readonly PayjoinOwnershipLookupStateStore? _ownershipLookups;
 
     internal PayjoinReceiverSessionStore(
         PayjoinPluginDbContextFactory pluginDbContextFactory,
         IPayjoinUniqueConstraintViolationDetector uniqueConstraintViolationDetector,
         PayjoinMailroomManager? mailroomManager = null,
         ILogger<PayjoinReceiverSessionStore>? logger = null,
-        IPayjoinInvoiceEventPublisher? invoiceEvents = null)
+        IPayjoinInvoiceEventPublisher? invoiceEvents = null,
+        PayjoinOwnershipLookupStateStore? ownershipLookups = null)
     {
         ArgumentNullException.ThrowIfNull(pluginDbContextFactory);
         ArgumentNullException.ThrowIfNull(uniqueConstraintViolationDetector);
@@ -46,6 +48,7 @@ public sealed class PayjoinReceiverSessionStore
         _mailroomManager = mailroomManager;
         _logger = logger;
         _invoiceEvents = invoiceEvents;
+        _ownershipLookups = ownershipLookups;
     }
 
     internal PayjoinReceiverSessionState GetOrCreateSession(
@@ -188,6 +191,13 @@ public sealed class PayjoinReceiverSessionStore
         return state;
     }
 
+    internal bool IsCurrentSession(PayjoinOwnershipSessionKey session)
+    {
+        using var context = _pluginDbContextFactory.CreateContext();
+        return context.ReceiverSessions.Any(row => row.InvoiceId == session.InvoiceId
+            && row.StoreId == session.StoreId && row.SessionInstanceId == session.SessionInstanceId);
+    }
+
     internal static JsonReceiverSessionPersister Snapshot(PayjoinReceiverSessionState session) => new SnapshotPersister(session.GetEvents());
 
     internal sealed record PaymentSnapshot(PayjoinReceiverSessionState Session, PayjoinAccountingBridgeState? Bridge);
@@ -260,6 +270,7 @@ public sealed class PayjoinReceiverSessionStore
                 context.AccountingBridges.Remove(bridge);
                 context.ReceiverSessions.Remove(row);
                 context.SaveChanges();
+                _ownershipLookups?.Forget(new PayjoinOwnershipSessionKey(row.StoreId, row.InvoiceId, row.SessionInstanceId));
                 _mailroomManager?.ClearSessionFailedRelays(row.InvoiceId);
                 return EarlyRejectionResult.Rejected;
             }
@@ -310,6 +321,7 @@ public sealed class PayjoinReceiverSessionStore
                 context.AccountingBridges.Remove(bridge);
                 context.ReceiverSessions.Remove(row);
                 context.SaveChanges();
+                _ownershipLookups?.Forget(new PayjoinOwnershipSessionKey(row.StoreId, row.InvoiceId, row.SessionInstanceId));
                 _mailroomManager?.ClearSessionFailedRelays(invoiceId);
                 return true;
             }
@@ -406,10 +418,12 @@ public sealed class PayjoinReceiverSessionStore
             return false;
         }
 
+        var ownershipSession = new PayjoinOwnershipSessionKey(sessionData.StoreId, sessionData.InvoiceId, sessionData.SessionInstanceId);
         RemoveAllSessionEvents(context, sessionData);
         RemoveInputReservations(context, invoiceId);
         context.ReceiverSessions.Remove(sessionData);
         context.SaveChanges();
+        _ownershipLookups?.Forget(ownershipSession);
         _mailroomManager?.ClearSessionFailedRelays(invoiceId);
         return true;
     });
@@ -445,10 +459,12 @@ public sealed class PayjoinReceiverSessionStore
             return false;
         }
 
+        var ownershipSession = new PayjoinOwnershipSessionKey(sessionData.StoreId, sessionData.InvoiceId, sessionData.SessionInstanceId);
         RemoveAllSessionEvents(context, sessionData);
         RemoveInputReservations(context, invoiceId);
         context.ReceiverSessions.Remove(sessionData);
         context.SaveChanges();
+        _ownershipLookups?.Forget(ownershipSession);
         _mailroomManager?.ClearSessionFailedRelays(invoiceId);
         return true;
     });
@@ -632,6 +648,18 @@ public sealed class PayjoinReceiverSessionStore
         context.SaveChanges();
         return true;
     });
+
+    internal void CompleteOwnershipLookup(PayjoinReceiverSessionState session)
+        => _ownershipLookups?.Forget(PayjoinOwnershipSessionKey.From(session));
+
+    internal void CompleteOwnershipLookupIfFinished(PayjoinReceiverSessionState session, ReceiveSession state)
+    {
+        if (state is ReceiveSession.MaybeInputsSeen or ReceiveSession.OutputsUnknown or ReceiveSession.HasReplyableError
+            or ReceiveSession.WantsOutputs or ReceiveSession.WantsInputs or ReceiveSession.WantsFeeRange
+            or ReceiveSession.ProvisionalProposal or ReceiveSession.PayjoinProposal or ReceiveSession.ReceiverPendingFallback
+            or ReceiveSession.Monitor or ReceiveSession.Closed)
+            CompleteOwnershipLookup(session);
+    }
 
     internal DatabaseBackedReceiverPersister CreatePersister(PayjoinReceiverSessionState session)
     {

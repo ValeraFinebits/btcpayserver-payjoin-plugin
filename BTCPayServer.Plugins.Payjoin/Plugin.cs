@@ -29,12 +29,14 @@ public class Plugin : BaseBTCPayServerPlugin
         applicationBuilder.AddScoped<IGlobalCheckoutModelExtension>(provider => provider.GetRequiredService<PayjoinBitcoinCheckoutModelExtension>());
         applicationBuilder.Configure<MvcOptions>(options => options.Filters.AddService<PayjoinBitcoinCheckoutModelExtension>());
         applicationBuilder.AddSingleton<IPayjoinUniqueConstraintViolationDetector, PostgresPayjoinUniqueConstraintViolationDetector>();
+        applicationBuilder.AddSingleton<PayjoinOwnershipLookupStateStore>();
         applicationBuilder.AddSingleton(provider => new PayjoinReceiverSessionStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>(),
             provider.GetRequiredService<IPayjoinUniqueConstraintViolationDetector>(),
             provider.GetRequiredService<PayjoinMailroomManager>(),
             provider.GetService<ILogger<PayjoinReceiverSessionStore>>(),
-            provider.GetRequiredService<IPayjoinInvoiceEventPublisher>()));
+            provider.GetRequiredService<IPayjoinInvoiceEventPublisher>(),
+            provider.GetRequiredService<PayjoinOwnershipLookupStateStore>()));
         applicationBuilder.AddSingleton(provider => new PayjoinSeenInputStore(
             provider.GetRequiredService<PayjoinPluginDbContextFactory>()));
         applicationBuilder.AddSingleton<IPayjoinWalletOwnershipService, PayjoinWalletOwnershipService>();
