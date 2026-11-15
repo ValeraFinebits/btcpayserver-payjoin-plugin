@@ -311,7 +311,7 @@ public class PayjoinOwnershipLookupBudgetTests
         };
         var guard = new OwnershipGuard(fixture.Service, blocked, healthy);
         var processor = new PayjoinReceiverSessionProcessor(store, guard, null!, null!, null!,
-            database.CreateBridgeService(), null!, null!, NullLogger<PayjoinReceiverSessionProcessor>.Instance);
+            database.CreateBridgeService(), null!, null!, NullLogger<PayjoinReceiverSessionProcessor>.Instance, originalValidator: null!);
         var maxTicks = (blockedCount + PayjoinOwnershipLookupStateStore.MaxConcurrentPasses - 1)
             / PayjoinOwnershipLookupStateStore.MaxConcurrentPasses + 1;
         for (var tick = 0; tick < maxTicks && !guard.HealthyCompleted; tick++)
@@ -548,7 +548,7 @@ public class PayjoinOwnershipLookupBudgetTests
         };
         var guard = new OwnershipGuard(fixture.Service, blocked, healthy);
         var processor = new PayjoinReceiverSessionProcessor(store, guard, null!, null!, null!,
-            database.CreateBridgeService(), null!, null!, NullLogger<PayjoinReceiverSessionProcessor>.Instance);
+            database.CreateBridgeService(), null!, null!, NullLogger<PayjoinReceiverSessionProcessor>.Instance, originalValidator: null!);
         var rounds = (blockedCount + PayjoinOwnershipLookupStateStore.MaxConcurrentPasses - 1)
             / PayjoinOwnershipLookupStateStore.MaxConcurrentPasses;
         const int retryCycles = 4;

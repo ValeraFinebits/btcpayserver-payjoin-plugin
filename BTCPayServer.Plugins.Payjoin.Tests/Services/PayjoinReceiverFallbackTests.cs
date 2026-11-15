@@ -408,7 +408,7 @@ public partial class PayjoinReceiverRelayFlowTests
 
         await fixture.Processor.ProcessTickAsync(CancellationToken.None);
 
-        AssertReceiverState<ReceiveSession.ReceiverPendingFallback>(fixture);
+        Assert.False(fixture.Store.TryGetSession("invoice", out _));
         Assert.Single(fixture.Fallback.Calls);
     }
 

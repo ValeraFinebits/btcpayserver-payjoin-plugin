@@ -155,7 +155,7 @@ internal sealed class PayjoinReceiverSessionGuard : IPayjoinReceiverSessionGuard
         return new PayjoinReceiverStateContext(latest, context.Persister, context.ReceiverScript,
             context.StoreId, context.InvoiceId, prepared.StateContext.RemoveCloseRequestedSession)
         {
-            OriginalInputOutpoints = context.OriginalInputOutpoints,
+            OriginalTransaction = context.OriginalTransaction,
             InputOwnershipResolver = context.InputOwnershipResolver
         };
     }
