@@ -25,14 +25,14 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
 
     public async Task<(byte[] ResponseBody, TRequestContext RequestContext)> SendAsync<TRequestContext>(
         string storeId,
-        string invoiceId,
+        string sessionId,
         Func<string, TRequestContext> buildRequest,
         Func<TRequestContext, (SystemUri Url, string ContentType, byte[] Body)> describeRequest,
         CancellationToken cancellationToken)
         where TRequestContext : IDisposable
     {
         ArgumentNullException.ThrowIfNull(storeId);
-        ArgumentNullException.ThrowIfNull(invoiceId);
+        ArgumentNullException.ThrowIfNull(sessionId);
         ArgumentNullException.ThrowIfNull(buildRequest);
         ArgumentNullException.ThrowIfNull(describeRequest);
 
@@ -54,7 +54,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
         while (remainingRelays.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relayUrl = _mailroomManager.ChooseRelayForRequest(remainingRelays, invoiceId);
+            var relayUrl = _mailroomManager.ChooseRelayForRequest(remainingRelays, sessionId);
             if (relayUrl is null)
             {
                 break;
@@ -79,7 +79,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
                 requestContext.Dispose();
                 if (ex.StatusCode is not null)
                 {
-                    _mailroomManager.MarkRelayFailedForSession(invoiceId, relayUrl);
+                    _mailroomManager.MarkRelayFailedForSession(sessionId, relayUrl);
                 }
                 else
                 {
@@ -101,7 +101,7 @@ internal sealed class PayjoinReceiverRelayRequestSender : IPayjoinReceiverRelayR
             ExceptionDispatchInfo.Capture(lastTransportError).Throw();
         }
 
-        throw new PayjoinReceiverRelayTimeoutException($"No configured OHTTP relays are currently available for invoice '{invoiceId}'.");
+        throw new PayjoinReceiverRelayTimeoutException($"No configured OHTTP relays are currently available for payjoin session '{sessionId}'.");
     }
 
     private static void RemoveRelay(List<SystemUri> remainingRelays, SystemUri relayUrl)
