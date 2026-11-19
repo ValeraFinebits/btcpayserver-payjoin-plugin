@@ -32,6 +32,24 @@ namespace BTCPayServer.Plugins.Payjoin.Tests;
 
 public class PluginRegistrationTests
 {
+    [Theory]
+    [InlineData(nameof(PayjoinReceiverPoller), false)]
+    [InlineData(nameof(RunTestPaymentService), true)]
+    public void PluginDisablesRedirectsOnlyForTheReceiverRelayClient(string clientName, bool allowAutoRedirect)
+    {
+        var services = new ServiceCollection();
+        new Plugin().Execute(services);
+
+        using var provider = services.BuildServiceProvider();
+        var handler = provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(clientName);
+        while (handler is DelegatingHandler { InnerHandler: { } innerHandler })
+        {
+            handler = innerHandler;
+        }
+
+        Assert.Equal(allowAutoRedirect, Assert.IsType<SocketsHttpHandler>(handler).AllowAutoRedirect);
+    }
+
     [Fact]
     public void PluginRegistersBitcoinCheckoutExtensions()
     {
