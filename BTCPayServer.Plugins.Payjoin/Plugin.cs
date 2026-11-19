@@ -1,10 +1,13 @@
+using System;
 using BTCPayServer.Abstractions.Contracts;
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.Payjoin.Services;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using NicolasDorier.RateLimits;
 
 namespace BTCPayServer.Plugins.Payjoin;
 
@@ -14,6 +17,14 @@ public class Plugin : BaseBTCPayServerPlugin
     {
         new IBTCPayServerPlugin.PluginDependency { Identifier = nameof(BTCPayServer), Condition = ">=2.4.0" }
     };
+
+    internal const string CheckoutPaymentUrlRateLimitZone = "async-payjoin-checkout-payment-url";
+
+    public override void Execute(IApplicationBuilder applicationBuilder, IServiceProvider applicationBuilderApplicationServices)
+    {
+        applicationBuilderApplicationServices.GetRequiredService<IRateLimitService>()
+            .SetZone($"zone={CheckoutPaymentUrlRateLimitZone} rate=30r/min burst=12 nodelay");
+    }
 
     public override void Execute(IServiceCollection applicationBuilder)
     {
@@ -80,6 +91,7 @@ public class Plugin : BaseBTCPayServerPlugin
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PayjoinUriSessionService>>()));
         applicationBuilder.AddSingleton<ISwaggerProvider, PayjoinSwaggerProvider>();
         applicationBuilder.AddSingleton<IPayjoinInvoiceLookup, PayjoinInvoiceLookup>();
+        applicationBuilder.AddSingleton<PayjoinCheckoutPaymentUrl>();
         applicationBuilder.AddSingleton<PayjoinInvoicePaymentUrlService>();
         applicationBuilder.AddSingleton<IPayjoinInvoicePaymentUrlService>(provider => provider.GetRequiredService<PayjoinInvoicePaymentUrlService>());
         applicationBuilder.AddSingleton(provider => new PayjoinSenderSessionStore(

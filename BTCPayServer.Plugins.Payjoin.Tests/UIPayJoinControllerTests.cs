@@ -8,6 +8,7 @@ using BTCPayServer.Services.Invoices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
@@ -45,7 +46,9 @@ public class UIPayJoinControllerTests
             .Returns(Task.FromResult<GetBip21Response?>(serviceResponse));
         using var controller = new UIPayJoinController(null!, null!, null!, null!, null!, null!, paymentUrlService, null!);
 
-        var result = await controller.GetInvoicePaymentUrl("invoice-1", TestContext.Current.CancellationToken).ConfigureAwait(true);
+        using var checkoutPaymentUrl = new PayjoinCheckoutPaymentUrl(paymentUrlService, Substitute.For<IHostApplicationLifetime>());
+        var result = await controller.GetInvoicePaymentUrl("invoice-1", checkoutPaymentUrl, TestContext.Current.CancellationToken)
+            .ConfigureAwait(true);
 
         var okResult = Assert.IsType<OkObjectResult>(result.Result);
         return Assert.IsType<PayjoinCheckoutAvailabilityResponse>(okResult.Value);
