@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace BTCPayServer.Plugins.Payjoin.Services;
@@ -16,6 +17,7 @@ namespace BTCPayServer.Plugins.Payjoin.Services;
 internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionProcessor
 {
     internal const int MaxConcurrentReceiverSessions = 16;
+    internal const int MaxConcurrentMailboxPolls = 8;
 
     private static readonly Action<ILogger, string, Exception?> LogPayjoinReceiverPollingFailedForInvoice =
         LoggerMessage.Define<string>(LogLevel.Warning, new EventId(2, nameof(LogPayjoinReceiverPollingFailedForInvoice)),
@@ -89,27 +91,66 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
 
     public async Task ProcessTickAsync(CancellationToken stoppingToken)
     {
-        await Parallel.ForEachAsync(
-            _sessionStore.GetSessions(),
+        using var readySlots = new SemaphoreSlim(MaxConcurrentReceiverSessions);
+        // At most one entry per row in this tick's snapshot. Queue snapshots so native
+        // replay handles are opened only by a worker that already has capacity.
+        var mailbox = Channel.CreateUnbounded<PayjoinReceiverSessionState>();
+        var mailboxWork = Parallel.ForEachAsync(
+            mailbox.Reader.ReadAllAsync(stoppingToken),
             new ParallelOptions
             {
-                MaxDegreeOfParallelism = MaxConcurrentReceiverSessions,
+                MaxDegreeOfParallelism = MaxConcurrentMailboxPolls,
                 CancellationToken = stoppingToken
             },
-            async (session, cancellationToken) =>
+            (session, token) => new ValueTask(ProcessSessionWithIsolationAsync(session, null, readySlots, token)));
+
+        await Task.WhenAll(mailboxWork, DispatchSessionsAsync()).ConfigureAwait(false);
+
+        async Task DispatchSessionsAsync()
+        {
+            try
             {
-                await ProcessSessionWithIsolationAsync(session, cancellationToken).ConfigureAwait(false);
-            }).ConfigureAwait(false);
+                await Parallel.ForEachAsync(
+                    _sessionStore.GetSessions(),
+                    new ParallelOptions
+                    {
+                        MaxDegreeOfParallelism = MaxConcurrentReceiverSessions,
+                        CancellationToken = stoppingToken
+                    },
+                    (session, token) => new ValueTask(RunReadyAsync(readySlots,
+                        () => ProcessSessionWithIsolationAsync(session, mailbox.Writer, readySlots, token), token)))
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                mailbox.Writer.Complete();
+            }
+        }
+    }
+
+    private static async Task RunReadyAsync(SemaphoreSlim slots, Func<Task> work, CancellationToken cancellationToken)
+    {
+        await slots.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await work().ConfigureAwait(false);
+        }
+        finally
+        {
+            slots.Release();
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "This is the per-session isolation boundary of a background poller: one session's failure must never cancel the parallel tick or crash the host.")]
-    private async ValueTask ProcessSessionWithIsolationAsync(PayjoinReceiverSessionState session, CancellationToken stoppingToken)
+    private async Task ProcessSessionWithIsolationAsync(
+        PayjoinReceiverSessionState session, ChannelWriter<PayjoinReceiverSessionState>? mailbox,
+        SemaphoreSlim readySlots, CancellationToken stoppingToken)
     {
         try
         {
             try
             {
-                await ProcessSessionAsync(session, stoppingToken).ConfigureAwait(false);
+                await ProcessSessionAsync(session, mailbox, readySlots, stoppingToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (PayjoinSessionStaleException.IsStale(ex))
             {
@@ -144,7 +185,9 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
         }
     }
 
-    private async Task ProcessSessionAsync(PayjoinReceiverSessionState session, CancellationToken stoppingToken)
+    private async Task ProcessSessionAsync(
+        PayjoinReceiverSessionState session, ChannelWriter<PayjoinReceiverSessionState>? mailbox,
+        SemaphoreSlim readySlots, CancellationToken stoppingToken)
     {
         _sessionStore.GetAttempt(session.InvoiceId, session.SessionInstanceId);
         // Failed sessions are recovery evidence. The guard may otherwise expire or close them.
@@ -154,8 +197,46 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
             return;
         }
 
-        using var guardedSession = await _sessionGuard.TryPrepareAsync(session, stoppingToken).ConfigureAwait(false);
+        var guardedSession = await _sessionGuard.TryPrepareAsync(session, stoppingToken).ConfigureAwait(false);
         if (guardedSession is null)
+        {
+            return;
+        }
+
+        if (mailbox is not null && guardedSession.State is ReceiveSession.Initialized)
+        {
+            using (guardedSession)
+            {
+                session = guardedSession.Session;
+            }
+
+            await mailbox.WriteAsync(session, stoppingToken).ConfigureAwait(false);
+            return;
+        }
+
+        using var ownedSession = guardedSession;
+        if (guardedSession.State is ReceiveSession.Initialized initialized)
+        {
+            try
+            {
+                await _stateProcessor.ProcessInitializedAsync(
+                    guardedSession.StateContext, initialized.Inner, ContinueWithOutputsAsync, stoppingToken,
+                    (work, token) => RunReadyAsync(readySlots, work, token)).ConfigureAwait(false);
+            }
+            catch (PayjoinReceiverRelayTimeoutException ex)
+            {
+                LogPayjoinReceiverInitializedPollTimedOut(_logger, session.InvoiceId, ex.Timeout.TotalSeconds, null);
+            }
+            catch (PayjoinAccountingReconciliationDataException ex)
+            {
+                _sessionStore.FailPayment(guardedSession.Persister, ex.Message);
+            }
+
+            return;
+        }
+
+        // If this attempt advanced after dispatch, the next receiver tick owns its ready work.
+        if (mailbox is null)
         {
             return;
         }
@@ -215,17 +296,6 @@ internal sealed class PayjoinReceiverSessionProcessor : IPayjoinReceiverSessionP
 
             switch (guardedSession.State)
             {
-                case ReceiveSession.Initialized initialized:
-                    try
-                    {
-                        await _stateProcessor.ProcessInitializedAsync(stateContext, initialized.Inner, ContinueWithOutputsAsync, stoppingToken).ConfigureAwait(false);
-                    }
-                    catch (PayjoinReceiverRelayTimeoutException ex)
-                    {
-                        LogPayjoinReceiverInitializedPollTimedOut(_logger, session.InvoiceId, ex.Timeout.TotalSeconds, null);
-                    }
-
-                    break;
                 case ReceiveSession.HasReplyableError hasReplyableError:
                     await _stateProcessor.ProcessReplyableErrorAsync(stateContext, hasReplyableError.Inner, stoppingToken).ConfigureAwait(false);
                     break;

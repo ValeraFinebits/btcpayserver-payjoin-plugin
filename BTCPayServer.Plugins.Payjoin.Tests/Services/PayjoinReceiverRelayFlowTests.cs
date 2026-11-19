@@ -697,6 +697,101 @@ public partial class PayjoinReceiverRelayFlowTests
     }
 
     [Fact]
+    public async Task ReadySessionProcessesWhileMailboxIsFullAndCancellationDrainsWorkers()
+    {
+        using var fixture = new ReceiverFixture();
+        var seed = fixture.Session();
+        var limit = PayjoinReceiverSessionProcessor.MaxConcurrentMailboxPolls;
+        var initializedEvents = seed.GetEvents();
+        await fixture.PostOriginalAsync();
+        fixture.Validator.Verdict = OriginalTransactionVerdict.Unavailable;
+        await fixture.Processor.ProcessTickAsync(TestContext.Current.CancellationToken);
+        using (var journal = fixture.Replay())
+        using (var readyState = journal.State())
+            Assert.IsType<ReceiveSession.UncheckedOriginalPayload>(readyState);
+        for (var i = 0; i <= limit; i++)
+            fixture.Store.GetOrCreateSession($"idle-{i}", seed.ReceiverAddress, seed.StoreId, seed.MonitoringExpiresAt, initializedEvents);
+
+        var full = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var polls = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
+        var guard = new ReplayingGuard(fixture.Store, fixture.Context().ReceiverScript);
+        var active = 0;
+        var state = new SchedulingStateProcessor(
+            async (invoice, cancellationToken) =>
+            {
+                await full.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (invoice == seed.InvoiceId) ready.TrySetResult();
+            },
+            async (invoice, cancellationToken) =>
+            {
+                polls.AddOrUpdate(invoice, 1, (_, count) => count + 1);
+                if (Interlocked.Increment(ref active) == limit) full.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref active);
+                }
+            });
+
+        var processor = new PayjoinReceiverSessionProcessor(fixture.Store, guard, state, fixture.Outputs, fixture.Inputs,
+            fixture.BridgeService, fixture.Finalizer, fixture.Networks,
+            NullLogger<PayjoinReceiverSessionProcessor>.Instance, fixture.Validator);
+        var token = TestContext.Current.CancellationToken;
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var tick = processor.ProcessTickAsync(stopping.Token);
+        try
+        {
+            await ready.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+            Assert.Equal(limit, Volatile.Read(ref active));
+            Assert.Equal(limit, polls.Count);
+            Assert.All(polls.Values, count => Assert.Equal(1, count));
+        }
+        finally
+        {
+            await stopping.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => tick.WaitAsync(TimeSpan.FromSeconds(10), token));
+        }
+
+        Assert.Equal(0, Volatile.Read(ref active));
+    }
+
+    private sealed class SchedulingStateProcessor(
+        Func<string, CancellationToken, Task> processReady,
+        Func<string, CancellationToken, Task> pollMailbox) : IPayjoinReceiverStateProcessor
+    {
+        public Task ProcessInitializedAsync(PayjoinReceiverStateContext context, Initialized initialized,
+            Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
+            CancellationToken cancellationToken, Func<Func<Task>, CancellationToken, Task>? runReadyAsync = null) =>
+            pollMailbox(context.InvoiceId, cancellationToken);
+
+        public Task ProcessUncheckedProposalAsync(PayjoinReceiverStateContext context, UncheckedOriginalPayload proposal,
+            Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
+            CancellationToken cancellationToken) => processReady(context.InvoiceId, cancellationToken);
+
+        public Task ProcessReplyableErrorAsync(PayjoinReceiverStateContext context, HasReplyableError replyableError,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task ProcessPendingFallbackAsync(PayjoinReceiverStateContext context, ReceiverPendingFallback pendingFallback,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task ProcessMaybeInputsOwnedAsync(PayjoinReceiverStateContext context, MaybeInputsOwned proposal,
+            Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task ProcessMaybeInputsSeenAsync(PayjoinReceiverStateContext context, MaybeInputsSeen proposal,
+            Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task ProcessOutputsUnknownAsync(PayjoinReceiverStateContext context, OutputsUnknown proposal,
+            Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public async Task BroadcastCheckRecoveryContinuesTheSamePayloadWithoutASecondRpcInTheChain()
     {
         using var fixture = new ReceiverFixture();

@@ -28,6 +28,10 @@ public sealed class PayjoinReceiverPoller : BackgroundService
     private static readonly Action<ILogger, Exception?> LogPayjoinReservationCleanupFailed =
         LoggerMessage.Define(LogLevel.Warning, new EventId(6, nameof(LogPayjoinReservationCleanupFailed)),
             "Payjoin expired-reservation cleanup failed; the rest of the tick continues and the next tick retries.");
+    private static readonly Action<ILogger, Exception?> LogPayjoinAccountingPassFailed =
+        LoggerMessage.Define(LogLevel.Warning, new EventId(7, nameof(LogPayjoinAccountingPassFailed)),
+            "Payjoin accounting reconciliation pass failed.");
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
     private readonly PayjoinReceiverSessionStore _sessionStore;
     private readonly IPayjoinReceiverSessionProcessor _sessionProcessor;
     private readonly IPayjoinAccountingBridgeService _accountingBridgeService;
@@ -48,13 +52,17 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         _logger = logger;
     }
 
-    internal async Task ProcessTickOnceAsync(CancellationToken stoppingToken)
+    internal Task ProcessTickOnceAsync(CancellationToken stoppingToken) =>
+        Task.WhenAll(ProcessReceiverSessionsAsync(stoppingToken), ProcessReconciliationAsync(stoppingToken));
+
+    private async Task ProcessReceiverSessionsAsync(CancellationToken stoppingToken)
     {
-        var now = DateTimeOffset.UtcNow;
-        CleanupExpiredInputReservations(now);
+        CleanupExpiredInputReservations(DateTimeOffset.UtcNow);
         await _sessionProcessor.ProcessTickAsync(stoppingToken).ConfigureAwait(false);
-        await ReconcilePendingBridgesAsync(now, stoppingToken).ConfigureAwait(false);
     }
+
+    private Task ProcessReconciliationAsync(CancellationToken stoppingToken) =>
+        ReconcilePendingBridgesAsync(DateTimeOffset.UtcNow, stoppingToken);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reservation cleanup must never prevent the rest of the polling tick from running.")]
     private void CleanupExpiredInputReservations(DateTimeOffset now)
@@ -130,25 +138,29 @@ public sealed class PayjoinReceiverPoller : BackgroundService
         }
     }
 
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        Task.WhenAll(
+            RunPeriodicAsync(ProcessReceiverSessionsAsync, LogPayjoinReceiverPollingFailed, stoppingToken),
+            RunPeriodicAsync(ProcessReconciliationAsync, LogPayjoinAccountingPassFailed, stoppingToken));
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Plugin background execution is an isolation boundary and must not crash the host process.")]
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    private async Task RunPeriodicAsync(
+        Func<CancellationToken, Task> runPassAsync,
+        Action<ILogger, Exception?> logFailure,
+        CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        using var timer = new PeriodicTimer(PollInterval);
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
             {
                 try
                 {
-                    await ProcessTickOnceAsync(stoppingToken).ConfigureAwait(false);
+                    await runPassAsync(stoppingToken).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
                 {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    LogPayjoinReceiverPollingFailed(_logger, ex);
+                    logFailure(_logger, ex);
                 }
             }
         }
