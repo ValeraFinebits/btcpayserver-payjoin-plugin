@@ -17,7 +17,8 @@ public class Plugin : BaseBTCPayServerPlugin
 
     public override void Execute(IServiceCollection applicationBuilder)
     {
-        applicationBuilder.AddHttpClient();
+        applicationBuilder.AddHttpClient(nameof(PayjoinReceiverPoller))
+            .UseSocketsHttpHandler(static (handler, _) => handler.AllowAutoRedirect = false);
         applicationBuilder.AddUIExtension("header-nav", "PayjoinHeaderNav");
         applicationBuilder.AddUIExtension("store-nav", "PayjoinStoreNavExtension");
         applicationBuilder.AddUIExtension("checkout-end", "PayJoinBitcoinCheckoutEnd");

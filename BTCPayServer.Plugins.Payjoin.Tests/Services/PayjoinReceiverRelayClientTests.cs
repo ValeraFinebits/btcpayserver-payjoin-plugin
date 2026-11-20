@@ -10,6 +10,32 @@ namespace BTCPayServer.Plugins.Payjoin.Tests.Services;
 public class PayjoinReceiverRelayClientTests
 {
     [Theory]
+    [InlineData(HttpStatusCode.MovedPermanently)]
+    [InlineData(HttpStatusCode.Found)]
+    [InlineData(HttpStatusCode.SeeOther)]
+    [InlineData(HttpStatusCode.TemporaryRedirect)]
+    [InlineData(HttpStatusCode.PermanentRedirect)]
+    public async Task SendAsyncRejectsRedirectsWithoutReadingTheResponseBody(HttpStatusCode status)
+    {
+        using var content = new FailingContent();
+        using var handler = new CapturingHandler(_ => new HttpResponseMessage(status)
+        {
+            Content = content,
+            Headers = { Location = new Uri("/other", UriKind.Relative) }
+        });
+        using var httpClient = new HttpClient(handler);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(nameof(PayjoinReceiverPoller)).Returns(httpClient);
+        var client = new PayjoinReceiverRelayClient(factory);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.SendAsync(new Uri("https://relay.example/"), "application/http", [], CancellationToken.None));
+
+        Assert.Equal(status, exception.StatusCode);
+        Assert.Equal(0, content.ReadAttempts);
+    }
+
+    [Theory]
     [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.BadGateway)]
     public async Task SendAsyncRejectsUnsuccessfulHttpStatusBeforeReturningTheBody(HttpStatusCode status)
