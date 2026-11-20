@@ -77,7 +77,7 @@ public class PayjoinReceiverPollerTests
     }
 
     [Fact]
-    public async Task ProcessTickOnceAsyncRunsAccountingReconciliationAfterSessionProcessing()
+    public async Task ProcessTickOnceAsyncRunsAccountingReconciliationAlongsideSessionProcessing()
     {
         // Arrange
         using var testContext = new SessionStoreFixture();
@@ -99,6 +99,71 @@ public class PayjoinReceiverPollerTests
         Assert.Equal(1, accountingBridgeService.ExpirePendingInvocationCount);
         Assert.Equal(1, accountingBridgeService.GetPendingInvocationCount);
         Assert.Equal(0, accountingPaymentService.ReconcileInvocationCount);
+    }
+
+    [Fact]
+    public async Task ExecuteAsyncReconcilesAgainWhileReceiverProcessingAwaitsAndStopsBothLoops()
+    {
+        using var testContext = new SessionStoreFixture();
+        var receiverStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiverStopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstReconciliationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstReconciliation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reconciliationRepeated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sessionProcessor = new BlockingSessionProcessor(receiverStarted, receiverStopped);
+        var accountingBridgeService = new RecordingAccountingBridgeService
+        {
+            OnGetPendingAsync = async (count, token) =>
+            {
+                if (count == 1)
+                {
+                    firstReconciliationStarted.TrySetResult();
+                    await releaseFirstReconciliation.Task.WaitAsync(token).ConfigureAwait(false);
+                }
+
+                if (count == 2) reconciliationRepeated.TrySetResult();
+            }
+        };
+        using var poller = new PayjoinReceiverPoller(
+            testContext.CreateStore(), sessionProcessor, accountingBridgeService,
+            new NoOpAccountingPaymentService(), new TestLogger<PayjoinReceiverPoller>());
+        var cancellationToken = global::Xunit.TestContext.Current.CancellationToken;
+
+        await poller.StartAsync(cancellationToken).ConfigureAwait(true);
+        try
+        {
+            await receiverStarted.Task.WaitAsync(TimeSpan.FromSeconds(12), cancellationToken).ConfigureAwait(true);
+            await firstReconciliationStarted.Task.WaitAsync(TimeSpan.FromSeconds(12), cancellationToken).ConfigureAwait(true);
+            await Task.Delay(TimeSpan.FromSeconds(5.25), cancellationToken).ConfigureAwait(true);
+            Assert.Equal(1, accountingBridgeService.GetPendingInvocationCount);
+            releaseFirstReconciliation.TrySetResult();
+            await reconciliationRepeated.Task.WaitAsync(TimeSpan.FromSeconds(12), cancellationToken).ConfigureAwait(true);
+            Assert.False(receiverStopped.Task.IsCompleted);
+        }
+        finally
+        {
+            await poller.StopAsync(cancellationToken).ConfigureAwait(true);
+        }
+
+        Assert.True(receiverStopped.Task.IsCompletedSuccessfully);
+        Assert.True(poller.ExecuteTask!.IsCompletedSuccessfully);
+    }
+
+    private sealed class BlockingSessionProcessor(TaskCompletionSource started, TaskCompletionSource stopped)
+        : IPayjoinReceiverSessionProcessor
+    {
+        public async Task ProcessTickAsync(CancellationToken stoppingToken)
+        {
+            started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                stopped.TrySetResult();
+            }
+        }
     }
 
     [Fact]
@@ -306,8 +371,10 @@ public class PayjoinReceiverPollerTests
 
     private sealed class RecordingAccountingBridgeService : IPayjoinAccountingBridgeService
     {
+        private int _getPendingInvocationCount;
         public int ExpirePendingInvocationCount { get; private set; }
-        public int GetPendingInvocationCount { get; private set; }
+        public int GetPendingInvocationCount => Volatile.Read(ref _getPendingInvocationCount);
+        public Func<int, CancellationToken, Task>? OnGetPendingAsync { get; init; }
         public IReadOnlyCollection<PayjoinAccountingBridgeState> PendingBridges { get; init; } = [];
         public string? LastMarkedFailedInvoiceId { get; private set; }
         public string? LastMarkedFailedMessage { get; private set; }
@@ -315,10 +382,15 @@ public class PayjoinReceiverPollerTests
         public string? LastMarkedReconciledInvoiceId { get; private set; }
 
         public Task<PayjoinAccountingBridgeState?> TryGetByInvoiceIdAsync(string invoiceId, CancellationToken cancellationToken) => Task.FromResult<PayjoinAccountingBridgeState?>(null);
-        public Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingReconciliationAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        public async Task<IReadOnlyCollection<PayjoinAccountingBridgeState>> GetPendingReconciliationAsync(DateTimeOffset now, CancellationToken cancellationToken)
         {
-            GetPendingInvocationCount++;
-            return Task.FromResult(PendingBridges);
+            var count = Interlocked.Increment(ref _getPendingInvocationCount);
+            if (OnGetPendingAsync is not null)
+            {
+                await OnGetPendingAsync(count, cancellationToken).ConfigureAwait(false);
+            }
+
+            return PendingBridges;
         }
         public Task<PayjoinAccountingBridgeState?> MarkReconciledAsync(string invoiceId, string? expectedFinalTransactionId, long? expectedFinalOutputIndex, long? expectedFinalValueSats, DateTimeOffset reconciledAt, CancellationToken cancellationToken, DateTimeOffset? expectedUpdatedAt = null)
         {

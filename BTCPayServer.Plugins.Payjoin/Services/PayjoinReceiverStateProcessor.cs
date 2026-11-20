@@ -91,7 +91,8 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         PayjoinReceiverStateContext context,
         Initialized initialized,
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<Func<Task>, CancellationToken, Task>? runReadyAsync = null)
     {
         if (context.Session.IsCloseRequested)
         {
@@ -122,8 +123,17 @@ internal sealed class PayjoinReceiverStateProcessor : IPayjoinReceiverStateProce
         {
             if (outcome is InitializedTransitionOutcome.Progress progress)
             {
-                var currentContext = RefreshCloseRequestedContext(context);
-                await ProcessUncheckedProposalAsync(currentContext, progress.Inner, continueWithOutputsAsync, cancellationToken).ConfigureAwait(false);
+                if (runReadyAsync is null)
+                {
+                    await ContinueAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    await runReadyAsync(ContinueAsync, cancellationToken).ConfigureAwait(false);
+                }
+
+                Task ContinueAsync() => ProcessUncheckedProposalAsync(
+                    RefreshCloseRequestedContext(context), progress.Inner, continueWithOutputsAsync, cancellationToken);
             }
         }
     }
