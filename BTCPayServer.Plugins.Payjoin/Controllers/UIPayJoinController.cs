@@ -8,10 +8,12 @@ using BTCPayServer.Services;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
+using NicolasDorier.RateLimits;
 using Payjoin;
 using System;
 using System.Diagnostics.CodeAnalysis;
@@ -72,19 +74,27 @@ public class UIPayJoinController : Controller
 
     [AllowAnonymous]
     [HttpGet("invoices/{invoiceId}/payment-url")]
-    // TODO: rate-limit this route before release. It is anonymous and every call runs BuildAsync, which
-    // queries the wallet's UTXOs and, with no session yet, bootstraps OHTTP against third-party relays. The
-    // only limit today is client-side (maxPayjoinRequestAttempts in PayJoinBitcoinCheckoutEnd.cshtml), so it
-    // bounds a well-behaved checkout and nothing else. Per-invoice rate limit, or cache a failed bootstrap
-    // per store for a few tens of seconds.
-    public async Task<ActionResult<PayjoinCheckoutAvailabilityResponse>> GetInvoicePaymentUrl(string invoiceId, CancellationToken cancellationToken)
+    [RateLimitsFilter(Plugin.CheckoutPaymentUrlRateLimitZone, Scope = RateLimitsScope.RemoteAddress)]
+    public async Task<ActionResult<PayjoinCheckoutAvailabilityResponse>> GetInvoicePaymentUrl(
+        string invoiceId,
+        [FromServices] PayjoinCheckoutPaymentUrl checkoutPaymentUrl,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(checkoutPaymentUrl);
+
         if (string.IsNullOrWhiteSpace(invoiceId))
         {
             return NotFound();
         }
 
-        var paymentUrl = await _paymentUrlService.GetInvoicePaymentUrlAsync(invoiceId, cancellationToken).ConfigureAwait(false);
+        var pending = checkoutPaymentUrl.TryGetPaymentUrl(invoiceId, cancellationToken);
+        if (pending is null)
+        {
+            Response.Headers.RetryAfter = "1";
+            return StatusCode(StatusCodes.Status429TooManyRequests);
+        }
+
+        var paymentUrl = await pending.ConfigureAwait(false);
         if (paymentUrl is null)
         {
             return NotFound();
