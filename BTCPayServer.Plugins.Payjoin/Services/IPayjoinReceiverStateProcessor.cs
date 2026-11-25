@@ -13,7 +13,8 @@ internal interface IPayjoinReceiverStateProcessor
         PayjoinReceiverStateContext context,
         Initialized initialized,
         Func<WantsOutputs, PayjoinReceiverStateContext, CancellationToken, Task> continueWithOutputsAsync,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        Func<Func<Task>, CancellationToken, Task>? runReadyAsync = null);
 
     Task ProcessReplyableErrorAsync(
         PayjoinReceiverStateContext context,
