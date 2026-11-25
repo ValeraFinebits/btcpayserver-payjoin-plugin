@@ -20,7 +20,7 @@ public class PayjoinCheckoutPaymentUrlTests
         var service = Substitute.For<IPayjoinInvoicePaymentUrlService>();
         var generated = new TaskCompletionSource<GetBip21Response?>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.GetInvoicePaymentUrlAsync("invoice", Arg.Any<CancellationToken>()).Returns(generated.Task);
-        using var checkout = new PayjoinCheckoutPaymentUrl(service, Substitute.For<IHostApplicationLifetime>());
+        var checkout = new PayjoinCheckoutPaymentUrl(service, Substitute.For<IHostApplicationLifetime>());
 
         var canceled = Assert.IsAssignableFrom<Task<GetBip21Response?>>(checkout.TryGetPaymentUrl("invoice", caller.Token));
         var shared = Assert.IsAssignableFrom<Task<GetBip21Response?>>(checkout.TryGetPaymentUrl("invoice", cancellationToken));
@@ -50,7 +50,7 @@ public class PayjoinCheckoutPaymentUrlTests
         var service = Substitute.For<IPayjoinInvoicePaymentUrlService>();
         var generated = new TaskCompletionSource<GetBip21Response?>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.GetInvoicePaymentUrlAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(generated.Task);
-        using var checkout = new PayjoinCheckoutPaymentUrl(service, Substitute.For<IHostApplicationLifetime>());
+        var checkout = new PayjoinCheckoutPaymentUrl(service, Substitute.For<IHostApplicationLifetime>());
         var active = Enumerable.Range(0, PayjoinCheckoutPaymentUrl.MaxConcurrentInvoices)
             .Select(i => Assert.IsAssignableFrom<Task<GetBip21Response?>>(checkout.TryGetPaymentUrl($"invoice-{i}", cancellationToken)))
             .ToArray();
@@ -71,6 +71,43 @@ public class PayjoinCheckoutPaymentUrlTests
     }
 
     [Fact]
+    public async Task NewInvoiceWorkIsLimitedPerWindowAndResetsWhenTheWindowEnds()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var service = Substitute.For<IPayjoinInvoicePaymentUrlService>();
+        service.GetInvoicePaymentUrlAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<GetBip21Response?>(null));
+        var clock = new ManualClock();
+        var checkout = new PayjoinCheckoutPaymentUrl(service, Substitute.For<IHostApplicationLifetime>(), clock);
+
+        await StartFullWindowAsync("first").ConfigureAwait(true);
+        Assert.Null(checkout.TryGetPaymentUrl("first-refused", cancellationToken));
+
+        clock.Advance(PayjoinCheckoutPaymentUrl.NewInvoiceWindow - TimeSpan.FromTicks(1));
+        Assert.Null(checkout.TryGetPaymentUrl("first-refused", cancellationToken));
+
+        clock.Advance(TimeSpan.FromTicks(1));
+        await StartFullWindowAsync("second").ConfigureAwait(true);
+        Assert.Null(checkout.TryGetPaymentUrl("second-refused", cancellationToken));
+
+        await service.DidNotReceive().GetInvoicePaymentUrlAsync("first-refused", Arg.Any<CancellationToken>()).ConfigureAwait(true);
+        await service.DidNotReceive().GetInvoicePaymentUrlAsync("second-refused", Arg.Any<CancellationToken>()).ConfigureAwait(true);
+        await service.Received(2 * PayjoinCheckoutPaymentUrl.MaxNewInvoicesPerWindow)
+            .GetInvoicePaymentUrlAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).ConfigureAwait(true);
+
+        // Each start completes before the next one, so only the per-window limit can refuse work here.
+        async Task StartFullWindowAsync(string prefix)
+        {
+            for (var i = 0; i < PayjoinCheckoutPaymentUrl.MaxNewInvoicesPerWindow; i++)
+            {
+                var started = Assert.IsAssignableFrom<Task<GetBip21Response?>>(
+                    checkout.TryGetPaymentUrl($"{prefix}-{i}", cancellationToken));
+                Assert.Null(await started.ConfigureAwait(true));
+            }
+        }
+    }
+
+    [Fact]
     public void OnlyCheckoutPaymentUrlActionHasItsRemoteAddressLimit()
     {
         var checkout = typeof(UIPayJoinController).GetMethod(nameof(UIPayJoinController.GetInvoicePaymentUrl))!;
@@ -80,5 +117,13 @@ public class PayjoinCheckoutPaymentUrlTests
             Assert.Single(checkout.GetCustomAttributes(typeof(RateLimitsFilterAttribute), inherit: false)));
         Assert.Equal(RateLimitsScope.RemoteAddress, filter.Scope);
         Assert.Empty(greenfield.GetCustomAttributes(typeof(RateLimitsFilterAttribute), inherit: false));
+    }
+
+    private sealed class ManualClock : TimeProvider
+    {
+        private long _timestamp;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _timestamp;
+        internal void Advance(TimeSpan elapsed) => _timestamp += elapsed.Ticks;
     }
 }

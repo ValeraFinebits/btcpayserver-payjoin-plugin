@@ -46,7 +46,7 @@ public class UIPayJoinControllerTests
             .Returns(Task.FromResult<GetBip21Response?>(serviceResponse));
         using var controller = new UIPayJoinController(null!, null!, null!, null!, null!, null!, paymentUrlService, null!);
 
-        using var checkoutPaymentUrl = new PayjoinCheckoutPaymentUrl(paymentUrlService, Substitute.For<IHostApplicationLifetime>());
+        var checkoutPaymentUrl = new PayjoinCheckoutPaymentUrl(paymentUrlService, Substitute.For<IHostApplicationLifetime>());
         var result = await controller.GetInvoicePaymentUrl("invoice-1", checkoutPaymentUrl, TestContext.Current.CancellationToken)
             .ConfigureAwait(true);
 
